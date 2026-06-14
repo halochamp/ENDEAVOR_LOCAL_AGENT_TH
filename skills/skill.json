@@ -1,0 +1,14 @@
+{
+  "usage": [
+    ["/<name>", "activate skill"],
+    ["/<name>", "again → deactivate (toggle)"],
+    ["/exit",   "deactivate current skill"]
+  ],
+  "add_hint": "create skills/<name>.md  (## Role / ## Workflow / ## Tools allowed / ## Output format)",
+  "builtin_cmds": [
+    {"name": "clear",       "desc": "เคลียร์ context — เริ่ม session ใหม่"},
+    {"name": "compact",     "desc": "บีบอัด context ใน session ปัจจุบัน"},
+    {"name": "history",     "desc": "โหลด conversation history เดิม"},
+    {"name": "exit",        "desc": "ออกจาก skill mode ปัจจุบัน"}
+  ]
+}

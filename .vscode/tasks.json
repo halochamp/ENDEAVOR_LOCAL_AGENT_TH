@@ -1,0 +1,37 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "🖥 Servers",
+      "type": "shell",
+      "command": "lsof -ti:8080 | xargs kill -9 2>/dev/null; lsof -ti:8082 | xargs kill -9 2>/dev/null; sleep 1; cd '${workspaceFolder}/..' && ${MLX_HONCHO:-/opt/homebrew/anaconda3/envs/mlx/bin/honcho} start",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": false
+      }
+    },
+    {
+      "label": "🤖 Agent V2",
+      "type": "shell",
+      "command": "echo '⏳ รอ server...' && until curl -s http://localhost:8080/v1/models > /dev/null 2>&1; do sleep 2; done && echo '✅ ready' && cd '${workspaceFolder}' && ${MLX_PYTHON:-/opt/homebrew/anaconda3/envs/mlx/bin/python} endeavor_agent.py",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      }
+    },
+    {
+      "label": "🚀 Start Endeavor",
+      "dependsOn": ["🖥 Servers", "🤖 Agent V2"],
+      "dependsOrder": "parallel",
+      "runOptions": {
+        "runOn": "folderOpen"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    }
+  ]
+}

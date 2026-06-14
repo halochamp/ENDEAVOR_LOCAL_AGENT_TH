@@ -1,0 +1,384 @@
+ช่วยสร้าง skill file สำหรับ Endeavor Agent V2 ให้หน่อย
+
+Skill คือไฟล์ Markdown ที่จะถูก inject เข้า system prompt ของ agent เมื่อ user พิมพ์ /<name>
+มันทำให้ agent มี role เฉพาะทาง, ขั้นตอนการทำงาน, และข้อจำกัด tool สำหรับ session นั้น
+
+---
+
+## SKILL ENGINEERING RULES (อ่านก่อนสร้าง Workflow ทุกครั้ง)
+
+กฎเหล่านี้ได้จากการทดสอบจริง — ละเว้นข้อไหนข้อหนึ่ง = skill ไม่ทำงาน
+
+**R1 — ระบุ tool ทุก step อย่างชัดเจน**
+```
+❌  "ค้นหาข้อมูลจากเว็บ"
+✅  web_search("AI education Thailand 2026")
+```
+เหตุผล: abstract instruction → agent ตีความเอง → ใช้ training data แทน tool
+
+**R2 — write_file ก่อน web_search เสมอ (ถ้า skill สร้างไฟล์)**
+```
+❌  web_search → browse_url → ... → write_file
+✅  write_file (สร้างไฟล์ว่าง) → web_search → browse_url → edit
+```
+เหตุผล: ถ้า search มาก่อน agent มีข้อมูล snippets พอสรุปได้ → ข้าม browse ทั้งหมด ไฟล์ไม่ถูกสร้าง
+
+**R3 — Synthesis Gate ก่อนสรุปเสมอ (ถ้า skill collect แล้วสรุป)**
+```
+เพิ่ม step ก่อน final synthesis:
+  python_exec ตรวจว่า N sections ถูกเขียนในไฟล์จริง
+  ถ้าไม่ผ่าน → วน loop ต่อ ห้ามสรุป
+```
+เหตุผล: ไม่มี gate → agent สรุปทันทีที่มีข้อมูลพอแม้ยังทำไม่ครบ
+
+**R4 — Verify + Retry หลัง loop batch (ถ้า skill วนซ้ำหลาย items)**
+```
+หลัง process N items:
+  python_exec ตรวจ sections ในไฟล์จริง
+  ถ้าขาด → retry item ที่ขาด (≤2×)
+  ถ้า retry ครบแล้วยังขาด → บันทึก "[retry หมด — ข้าม]"
+  mark completed เฉพาะเมื่อตรวจผ่านแล้ว
+```
+เหตุผล: mark "เสร็จ" โดยไม่ตรวจ = silent failure ไฟล์ขาดข้อมูลโดยไม่รู้ตัว
+
+**R5 — Checkpoint สำหรับงานหลาย batch (ถ้า skill ทำงาน > 1 turn)**
+```
+บันทึก JSON checkpoint (/tmp/<name>_checkpoint.json) ทุก batch:
+  {"topic", "filename", "all_items", "completed", "batch_num"}
+Detection Logic: "ต่อ"/"resume" → อ่าน checkpoint → ทำต่อ
+ลบ checkpoint เมื่อเสร็จสมบูรณ์
+```
+เหตุผล: ไม่มี checkpoint → session ขาดกลางคัน = เริ่มใหม่ทั้งหมด
+
+**R6 — ใช้เฉพาะ tool ที่อยู่ใน "Tool Reference" ด้านล่าง**
+เหตุผล: tool ที่ไม่ได้ผูกกับ agent → agent call ไม่ได้ → ตอบจาก training แทน
+
+**R7 — งาน sequential > 3 tool calls ต่อเนื่อง → ย้าย loop เข้า Python tool แทน prompt instruction**
+```
+❌  skill บอก agent "วน browse_url ×20 แล้ว python_exec บันทึก checkpoint ทุก 5 แหล่ง"
+✅  สร้าง @tool ใน tools/<name>.py ที่รับ input → Python while loop วนเอง → return ผลสรุป
+    agent เรียก tool ครั้งเดียว — Python จัดการ batch transitions ทั้งหมด
+```
+เหตุผล: ReAct loop "อยาก" ตอบ user หลัง 3-4 tool calls — prompt instruction สู้ไม่ได้ในระยะยาว
+ตัวอย่าง: research_orchestrator = @tool ที่ใช้ Python while loop จัดการ 4+ batches โดยอัตโนมัติ
+
+**R8 — Tool ที่ใช้ได้เฉพาะ skill เดียว → ใช้ SKILL_TOOLS registry (binding-gated, ไม่ต้องเขียน guard)**
+```
+1. วางไฟล์ tool ใน tools/skill_tools/<name>.py
+   (ปกติ @tool function เดียว — ไม่ต้องมี runtime guard / set_active_skill ใดๆ)
+
+2. tools/__init__.py:
+   from .skill_tools.<name> import <tool_name>
+   - ห้ามใส่ <tool_name> ใน ALL_TOOLS
+   - เพิ่ม entry ใน SKILL_TOOLS:
+     SKILL_TOOLS: dict[str, list] = {
+         "research": [research_orchestrator],
+         "<new_skill>": [<tool_name>],   ← เพิ่มบรรทัดเดียว
+     }
+
+3. ไม่ต้องแก้ไฟล์อื่น — endeavor_agent.py / agent_server.py
+   รับ SKILL_TOOLS อัตโนมัติ rebuild graph เมื่อ skill toggle
+```
+เหตุผล: tool ไม่อยู่ใน ALL_TOOLS เลย → model "มองไม่เห็น" tool นี้นอก skill mode
+ไม่มีทาง call ผิดได้ (ดีกว่า runtime guard ที่ยัง list tool ไว้ใน schema อยู่)
+ตัวอย่าง: research_orchestrator (`tools/skill_tools/research_orchestrator.py`, SKILL_TOOLS["research"])
+
+---
+
+## ANTI-PATTERNS — ห้ามใส่ใน Workflow ที่สร้าง
+
+| Anti-pattern | ผลที่เกิด |
+|---|---|
+| web_search ก่อน write_file (ถ้า skill สร้างไฟล์) | agent ข้าม browse ทั้งหมด ไฟล์ไม่ถูกสร้าง |
+| ไม่มี Synthesis Gate ก่อนสรุป | agent สรุปก่อนครบ silent success |
+| loop โดยไม่มี verify | ข้อมูลขาดโดยไม่รู้ตัว |
+| tool ที่ไม่อยู่ใน Tool Reference | agent call ไม่ได้ ตอบจาก training |
+| abstract instruction ไม่ระบุ tool | agent เลือก path เองตาม training |
+| **LLM-driven BATCH LOOP > 3 batches** | **agent ออกจาก loop ตอบ user กลางทาง — ใช้ R7 (Python tool) แทน** |
+| skill-exclusive tool ไม่อยู่ใน SKILL_TOOLS registry | tool ไปอยู่ใน ALL_TOOLS → bind ทุก session (เปลือง context) — ใช้ R8 |
+
+---
+
+## รูปแบบไฟล์ (section ที่มี * คือ optional — ใส่เฉพาะเมื่อจำเป็น)
+
+```markdown
+## Role
+<1-2 ประโยค: หน้าที่ของ skill นี้>
+
+## Detection Logic *
+<ใส่เมื่อต้องตรวจสอบ input ก่อนเลือก path — condition → path>
+ตัวอย่าง:
+- user พิมพ์ "ต่อ"/"resume" → RESUME จาก checkpoint
+- user พิมพ์ topic ใหม่ → START
+
+## Workflow
+<ขั้นตอนเป็นข้อ — ทุก step ระบุ tool name ชัดเจน ใช้ R1-R6 ตามที่เหมาะ>
+
+## Notes *
+<ใส่เมื่อมี constraint, threshold, หรือ edge case สำคัญ>
+
+## Tools allowed
+<รายชื่อ tool คั่นด้วยคอมมา เลือกจาก Tool Reference ด้านล่างเท่านั้น>
+
+## Output format
+<รูปแบบที่ agent ควรแสดงผล>
+```
+
+---
+
+## Tool Reference (ใช้ได้เฉพาะ tool ในรายการนี้)
+
+— เว็บ —
+- web_search        : ค้นหาข้อมูลบนเว็บ ได้ snippet พร้อม URL
+- browse_url        : เปิดและอ่านเนื้อหาเว็บทั้งหน้า
+- browser_use       : ควบคุม browser จริง (คลิก, กรอกฟอร์ม, JavaScript)
+- batch_browse      : เปิดหลาย URL พร้อมกัน ใช้แทน browse_url หลายครั้ง
+- recall_web        : ดึง cache ผลลัพธ์เว็บที่เคยค้นไปแล้วใน session
+- fetch_sitemap     : ดึง sitemap.xml จาก domain เพื่อสำรวจโครงสร้างเว็บ
+- scrape_table      : ดึงตาราง HTML จากหน้าเว็บเป็น CSV/JSON
+
+— ไฟล์และ workspace —
+- read_file         : อ่านไฟล์จาก workspace
+- write_file        : เขียนไฟล์ลง workspace (sandboxed)
+- edit              : แก้ไขไฟล์เฉพาะส่วน (find & replace / append)
+- grep              : ค้นหา pattern ในไฟล์หรือโฟลเดอร์
+- workspace_ls      : แสดงรายการไฟล์ใน workspace
+
+— โค้ดและการคำนวณ —
+- python_exec       : รัน Python code (pandas, numpy, file I/O, JSON, os.path)
+- bash              : รัน shell command (ls, git, grep, curl localhost)
+- plot              : วาดกราฟด้วย matplotlib บันทึกลง workspace
+
+— ภาพ —
+- read_image        : OCR อ่านข้อความในภาพ, ไฟล์, URL, หรือ screenshot
+
+— หน่วยความจำและแผน —
+- remember          : บันทึกข้อมูลสำคัญเก็บไว้ใช้ข้าม session
+- create_plan       : แบ่งงานเป็น multi-step plan ก่อน execute
+
+— orchestrator (Python loop tools — R7 + R8 pattern) —
+- research_orchestrator : ค้นหาข่าว N แหล่ง + เขียนรายงาน ครบใน 1 tool call
+  ⚠️ SKILL-EXCLUSIVE (R8) — bind เฉพาะ /research mode (SKILL_TOOLS["research"], tools/skill_tools/research_orchestrator.py)
+  params: topic (str), n (int, default 30), resume (bool), keywords (str, comma-separated search angles)
+
+---
+
+## Workflow Patterns — เลือกตามประเภทงาน
+
+| Pattern | ใช้เมื่อ | R ที่ต้องใช้ |
+|---|---|---|
+| Sequential | ลำดับชัด งานไม่ซับซ้อน | R1 เสมอ |
+| Decision | มีเงื่อนไข if/else ก่อนเลือก tool | R1 |
+| Loop + Verify | วนหลาย items + ตรวจผลแต่ละรอบ | R1, R4 |
+| File Collect | สร้างไฟล์แล้ว collect ข้อมูล | R1, R2 |
+| Batch + Checkpoint | งานยาว > 10 items (≤3 batch) | R1, R2, R4, R5 |
+| Synthesis Gate | collect data หลายแหล่งแล้วสรุป | R1, R3 |
+| **Python Orchestrator** | **วน > 3 batches ต่อเนื่อง ห้ามหยุดกลางทาง** | **R7** |
+
+**ตัวอย่าง Sequential:**
+```
+STEP 1 — รับ URL จาก user (ถ้าไม่มี → ถาม)
+STEP 2 — browse_url(URL, user_query="<topic>") → ดึงเนื้อหา
+STEP 3 — python_exec สรุปเนื้อหาและนับคำสำคัญ
+STEP 4 — write_file("result.md") บันทึกผลลัพธ์
+```
+
+**ตัวอย่าง File Collect + Synthesis Gate (R2 + R3):**
+```
+STEP 1 — รับ input จาก user
+STEP 2 — write_file("report.md") สร้างไฟล์ว่าง (R2 — ต้องก่อน search)
+STEP 3 — web_search("<topic> latest 2026") × 2 รอบ → รวม URLs
+STEP 4 — สำหรับแต่ละ URL: browse_url(URL) → สกัดข้อมูล → edit append
+STEP 5 — Synthesis Gate (R3):
+  python_exec ตรวจว่ามีครบ N sections ในไฟล์
+  ถ้าไม่ผ่าน → กลับ STEP 4 ทำ URL ที่ขาด
+STEP 6 — read_file → วิเคราะห์ → edit append Summary
+```
+
+**ตัวอย่าง Batch + Checkpoint (R2 + R4 + R5):**
+```
+### START
+STEP 1 — python_exec ตรวจ checkpoint เก่า
+STEP 2 — write_file สร้างไฟล์ก่อน (R2)
+STEP 3 — web_search × 3 รอบ → รวม URLs deduplicate
+STEP 4 — python_exec บันทึก checkpoint + ไป BATCH LOOP
+
+### BATCH LOOP
+ก่อนแต่ละ batch: python_exec ดึง 10 URLs ถัดไป
+สำหรับแต่ละ URL: browse_url → สกัด → edit append
+หลัง batch — VERIFY+RETRY (R4):
+  python_exec ตรวจ "## Source N:" ในไฟล์
+  MISSING → retry URL ที่ขาด (≤2×) → "[retry หมด — ข้าม]"
+  BATCH_OK → python_exec update checkpoint (batch_num += 1)
+  ยังมี batch → ทำต่อเลย ไม่รอ user (R5)
+
+### STEP FINAL — Synthesis Gate (R3)
+python_exec assert completed == all_urls
+ผ่าน → read_file → edit append Summary → ลบ checkpoint
+```
+
+---
+
+## Code Block ใน Step
+
+ถ้า step ต้องรัน Python code เฉพาะ — ฝัง code block ลงใน step ได้เลย
+agent จะ copy code ไปรันผ่าน python_exec โดยตรง:
+
+```
+STEP 1 — ถ่ายภาพจากกล้อง:
+  ```python
+  import cv2, os
+  from datetime import datetime
+  path = f"/tmp/cam_{datetime.now().strftime('%H%M%S')}.jpg"
+  cap = cv2.VideoCapture(0)
+  for _ in range(30): cap.read()
+  ret, frame = cap.read()
+  cap.release()
+  if ret: cv2.imwrite(path, frame); print(path)
+  else: print("[error] camera capture failed")
+  ```
+STEP 2 — read_image(source=<path จาก STEP 1>, question=<คำถาม user>)
+```
+
+---
+
+## ตัวอย่าง Skill ที่สมบูรณ์
+
+### ตัวอย่าง 1 — skill ง่าย (camera)
+```markdown
+## Role
+Camera mode. ถ่ายภาพจาก webcam แล้ววิเคราะห์สิ่งที่เห็น
+
+## Workflow
+STEP 1 — ถ่ายภาพจากกล้อง:
+  ```python
+  import cv2, os
+  from datetime import datetime
+  from config import WORKSPACE
+  photos_dir = os.path.join(WORKSPACE, "photos")
+  os.makedirs(photos_dir, exist_ok=True)
+  ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+  path = os.path.join(photos_dir, f"cam_{ts}.jpg")
+  cap = cv2.VideoCapture(0)
+  for _ in range(30): cap.read()
+  ret, frame = cap.read()
+  cap.release()
+  if ret: cv2.imwrite(path, frame); print(path)
+  else: print("[error] camera capture failed")
+  ```
+STEP 2 — read_image(source=<path>, question=<คำถาม user หรือ "อธิบายสิ่งที่เห็นทั้งหมด">)
+STEP 3 — อธิบายสิ่งที่เห็นในภาพ บอก path ที่บันทึก
+
+## Notes
+- warm-up 30 frames ให้ auto-exposure ปรับตัวก่อน capture
+- ถ้า fail → ตรวจ System Settings > Privacy > Camera
+
+## Tools allowed
+python_exec, read_image
+
+## Output format
+อธิบายภาพภาษาไทย — ละเอียด ถ้ามีข้อความในภาพ → ระบุจาก [OCR] ด้วย
+```
+
+### ตัวอย่าง 2 — skill ซับซ้อน (stock — File Collect + R1-R4)
+```markdown
+## Role
+ดึงราคาหุ้นล่าสุดจาก 10 บริษัทที่ user กำหนด บันทึกลงไฟล์ เปรียบเทียบ และสรุปว่าหุ้นไหนน่าสนใจ
+
+## Workflow
+STEP 1 — รับรายชื่อหุ้น:
+- รับรายชื่อหุ้น 10 ตัวจาก user (ถ้าไม่ระบุ → ถาม)
+
+STEP 2 — สร้างไฟล์ก่อน (R2):
+- write_file("stock_report.md") สร้างไฟล์ว่างก่อนค้นหาข้อมูล
+
+STEP 3 — ดึงราคาหุ้น (R1):
+- สำหรับแต่ละหุ้น: web_search("<SYMBOL> ราคาหุ้น ล่าสุด") → สกัดราคา → edit append
+
+STEP 4 — Synthesis Gate (R3):
+- python_exec ตรวจว่าไฟล์มีข้อมูลครบ 10 หุ้น
+- ถ้าขาด → retry หุ้นที่ขาด web_search อีกครั้ง (R4)
+
+STEP 5 — สรุป:
+- read_file → วิเคราะห์ → edit append Summary
+
+## Tools allowed
+web_search, write_file, edit, read_file, python_exec
+
+## Output format
+ตอบภาษาไทย — ตาราง: หุ้น | ราคา | %เปลี่ยนแปลง | สรุป
+```
+
+### ตัวอย่าง 3 — skill batch หลาย turn (news — R7 Python Orchestrator)
+```markdown
+## Role
+ค้นหาข่าวล่าสุดจากจำนวนแหล่งที่กำหนด — เรียก research_orchestrator เพียงครั้งเดียว
+Python loop จัดการ batch transitions ทั้งหมดเอง (R7)
+
+## Detection Logic
+- user พิมพ์ topic → extract topic + N (default 30) → START
+- user พิมพ์ "ต่อ"/"resume" → RESUME
+
+## Workflow
+### START
+STEP 1 — extract topic และ N จาก message
+STEP 2 — research_orchestrator(topic="<topic>", n=<N>)
+  Python loop วน batch อัตโนมัติ: ค้นหา URL → เปิดเว็บทุกแหล่ง → สรุปรายแหล่ง → สรุปรวม
+  ❌ ห้ามเรียก web_search / browse_url เอง
+
+### RESUME
+STEP 1 — research_orchestrator(topic="", n=0, resume=True)
+
+## Tools allowed
+research_orchestrator
+
+## Output format
+แสดงผลจาก tool ตรงๆ — "✅ เสร็จสิ้น X batch (Y แหล่ง)" + path ไฟล์ + สรุปสั้น
+```
+
+**ทำไมไม่ใช้ BATCH LOOP (pattern เก่า):** LLM-driven loop หลุดหลัง batch 3 → agent ตอบ user กลางทาง
+แก้โดยย้าย loop ทั้งหมดเข้า Python tool (R7) — model เรียกครั้งเดียว Python วนครบ
+
+---
+
+## Checklist — ที่ต้องแก้เมื่อเพิ่ม skill ใหม่
+
+**1. `skills/<name>.md`** — บังคับเสมอ
+
+**2. (เฉพาะถ้ามี skill-exclusive tool — R8)**
+- เขียน `tools/skill_tools/<name>_tool.py`
+- `tools/__init__.py`: import + เพิ่ม entry ใน `SKILL_TOOLS` dict — ห้ามใส่ใน `ALL_TOOLS`
+
+**3. (เฉพาะถ้า tool ต้องการ internet)**
+- เพิ่มชื่อ tool ใน `_WEB_TOOLS` set ใน `endeavor_agent.py` + `agent_server.py`
+  (กัน tool ถูก bind ตอน offline mode)
+
+**4. (optional) `react.py` M-rung** — ถ้า skill ต้องการ routing พิเศษ
+- แก้ใน `#developer/react.py` แล้ว rebuild `.so` ใหม่
+- ไม่มี central pattern — ตัดสินใจ case-by-case
+
+**5. Regression gate + docs** หลังแก้เสร็จ
+
+⚠️ **ไม่มีจุดไหนใน `config.py`** — config.py เก็บเฉพาะ model/runtime config
+
+---
+
+## กฎสรุป
+
+1. ทุก step ต้องระบุชื่อ tool ชัดเจน (R1)
+2. ถ้า skill สร้างไฟล์ → write_file ต้องอยู่ก่อน web_search เสมอ (R2)
+3. ถ้า skill collect แล้วสรุป → ต้องมี Synthesis Gate ก่อน final step (R3)
+4. ถ้า skill วนซ้ำหลาย items → ต้องมี verify+retry หลัง loop (R4)
+5. ถ้า skill ทำงาน > 10 items หรือหลาย turn → ต้องมี checkpoint (R5)
+6. tool ต้องอยู่ใน Tool Reference ด้านบนเท่านั้น (R6)
+7. ถ้า skill ต้องวน > 3 batches ต่อเนื่อง → ใช้ Python Orchestrator tool แทน LLM loop (R7)
+8. ถ้า tool ควรใช้ได้เฉพาะ skill เดียว → วางใน tools/skill_tools/ + เพิ่ม entry ใน SKILL_TOOLS registry ห้ามใส่ ALL_TOOLS (R8)
+9. Role ไม่เกิน 1-2 ประโยค
+10. เลือก tool เฉพาะที่ skill นั้นต้องการจริงๆ
+11. section headers และ tool names เป็นภาษาอังกฤษ เนื้อหาใช้ไทยได้
+
+---
+
+สร้าง skill file สำหรับ: <อธิบาย skill ที่ต้องการตรงนี้>
+
+ตอบเฉพาะเนื้อหาไฟล์ .md เท่านั้น ไม่ต้องมีคำอธิบายเพิ่ม

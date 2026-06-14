@@ -1,0 +1,43 @@
+# ENDEAVOR_LOCAL_AGENT_TH — Python dependencies
+# Install: pip install -r install_library/requirements.txt
+# (run inside the `mlx` conda env, Python 3.11, macOS Apple Silicon)
+
+# ── LLM runtime ────────────────────────────────────────────────────────────
+mlx-lm>=0.31.3
+
+# ── Agent framework ────────────────────────────────────────────────────────
+langchain-core>=1.4.0
+langchain-openai>=1.2.2
+langgraph>=1.2.2
+
+# ── Web search / scraping ──────────────────────────────────────────────────
+ddgs>=9.14.4
+requests>=2.33.0
+trafilatura>=2.0.0
+playwright>=1.60.0
+browser-use>=0.12.9
+
+# ── Data / plotting ─────────────────────────────────────────────────────────
+pandas>=3.0.3
+numpy>=2.4.6
+matplotlib>=3.10.9
+Pillow>=12.2.0
+lxml>=5.0.0
+
+# ── Document reading (PDF / Word / Excel → markdown) ───────────────────────
+markitdown[pdf,docx,xlsx,xls]>=0.1.6
+
+# ── Config ────────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+
+# ── CLI / server ─────────────────────────────────────────────────────────────
+prompt_toolkit>=3.0.52
+rich>=14.3.1
+fastapi>=0.136.3
+uvicorn>=0.48.0
+streamlit>=1.58.0
+
+# ── macOS native bindings (Thai font rendering in plot.py) ──────────────────
+pyobjc-framework-Cocoa>=12.1
+pyobjc-framework-Quartz>=12.1
+pyobjc-framework-CoreText>=12.1

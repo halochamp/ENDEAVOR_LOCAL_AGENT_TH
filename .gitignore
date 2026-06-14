@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Cython build artifacts (.c leaks plaintext source — never commit)
+*.c
+build/
+
+# Tier 1 source (compiled to .so, not distributed) + build script
+# NOTE: leading \ is required — a bare "#" starts a comment in .gitignore
+\#developer/
+
+# Secrets / runtime state
+.env
+.agent_token
+
+# Workspace + memory (user data, not source)
+workspace/*
+!workspace/.gitkeep
+*.db
+*.db-shm
+*.db-wal
+logs/
+
+# OS
+.DS_Store
