@@ -8,9 +8,15 @@
 สลับ model: export V2_MODEL=... MLX_BASE_URL=...  (ดู config.py)
 """
 from __future__ import annotations
+import sys
 import json as _json
 import os
 import uuid
+
+if sys.version_info[:2] != (3, 11):
+    print(f"\n❌ Python {sys.version_info.major}.{sys.version_info.minor} ไม่รองรับ — ต้องใช้ Python 3.11 (mlx env)")
+    print("   รัน:  conda activate mlx && python endeavor_agent.py\n")
+    sys.exit(1)
 
 from langchain_core.callbacks import BaseCallbackHandler
 
