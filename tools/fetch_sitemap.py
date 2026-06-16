@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """fetch_sitemap.py — ดึง URL list จาก sitemap.xml ของเว็บไซต์
 
 รองรับ:

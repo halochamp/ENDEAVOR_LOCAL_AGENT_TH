@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """mlx_cleanup.py — ตรวจ + ฆ่า mlx_lm.server ที่ไม่ต้องการ
 
 ปัญหา: mlx_lm.server โหลด weights ลง Unified Memory ของ Metal

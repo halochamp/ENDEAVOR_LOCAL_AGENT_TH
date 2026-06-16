@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """endeavor_agent.py — ENDEAVOR_AGENT_V2 interactive CLI
 
 รัน:  conda activate mlx && python endeavor_agent.py
@@ -254,6 +258,9 @@ def _load_skill_registry() -> dict:
 
 def _activate_skill(sname: str) -> tuple[str, str]:
     """โหลด skill และแสดง role hint. คืน (active_skill, content) หรือ ("","") ถ้าไม่พบ."""
+    if not sname or any(c in sname for c in ("/", "\\")) or ".." in sname:
+        print(f" ไม่พบ skills/{sname}.md\n")
+        return "", ""
     spath = os.path.join(os.path.dirname(__file__), "skills", f"{sname}.md")
     if not os.path.exists(spath):
         print(f" ไม่พบ skills/{sname}.md\n")

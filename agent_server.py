@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """agent_server.py — WebSocket + REST backend for ENDEAVOR Agent V2 UI
 
 WebSocket  ws://localhost:8765/ws       — real-time chat + event stream (Electron)
@@ -18,8 +22,8 @@ import threading
 import uuid
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.callbacks import BaseCallbackHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -62,6 +66,13 @@ _WEB_TOOLS = {
 
 PORT = SERVER_PORT
 
+# Leading-JSON-echo filter (see _WSCallback.on_llm_new_token): if brace depth hasn't
+# balanced within this many chars, it wasn't JSON — flush the held-back text instead
+# of suppressing the whole response. Large enough that a multi-step plan/tool-result
+# JSON echo still balances within the window; runaway prose that merely starts with
+# "{" would not balance even at this size, so it still gets caught.
+_JSON_GUARD_MAX_CHARS = 4000
+
 # ── Auth (static token on every request) ──────────────────────────────────────
 # A custom Electron/web UI generates a token and passes it via env AGENT_SERVER_TOKEN.
 # Standalone runs (Telegram / headless) generate + persist a token file instead.
@@ -95,6 +106,18 @@ def _load_or_create_token() -> str:
 _AUTH_TOKEN = _load_or_create_token()
 
 
+_ALLOWED_ORIGINS = {f"http://127.0.0.1:{SERVER_PORT}", f"http://localhost:{SERVER_PORT}"}
+
+
+def _origin_ok(origin: str | None) -> bool:
+    """Reject cross-origin browser requests (DNS rebinding to 127.0.0.1).
+
+    Browsers always send Origin on fetch()/WS; non-browser clients (curl, bots)
+    typically omit it, so a missing header is allowed.
+    """
+    return origin is None or origin in _ALLOWED_ORIGINS
+
+
 def _require_token(x_auth_token: str | None = Header(default=None)):
     """FastAPI dependency — reject REST requests without a valid X-Auth-Token header."""
     if _AUTH_DISABLED:
@@ -105,6 +128,8 @@ def _require_token(x_auth_token: str | None = Header(default=None)):
 # ── Session state (single-session; Telegram can extend with session_id) ───────
 
 def _load_skill_content(sname: str) -> str | None:
+    if not sname or any(c in sname for c in ("/", "\\")) or ".." in sname:
+        return None
     path = os.path.join(_SKILLS_DIR, f"{sname}.md")
     if not os.path.exists(path):
         return None
@@ -303,7 +328,10 @@ class _WSCallback(BaseCallbackHandler):
         self._cancel = cancel_event
         # Buffer tokens per LLM run_id. Only flushed to client after on_llm_end
         # confirms no tool calls — prevents pre-tool deliberation tokens from leaking.
-        self._run_buffers: dict = {}  # str(run_id) -> int
+        self._run_buffers: dict = {}     # str(run_id) -> int (token count)
+        self._run_json_depth: dict = {}  # str(run_id) -> int (brace depth; >0 = inside JSON)
+        self._run_json_done: dict = {}   # str(run_id) -> bool (True once leading JSON stripped)
+        self._run_json_buf: dict = {}    # str(run_id) -> str (suppressed text, in case it's not JSON)
 
     def _check_cancel(self) -> None:
         if self._cancel and self._cancel.is_set():
@@ -317,6 +345,8 @@ class _WSCallback(BaseCallbackHandler):
 
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         self._timer.start()
+        if self._timer.had_tool:
+            self._put({"type": "synthesis_start"})
 
     def on_llm_new_token(self, token: str, **kwargs) -> None:
         self._check_cancel()
@@ -325,15 +355,47 @@ class _WSCallback(BaseCallbackHandler):
         run_key = str(kwargs.get("run_id", "default"))
         if run_key not in self._run_buffers:
             self._run_buffers[run_key] = 0
+            self._run_json_depth[run_key] = 0
+            self._run_json_buf[run_key] = ""
+            # Detect leading JSON echo (e.g. create_plan result re-echoed by Qwen3)
+            self._run_json_done[run_key] = token.lstrip()[:1] != "{"
             self._timer.cancel()  # LLM is generating — stop thinking timer
-        # Stream immediately so user sees output as it's generated
-        self._put({"type": "token", "text": token})
+
         self._run_buffers[run_key] += 1
+
+        # JSON filter: suppress leading JSON block so prose reasoning shows but JSON doesn't
+        if not self._run_json_done[run_key]:
+            depth = self._run_json_depth[run_key]
+            for ch in token:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+            self._run_json_depth[run_key] = depth
+            if depth <= 0:
+                self._run_json_done[run_key] = True  # JSON block closed; future tokens shown
+                self._run_json_buf.pop(run_key, None)
+                return
+            buf = self._run_json_buf[run_key] + token
+            if len(buf) <= _JSON_GUARD_MAX_CHARS:
+                self._run_json_buf[run_key] = buf
+                return  # suppress token while inside JSON
+            # Brace never balanced within the guard window — not JSON after all,
+            # flush what was held back and stop suppressing.
+            self._run_json_done[run_key] = True
+            self._run_json_buf.pop(run_key, None)
+            self._put({"type": "token", "text": buf})
+            return
+
+        self._put({"type": "token", "text": token})
 
     def on_llm_end(self, response, *, run_id, **kwargs):
         self._timer.cancel()
         run_key = str(run_id) if run_id else "default"
         token_count = self._run_buffers.pop(run_key, 0)
+        self._run_json_depth.pop(run_key, None)
+        self._run_json_done.pop(run_key, None)
+        self._run_json_buf.pop(run_key, None)
 
         if _response_has_tool_calls(response):
             # Pre-tool deliberation — tokens already streamed but should not be shown
@@ -347,6 +409,9 @@ class _WSCallback(BaseCallbackHandler):
         self._timer.cancel()
         run_key = str(run_id) if run_id else "default"
         token_count = self._run_buffers.pop(run_key, 0)
+        self._run_json_depth.pop(run_key, None)
+        self._run_json_done.pop(run_key, None)
+        self._run_json_buf.pop(run_key, None)
         if token_count > 0:
             self._put({"type": "discard_stream"})
 
@@ -441,6 +506,30 @@ def _is_image(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in _IMAGE_EXTS
 
 
+_IMAGE_MIME = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    ".ico": "image/x-icon", ".svg": "image/svg+xml", ".tiff": "image/tiff",
+}
+
+_IMAGE_MAX_BYTES = 8 * 1024 * 1024  # 8MB cap for inline base64 preview
+
+
+def _read_image_data_url(path: str) -> str | None:
+    """Read an image file and return it as a base64 data: URL, or None on failure/oversize."""
+    try:
+        if os.path.getsize(path) > _IMAGE_MAX_BYTES:
+            return None
+        ext = os.path.splitext(path)[1].lower()
+        mime = _IMAGE_MIME.get(ext, "application/octet-stream")
+        with open(path, "rb") as f:
+            data = f.read()
+        import base64
+        return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+    except Exception:
+        return None
+
+
 def _safe_real(path: str) -> str | None:
     """Return realpath only if inside WORKSPACE, else None."""
     ws = os.path.realpath(WORKSPACE)
@@ -490,6 +579,19 @@ api = FastAPI(title="ENDEAVOR Agent Server")
 # No CORS middleware: browser same-origin policy then blocks cross-origin
 # reads from drive-by sites. A custom UI uses token-gated WS/REST (see below),
 # so neither needs CORS headers.
+
+
+@api.get("/ui")
+def get_ui():
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat.html")
+    return FileResponse(html_path, media_type="text/html")
+
+
+@api.get("/ui-token")
+def get_ui_token(request: Request):
+    if not _origin_ok(request.headers.get("origin")):
+        raise HTTPException(status_code=403, detail="forbidden origin")
+    return {"token": _AUTH_TOKEN, "auth_disabled": _AUTH_DISABLED}
 
 
 @api.get("/status", dependencies=[Depends(_require_token)])
@@ -551,6 +653,9 @@ async def ws_endpoint(websocket: WebSocket):
     # Token rides in Sec-WebSocket-Protocol (browser WS can't set arbitrary
     # headers, but it CAN offer a subprotocol) — keeps it out of access logs
     # (MN-6). ?token= stays as fallback for older clients/scripts.
+    if not _origin_ok(websocket.headers.get("origin")):
+        await websocket.close(code=1008)  # policy violation
+        return
     _offered = (websocket.headers.get("sec-websocket-protocol") or "").split(",")[0].strip() or None
     if not _AUTH_DISABLED:
         tok = _offered or websocket.query_params.get("token", "")
@@ -781,15 +886,87 @@ async def ws_endpoint(websocket: WebSocket):
                         "path": real, "root": ws_root,
                     })
                 elif _is_image(real):
-                    await websocket.send_json({"type": "file_image", "path": real})
+                    data_url = await asyncio.get_running_loop().run_in_executor(
+                        None, _read_image_data_url, real
+                    )
+                    if data_url is None:
+                        await websocket.send_json({"type": "error", "msg": "เปิดรูปไม่ได้ (ไฟล์ใหญ่เกินไปหรืออ่านไม่ได้)"})
+                    else:
+                        await websocket.send_json({"type": "file_image", "path": real, "data_url": data_url})
                 else:
                     await websocket.send_json({
                         "type": "file_content", "path": real,
                         "content": _read_file(real),
                     })
 
+            elif msg_type == "delete_file":
+                path = data.get("path", "")
+                real = _safe_real(path)
+                if real is None or os.path.isdir(real):
+                    await websocket.send_json({"type": "error", "msg": "ลบไม่ได้: path ไม่ถูกต้อง"})
+                else:
+                    try:
+                        os.remove(real)
+                        ws_root = os.path.realpath(WORKSPACE)
+                        parent = os.path.dirname(real)
+                        await websocket.send_json({
+                            "type": "files", "files": _list_dir(parent),
+                            "path": parent, "root": ws_root,
+                            "deleted": real,
+                        })
+                    except Exception as e:
+                        await websocket.send_json({"type": "error", "msg": f"ลบไม่ได้: {e}"})
+
+            elif msg_type == "open_with_os":
+                import subprocess
+                path = data.get("path", "")
+                real = _safe_real(path)
+                if real is None:
+                    await websocket.send_json({"type": "error", "msg": "Access denied"})
+                else:
+                    try:
+                        subprocess.Popen(["open", real])
+                        await websocket.send_json({"type": "open_with_os_ok", "path": real})
+                    except Exception as e:
+                        await websocket.send_json({"type": "error", "msg": f"เปิดไม่ได้: {e}"})
+
             elif msg_type == "get_status":
                 await websocket.send_json({"type": "status", **get_status()})
+
+            elif msg_type == "get_history":
+                # Open a fresh read-only connection to avoid thread-safety issues
+                # with the shared _state._saver connection. Must close it in finally —
+                # in WAL mode an unclosed reader connection blocks WAL checkpointing,
+                # so the .wal file grows for every history-panel open over a session.
+                fresh_conn = None
+                try:
+                    fresh_conn, fresh_saver = _open_memory_store(_MEMORY_DB, verbose=False)
+                    msgs, _, total = _load_history_pairs(fresh_saver, max_chars=999_999)
+                    pairs, i = [], 0
+                    while i < len(msgs):
+                        m = msgs[i]
+                        if hasattr(m, "type") and m.type == "human":
+                            q_text = str(m.content or "").strip()
+                            a_text = ""
+                            ts = None
+                            if i + 1 < len(msgs) and hasattr(msgs[i + 1], "type") and msgs[i + 1].type == "ai":
+                                a_msg = msgs[i + 1]
+                                a_text = str(a_msg.content or "").strip()
+                                ts = (a_msg.additional_kwargs or {}).get("saved_at")
+                                i += 1
+                            if q_text:
+                                pairs.append({"q": q_text, "a": a_text, "ts": ts})
+                        i += 1
+                    await websocket.send_json({"type": "history_list", "pairs": pairs, "total": total})
+                except Exception as e:
+                    log.warning(f"get_history error: {e}")
+                    await websocket.send_json({"type": "history_list", "pairs": [], "total": 0})
+                finally:
+                    if fresh_conn is not None:
+                        try:
+                            fresh_conn.close()
+                        except Exception:
+                            pass
 
     except WebSocketDisconnect:
         log.info("WebSocket disconnected")

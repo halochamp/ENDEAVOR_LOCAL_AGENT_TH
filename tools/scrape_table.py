@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """scrape_table.py — ดึงตารางจากเว็บ JS-rendered ด้วย Playwright + pandas.read_html
 
 ต่างจาก browser_use: code-controlled ไม่ใช่ AI agent — output deterministic

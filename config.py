@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """config.py — ENDEAVOR_AGENT_V2 configuration
 
 default: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit @ :8080 (MoE, bench 6/6, 7.7× faster than 27B)
@@ -35,14 +39,13 @@ API_KEY      = os.getenv("MLX_API_KEY",  "x")  # mlx_lm.server ไม่เช�
 
 # ── Generation ────────────────────────────────────────────────────────────
 TEMPERATURE     = float(os.getenv("V2_TEMPERATURE",     "0.1"))
-MAX_TOKENS      = int(os.getenv("V2_MAX_TOKENS",        "8192"))
-# จำกัด thinking budget — ป้องกัน model คิดนานเกินไปบน simple queries แล้วคืน empty
-# 2048 ≈ ~30s บน 35B (เทียบ unlimited = 3+ นาทีแล้ว empty)
+MAX_TOKENS      = int(os.getenv("V2_MAX_TOKENS",        "4096"))  # 8192→4096: caps thinking+response at ~230s (was 449s); thinking tokens count toward this limit
+# NOTE: thinking_budget is a no-op — mlx_lm 0.31.3 does not implement it.
 THINKING_BUDGET = int(os.getenv("V2_THINKING_BUDGET",   "2048"))
 # Penalises repeated tokens over a 20-token window — breaks thinking loops at root cause.
-# 1.05 is conservative: enough to disrupt repetitive thinking without corrupting tool JSON.
-# 0.0 = disabled (mlx_lm default). Raise to 1.1 if loops persist; lower to 1.02 if JSON breaks.
-REPETITION_PENALTY = float(os.getenv("V2_REPETITION_PENALTY", "1.05"))
+# 1.1: raised from 1.05 — disrupts repetitive thinking loops faster without corrupting tool JSON.
+# 0.0 = disabled (mlx_lm default). Lower to 1.02 if JSON breaks.
+REPETITION_PENALTY = float(os.getenv("V2_REPETITION_PENALTY", "1.1"))
 
 # Single-node design: 1 loop ครอบ create_plan + N steps × ~3 tool calls + synthesis
 # 4-step research ≈ 1 + 12 + 1 ≈ 14, ใส่ headroom เป็น 50 (advisor Q5)
@@ -76,6 +79,7 @@ WEB_SEARCH_FETCH_TIMEOUT = int(os.getenv("V2_WEB_SEARCH_FETCH_TIMEOUT", "6"))
 BATCH_BROWSE_MAX_WORKERS = int(os.getenv("V2_BATCH_BROWSE_MAX_WORKERS", "2"))
 BATCH_BROWSE_MAX_URLS    = int(os.getenv("V2_BATCH_BROWSE_MAX_URLS",    "8"))
 SUMMARY_MAX_TOKENS       = int(os.getenv("V2_SUMMARY_MAX_TOKENS",       "1024"))
+SUMMARY_BATCH_MAX_TOKENS = int(os.getenv("V2_SUMMARY_BATCH_MAX_TOKENS", "3072"))
 FETCH_SITEMAP_MAX_URLS   = int(os.getenv("V2_FETCH_SITEMAP_MAX_URLS",   "200"))
 SCRAPE_TABLE_MAX_CHARS   = int(os.getenv("V2_SCRAPE_TABLE_MAX_CHARS",   "10000"))
 

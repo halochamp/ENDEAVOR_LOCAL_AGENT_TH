@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """browse_url.py — fetch any URL via Jina Reader (r.jina.ai) → clean markdown
 
 ไม่ต้องเปิด browser — Jina server render JS ให้แล้วคืน clean text

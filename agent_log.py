@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """agent_log.py — structured activity log for agent turns
 
 บันทึกทุก event ของ agent (tool calls, results, final response) ลงไฟล์ JSONL

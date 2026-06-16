@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """ui.py — Terminal UI for ENDEAVOR_AGENT_V2
 
 ใช้ rich สำหรับ markdown rendering + ANSI colors + Spinner
@@ -224,18 +228,22 @@ def print_header(model: str, tool_count: int, online: bool = True) -> None:
     inner = WIDTH - 2
     bar = f" {C_DIM}{'═' * WIDTH}{R}"
     # padding per line = inner - visible chars (excluding ANSI)
-    pad_title = inner - 22                        # "  ENDEAVOR AGENT CLI TH" = 22
-    pad_model = max(0, inner - 9 - len(short))    # "  Model  " = 9
-    pad_power = max(0, inner - 44)                # "  Powered by HaloChamp  champoomwat@gmail.com" = 44
+    pad_title   = inner - 28                        # "  ENDEAVOR_LOCAL_AGENT_TH_CLI" = 28
+    pad_model   = max(0, inner - 9 - len(short))    # "  Model  " = 9
+    pad_power   = max(0, inner - 44)                # "  Powered by HaloChamp  champoomwat@gmail.com" = 44
+    pad_license = max(0, inner - 47)                # "  License  MIT + Commons Clause  ·  poomwat.com" = 47
     print()
     print(bar)
-    print(f" {C_DIM}║{R}  {BOLD}\033[38;5;220mENDEAVOR AGENT CLI TH{R}"
+    print(f" {C_DIM}║{R}  {BOLD}\033[38;5;220mENDEAVOR_LOCAL_AGENT_TH_CLI{R}"
           f"{C_DIM}{'':>{pad_title}}║{R}")
     print(f" {C_DIM}║{R}  {C_META}Model  {R}{BOLD}{C_AGENT}{short}{R}"
           f"{C_DIM}{'':>{pad_model}}║{R}")
     print(f" {C_DIM}║{R}  {C_META}Powered by {R}{C_HEADER}HaloChamp{R}"
           f"  {C_META}champoomwat@gmail.com{R}"
           f"{C_DIM}{'':>{pad_power}}║{R}")
+    print(f" {C_DIM}║{R}  {C_META}License  {R}{C_HEADER}MIT + Commons Clause{R}"
+          f"  {C_META}·  {R}{C_HEADER}poomwat.com{R}"
+          f"{C_DIM}{'':>{pad_license}}║{R}")
     print(bar)
     print(f"   {C_META}{tool_count} tools{R}  {net}")
     print()

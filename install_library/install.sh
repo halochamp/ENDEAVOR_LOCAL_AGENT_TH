@@ -124,11 +124,10 @@ cat <<EOF
        cd "${PROJ_DIR}"
        python endeavor_agent.py
 
-     Streamlit UI (เปิด browser):
+     Web UI (เปิด browser ที่ http://localhost:8765/ui):
        conda activate ${ENV_NAME}
        cd "${PROJ_DIR}"
-       python agent_server.py &
-       streamlit run streamlit_app.py
+       python agent_server.py
 
   หมายเหตุ: รุ่น 35B ต้องการ RAM >= 48GB
   รันโมเดลเล็กกว่าได้ — ดู .env และแก้ V2_MODEL + MLX_BASE_URL

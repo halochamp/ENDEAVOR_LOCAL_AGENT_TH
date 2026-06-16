@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """browser_use_tool.py — human-like web browsing via browser-use + Playwright
 
 ใช้สำหรับ: เจาะลึกเว็บ, login, กรอก form, navigate หลายชั้น, JS-heavy ที่ Jina ทำไม่ได้

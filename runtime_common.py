@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """runtime_common.py — shared infra for both ENDEAVOR_AGENT_V2 entry points
 
 CLI (endeavor_agent.py) and AGENT_UI backend (agent_server.py) bootstrap the same memory
@@ -107,8 +111,8 @@ class ThinkingTimer:
 
 def mlx_up() -> bool:
     try:
-        urllib.request.urlopen(MLX_BASE_URL.rstrip("/") + "/models", timeout=3)
-        return True
+        with urllib.request.urlopen(MLX_BASE_URL.rstrip("/") + "/models", timeout=3):
+            return True
     except Exception:
         return False
 
@@ -117,9 +121,8 @@ def internet_up(retries: int = 3, timeout: int = 1) -> bool:
     import socket
     for _ in range(retries):
         try:
-            socket.setdefaulttimeout(timeout)
-            socket.create_connection(("1.1.1.1", 53))
-            return True
+            with socket.create_connection(("1.1.1.1", 53), timeout=timeout):
+                return True
         except Exception:
             pass
     return False
@@ -364,6 +367,33 @@ def scan_skill_roles(skills_dir: str = _SKILLS_DIR) -> list[tuple[str, str]]:
 
 # ── Turn execution ─────────────────────────────────────────────────────────────
 
+def _clean_final(text: str) -> str:
+    """Strip <think> blocks and leading tool-echo JSON from synthesis output.
+
+    Qwen3 with enable_thinking sometimes leaks plan JSON or <think> content
+    into the synthesis AIMessage. Strip these so history and the response
+    event always contain only the user-facing answer.
+    """
+    # 1. Strip <think>...</think> reasoning blocks
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = text.strip()
+    # 2. Strip leading balanced JSON object (create_plan arg echo etc.)
+    #    Only strip when there is real content after the JSON blob.
+    if text.startswith("{"):
+        depth = 0
+        for i, ch in enumerate(text):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    remainder = text[i + 1 :].strip()
+                    if remainder:
+                        text = remainder
+                    break
+    return text.strip()
+
+
 def run_turn_core(
     app,
     query: str,
@@ -417,7 +447,7 @@ def run_turn_core(
                 for m in msgs:
                     if isinstance(m, AIMessage):
                         if not (getattr(m, "tool_calls", None) or []) and (m.content or "").strip():
-                            final = m.content
+                            final = _clean_final(m.content)
                             if on_final:
                                 on_final(final)
     finally:

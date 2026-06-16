@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """_ocr.py — Apple Vision OCR wrapper (accepts file path directly, no cv2 needed)
 
 Adapted from ENDEAVOR_VISSION/perception/ocr_reader.py. Key difference: accepts a

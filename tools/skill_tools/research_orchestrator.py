@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """research_orchestrator.py — Python-driven research state machine
 
 แก้ปัญหา ReAct loop หลุดโฟกัส: Python loop จัดการ batch transitions เอง
@@ -16,16 +20,18 @@ import time
 import tempfile
 import datetime
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from langchain_core.tools import tool
 from tools.browse_url import _fetch_jina
-from tools._summarize import summarize
+from tools._summarize import summarize, summarize_batch
 from tools._progress import phase as _phase, progress as _progress
 from tools import web_cache
 from tools.web_cache import web_count_inc as _wc_inc
+from config import SUMMARY_SKIP_LLM_BELOW, SUMMARY_MAX_CHARS, SUMMARY_BATCH_MAX_TOKENS
 
 log = logging.getLogger(__name__)
 
@@ -75,30 +81,96 @@ def _collect_urls(topic: str, n: int, keywords: list[str]) -> list[str]:
 
 # ── Source fetch + extract ─────────────────────────────────────────────────────
 
-def _fetch_source(url: str, topic: str) -> dict:
-    """Fetch URL and extract title + bullets"""
-    try:
-        # Check cache first — only count real network fetches
-        uq = topic
-        summary = web_cache.get_summary(url, uq)
-        if summary is None:
-            raw = web_cache.get(url)
-            if raw is None:
-                _wc_inc()
-                raw = _fetch_jina(url)
-                if raw.startswith("[error]"):
-                    return {"title": "[ดึงไม่ได้]", "date": "-", "bullets": [], "error": raw}
-                web_cache.put(url, raw)
-            summary = summarize(raw, url=url, user_query=uq)
-            web_cache.put_summary(url, uq, summary)
+_SKIP_DOMAINS = (
+    "youtube.com", "youtu.be",   # video — no readable text
+    "twitter.com", "x.com",      # JS-gated
+    "instagram.com", "tiktok.com",
+    "facebook.com",
+)
 
-        # Parse title from summary (first non-empty line or fallback)
-        lines = [l.strip() for l in summary.split("\n") if l.strip()]
-        title = lines[0][:80] if lines else url.split("/")[-1][:60]
-        bullets = lines[1:4] if len(lines) > 1 else [summary[:200]]
-        return {"title": title, "date": str(datetime.date.today().year), "bullets": bullets, "summary": summary}
-    except Exception as e:
-        return {"title": "[ดึงไม่ได้]", "date": "-", "bullets": [], "error": str(e)}
+def _fetch_raw(url: str) -> tuple[str, str]:
+    """Fetch raw content for one URL (cache → jina). Thread-safe — no LLM."""
+    if any(d in url for d in _SKIP_DOMAINS):
+        return url, "[error] skipped — video/social domain"
+    raw = web_cache.get(url)
+    if raw is None:
+        raw = _fetch_jina(url)
+        if not raw.startswith("[error]"):
+            web_cache.put(url, raw)
+    return url, raw
+
+
+def _build_src(url: str, summary: str) -> dict:
+    """Build src dict from a ready summary string."""
+    lines = [l.strip() for l in summary.split("\n") if l.strip()]
+    title = lines[0][:80] if lines else url.split("/")[-1][:60]
+    bullets = lines[1:4] if len(lines) > 1 else [summary[:200]]
+    return {"title": title, "date": str(datetime.date.today().year), "bullets": bullets, "summary": summary}
+
+
+def _fetch_and_summarize_batch(batch: list[str], topic: str) -> list[dict]:
+    """Parallel fetch + batch summarize for up to 5 URLs.
+
+    Phase 1 — parallel fetch raw (ThreadPoolExecutor 5 workers)
+    Phase 2 — summarize_batch() for long content; raw directly for short
+    Phase 3 — build src dicts in original order
+    """
+    # ── Phase 1: check summary cache, parallel-fetch uncached ─────────────────
+    cached: dict[str, str] = {}
+    need_raw: list[str] = []
+    for url in batch:
+        _wc_inc()
+        s = web_cache.get_summary(url, topic)
+        if s is not None:
+            cached[url] = s
+        else:
+            need_raw.append(url)
+
+    raws: dict[str, str] = {}
+    if need_raw:
+        _phase(f"⚡ Parallel fetch {len(need_raw)} URLs…")
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            for url, raw in ex.map(_fetch_raw, need_raw):
+                raws[url] = raw
+
+    # ── Phase 2: batch summarize long content ─────────────────────────────────
+    need_llm = [
+        (url, raws[url]) for url in need_raw
+        if not raws.get(url, "").startswith("[error]")
+        and len(raws.get(url, "")) > SUMMARY_SKIP_LLM_BELOW
+    ]
+    batch_summaries: dict[str, str] = {}
+    if need_llm:
+        _phase(f"📝 Batch summarizing {len(need_llm)} sources…")
+        result = summarize_batch(need_llm, user_query=topic)
+        if result:
+            batch_summaries = result
+            for url, s in batch_summaries.items():
+                web_cache.put_summary(url, topic, s)
+        else:
+            # summarize_batch failed → fall back to per-URL (sequential)
+            _progress("batch summarize failed — falling back to per-URL")
+            for url, raw in need_llm:
+                s = summarize(raw, url=url, user_query=topic)
+                batch_summaries[url] = s
+                web_cache.put_summary(url, topic, s)
+
+    # ── Phase 3: build src dicts in original batch order ──────────────────────
+    srcs: list[dict] = []
+    for url in batch:
+        if url in cached:
+            srcs.append(_build_src(url, cached[url]))
+        elif raws.get(url, "").startswith("[error]"):
+            srcs.append({"title": "[ดึงไม่ได้]", "date": "-", "bullets": [], "error": raws[url]})
+        elif url in batch_summaries:
+            srcs.append(_build_src(url, batch_summaries[url]))
+        else:
+            # Short content — use raw directly (no LLM needed)
+            raw = raws.get(url, "")
+            summary = raw[:SUMMARY_MAX_CHARS] if raw else "(ไม่พบเนื้อหา)"
+            web_cache.put_summary(url, topic, summary)
+            srcs.append(_build_src(url, summary))
+    return srcs
 
 
 # ── File helpers ───────────────────────────────────────────────────────────────
@@ -129,18 +201,40 @@ def _append_mini_summary(path: str, batch_num: int, start: int, end: int, summar
     return mini
 
 
-def _append_final_summary(path: str, topic: str, all_mini: list[dict]) -> None:
-    lines = [f"[Batch {s['batch']} — Sources {s['sources']}] {s['summary']}" for s in all_mini]
-    combined = "\n".join(lines)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(f"""===================================================
-## 🔍 FINAL SUMMARY — {topic}
-{combined}
+def _append_final_summary(path: str, topic: str, all_mini: list[dict], all_summaries: list[str]) -> None:
+    synthesis = ""
+    try:
+        from llm import build_llm
+        llm = build_llm(
+            temperature=0.1,
+            max_tokens=SUMMARY_BATCH_MAX_TOKENS,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        llm_input = "\n\n".join(all_summaries)[:100_000]
+        prompt = (
+            f"คุณเป็น research assistant สังเคราะห์งานวิจัยเกี่ยวกับ: {topic}\n\n"
+            f"ด้านล่างคือสรุปจาก {len(all_summaries)} แหล่ง "
+            "ขอให้สังเคราะห์เป็นรายงานสรุปในภาษาไทย\n"
+            "- จัดกลุ่มประเด็นสำคัญ รวมตัวเลข วันที่ และชื่อเฉพาะ\n"
+            "- ห้ามแต่งข้อมูลที่ไม่มีในแหล่ง\n"
+            "- ตอบเฉพาะสรุป ไม่ต้องมีคำนำหรือปิดท้าย\n\n"
+            + llm_input
+        )
+        resp = llm.invoke(prompt, config={"callbacks": []})
+        synthesis = (resp.content or "").strip()
+    except Exception as e:
+        log.warning(f"final summary LLM failed: {e} — using batch list fallback")
 
-### หมายเหตุ
-สังเคราะห์จาก {len(all_mini)} batch mini-summaries — ดูรายละเอียดแต่ละแหล่งด้านบน
-===================================================
-""")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("===================================================\n")
+        f.write(f"## 🔍 FINAL SUMMARY — {topic}\n\n")
+        if synthesis:
+            f.write(synthesis + "\n")
+        else:
+            lines = [f"[Batch {s['batch']} — Sources {s['sources']}] {s['summary']}" for s in all_mini]
+            f.write("\n".join(lines) + "\n")
+        f.write(f"\n### หมายเหตุ\nสังเคราะห์จาก {len(all_summaries)} แหล่ง — ดูรายละเอียดด้านบน\n")
+        f.write("===================================================\n")
 
 
 # ── Checkpoint helpers ─────────────────────────────────────────────────────────
@@ -188,6 +282,11 @@ def research_orchestrator(topic: str, n: int = 30, resume: bool = False, keyword
     keywords: search angles คั่นด้วย comma เช่น "latest 2026, expert opinion, market trends, challenges"
               ถ้าไม่ระบุจะใช้ fallback keywords ทั่วไป
     คืน: สรุปผล + path ไฟล์ หรือ "[error] reason"
+
+    AFTER THIS TOOL RETURNS: synthesize the "=== RESEARCH SUMMARIES ===" section into a
+    structured Thai report — key findings grouped by theme, with concrete numbers and dates.
+    State how many URLs the synthesis is derived from. Do NOT dump the raw summaries —
+    write a coherent structured report for the user.
     """
     n = max(1, min(100, int(n)))
     ws = _workspace()
@@ -233,6 +332,7 @@ def research_orchestrator(topic: str, n: int = 30, resume: bool = False, keyword
             _phase(f"📡 {topic} | {len(all_urls)} แหล่ง | {total_batches} batch — เริ่ม…")
 
         # ── BATCH LOOP — Python loop, ไม่ต้องพึ่ง LLM ──────────────────────────
+        all_summaries: list[str] = []   # accumulate full per-URL summaries for return
         while len(cp["completed"]) < len(cp["all_urls"]):
             remaining = [u for u in cp["all_urls"] if u not in cp["completed"]]
             batch = remaining[:5]
@@ -241,17 +341,15 @@ def research_orchestrator(topic: str, n: int = 30, resume: bool = False, keyword
             batch_label = cp["batch_num"] + 1
             _phase(f"📦 Batch {batch_label}/{cp['total_batches']} (แหล่ง {batch_start}–{batch_end})")
 
-            titles = []
             base_n = len(cp["completed"])
-            for i, url in enumerate(batch):
+            srcs = _fetch_and_summarize_batch(batch, topic)
+            titles = []
+            for i, (url, src) in enumerate(zip(batch, srcs)):
                 global_n = base_n + i + 1
-                src = _fetch_source(url, topic)
                 _append_source(path, global_n, src)
                 title = src.get("title", url[:60])
                 titles.append(title)
-                # Mark this source done + save before the next progress()/cancel
-                # checkpoint — if cancelled mid-batch, resume won't re-fetch and
-                # re-append sources already written to the file.
+                all_summaries.append(f"[{global_n}] {title}\n{src.get('summary', title)}")
                 cp["completed"].append(url)
                 _save_cp(cp, cp_path)
                 _progress(f"📰 {global_n}/{len(cp['all_urls'])}: {title[:50]}")
@@ -267,7 +365,7 @@ def research_orchestrator(topic: str, n: int = 30, resume: bool = False, keyword
 
         # ── FINAL SUMMARY ──────────────────────────────────────────────────────
         _phase("✍️ เขียน Final Summary…")
-        _append_final_summary(path, topic, cp["batch_summaries"])
+        _append_final_summary(path, topic, cp["batch_summaries"], all_summaries)
 
         # Cleanup checkpoint
         try:
@@ -277,10 +375,45 @@ def research_orchestrator(topic: str, n: int = 30, resume: bool = False, keyword
 
         done = len(cp["completed"])
         batches = cp["batch_num"]
+
+        summary_block = "\n\n".join(all_summaries)
+
+        if len(summary_block) > 20_000:
+            _phase(f"✍️ Compressing {len(summary_block):,} chars → ≤20,000…")
+            try:
+                from llm import build_llm
+                llm = build_llm(
+                    temperature=0.1,
+                    max_tokens=SUMMARY_BATCH_MAX_TOKENS,
+                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                )
+                llm_input = summary_block[:100_000]
+                compress_prompt = (
+                    f"คุณเป็น research assistant สังเคราะห์งานวิจัยเกี่ยวกับ: {topic}\n\n"
+                    f"ด้านล่างคือสรุปจาก {len(all_summaries)} แหล่ง "
+                    "ขอให้สังเคราะห์เป็นสรุปรวมในภาษาไทย ความยาวไม่เกิน 20,000 ตัวอักษร\n"
+                    "- รวมข้อมูลสำคัญ ตัวเลข วันที่ และชื่อเฉพาะไว้ครบ\n"
+                    "- จัดกลุ่มประเด็นที่เกี่ยวข้องเข้าด้วยกัน\n"
+                    "- ห้ามแต่งข้อมูลที่ไม่มีในแหล่ง\n"
+                    "- ตอบเฉพาะสรุป ไม่ต้องมีคำนำหรือปิดท้าย\n\n"
+                    + llm_input
+                )
+                resp = llm.invoke(compress_prompt, config={"callbacks": []})
+                compressed = (resp.content or "").strip()
+                if compressed:
+                    summary_block = compressed
+                    _progress(f"compressed to {len(summary_block):,} chars")
+                else:
+                    summary_block = summary_block[:20_000]
+            except Exception as e:
+                log.warning(f"compression LLM failed: {e} — truncating")
+                summary_block = summary_block[:20_000]
+
         return (
             f"✅ เสร็จสิ้น {batches} batch ({done} แหล่ง)\n"
             f"📄 ไฟล์: {path}\n\n"
-            + "\n".join(f"- {s['summary'][:120]}" for s in cp["batch_summaries"])
+            "=== RESEARCH SUMMARIES ===\n"
+            + summary_block
         )
 
     except Exception as e:

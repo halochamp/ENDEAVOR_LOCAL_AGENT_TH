@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 from __future__ import annotations
 import os
 import re
@@ -22,7 +26,7 @@ def read_file(path: str) -> str:
     Files larger than READ_FILE_MAX_BYTES (default 5 MB) are rejected — use grep/bash to target sections.
     """
     if not path:
-        return "[error] path is required"
+        return _missing_path_hint()
     try:
         from ._safety import resolve_read_path
         p = Path(resolve_read_path(path))
@@ -48,6 +52,33 @@ def read_file(path: str) -> str:
         return content[:_MAX_CHARS] + f"\n...(truncated — {len(content)} chars total, use grep/bash for specific sections)"
     except Exception as e:
         return f"[error] read_file failed: {e}"
+
+
+def _missing_path_hint() -> str:
+    """No path given — list candidate documents in the workspace so the agent
+    can ask the user which one, instead of guessing or running find/grep."""
+    try:
+        from config import WORKSPACE
+        candidates = []
+        for dirpath, dirnames, filenames in os.walk(WORKSPACE):
+            dirnames[:] = [d for d in dirnames if not d.startswith("._exec_")]
+            for name in filenames:
+                if Path(name).suffix.lower() in _DOC_EXT and not name.startswith("._exec_"):
+                    rel = os.path.relpath(os.path.join(dirpath, name), WORKSPACE)
+                    candidates.append(rel)
+        candidates.sort()
+    except Exception:
+        candidates = []
+
+    if not candidates:
+        return ("[error] path is required — no PDF/Word/Excel files found in the workspace. "
+                "Ask the user for the file name or path.")
+    if len(candidates) == 1:
+        return (f"[error] path is required. Found one document in the workspace: {candidates[0]}. "
+                f"Ask the user to confirm before reading it.")
+    listing = "\n".join(f"  - {c}" for c in candidates[:20])
+    return (f"[error] path is required. Found {len(candidates)} documents in the workspace:\n{listing}\n"
+            f"Ask the user which file they mean — do not guess.")
 
 
 def _read_document(p: Path, path: str) -> str:

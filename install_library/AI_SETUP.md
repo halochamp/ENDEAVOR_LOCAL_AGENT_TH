@@ -90,25 +90,25 @@ On first run it should print the banner with `N tools  ● online`. If it shows 
 model as offline, the server in step 3 isn't reachable — check the port and that step 3
 is still running.
 
-Streamlit UI (if the user wants a browser-based chat interface instead of the CLI):
+Web UI (if the user wants a browser-based chat interface instead of the CLI):
 
 ```bash
 conda activate mlx
 cd <project_root>
-python agent_server.py &      # backend WebSocket/REST server
-streamlit run streamlit_app.py
+python agent_server.py
 ```
 
-Both processes must be running — `agent_server.py` is the backend, `streamlit_app.py`
-is the frontend. Same auth contract as step 6 below (`.agent_token`), but
-`streamlit_app.py` reads the token itself, so the user doesn't need to do anything extra.
+Open `http://localhost:8765/ui` in a browser — `agent_server.py` serves both the
+WebSocket/REST backend and the `chat.html` frontend (VS Code-style UI) from the same
+process. Same auth contract as step 6 below (`.agent_token`), but the `/ui` page
+reads the token itself via `/ui-token`, so the user doesn't need to do anything extra.
 
 ## 5. Common issues
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `[error] ไม่พบ conda` | Miniforge not installed | install Miniforge, restart shell |
-| install.sh exits at `[1/5]` | not Apple Silicon / not macOS | this project requires M1+ Mac |
+| install.sh exits at `[1/6]` | not Apple Silicon / not macOS | this project requires M1+ Mac |
 | agent says model offline | `mlx_lm.server` not running or wrong port | check step 3, confirm port 8080 |
 | out of memory / swap thrashing | RAM < 48GB for 35B model | use a smaller model — see README "ใช้โมเดลอื่น" section, set `V2_MODEL` + `MLX_BASE_URL` |
 | `playwright install chromium` fails | network/proxy issue | retry; required only for `browse_url`/`scrape_table`/`browser_use` tools |
@@ -118,7 +118,7 @@ is the frontend. Same auth contract as step 6 below (`.agent_token`), but
 ## 6. Optional: own web UI / Telegram bot backend
 
 Only if the user wants to build their **own** web UI or bot integration (separate from
-the bundled Streamlit UI in step 4):
+the bundled `/ui` web UI in step 4):
 
 ```bash
 python agent_server.py
@@ -126,3 +126,78 @@ python agent_server.py
 
 First run auto-generates `.agent_token` (chmod 0600). Every request needs this token —
 see README.md "ต่อ Web UI / Telegram ของตัวเอง" section for the auth contract.
+
+## 7. Helping a new user with day-to-day usage
+
+Once setup is done, the user may ask the AI for help *using* the agent (not setting it
+up). Key things to know:
+
+**CLI commands** (typed inside `python endeavor_agent.py`):
+
+| Command | What it does |
+|---|---|
+| `menu` | open the mode menu |
+| `/research <topic>` | toggle into research skill mode (multi-step web research) |
+| `/pdf_to_text <path>` | toggle into PDF → text skill mode |
+| `/history` | reload previous conversation history (from `logs/history.db`) |
+| `/compact` | compress/trim conversation context |
+| `/clear` | start a fresh session |
+| `/exit` | leave the current skill mode |
+| `exit` / `ออก` | quit the program |
+
+**Workspace** — the agent reads files from anywhere (except blocked system/credential
+paths) but only **writes/creates files inside `workspace/`**. If the user asks the
+agent to "save this file" or "create a script", point them to `workspace/` — that's
+where outputs land. See README.md "Security" section for the full read/write model.
+
+**Switching models** — if the user's Mac doesn't have enough RAM for the default
+35B model, see README.md "ใช้โมเดลอื่น". `config.py` only honors `V2_MODEL` if
+`MLX_BASE_URL` is ALSO changed from the default `http://localhost:8080/v1` — this is
+intentional (prevents `mlx_lm.server` loading the wrong model silently). So set
+**both** `V2_MODEL` and `MLX_BASE_URL` (e.g. a different port) in `.env`, then start
+`mlx_lm.server --model <new model> --port <new port>`. Minimum recommended:
+Qwen3-14B. **Never silently swap models for the user without telling them** — model
+choice affects tool-calling reliability.
+
+**Restarting / stopping servers** — if the agent seems stuck, offline, or the user
+wants a clean restart:
+
+```bash
+lsof -ti:8080 | xargs kill -9   # MLX server
+lsof -ti:8765 | xargs kill -9   # agent_server.py (if running Web UI)
+```
+
+Then redo step 3 (and step 4 if using the Web UI).
+
+**Where things are stored**:
+- `logs/history.db` — conversation history (SQLite, via LangGraph checkpointer)
+- `logs/memory.md` — facts the agent was told to `remember`
+- `workspace/` — all files the agent creates/edits
+- `.env` — user config (model, ports, limits)
+
+**If the user reports a tool error** — most tool errors come back as a string starting
+with `[error]` or `[BLOCKED]`. `[BLOCKED]` means the path-safety guard stopped a
+read/write outside the allowed area (this is expected behavior, not a bug — explain
+the Security model from README.md rather than trying to bypass it).
+
+## 8. Quick reference / help cheat sheet
+
+If the user just opens this file and asks "help" / "how do I use this" /
+"ใช้งานยังไง" without a specific setup problem, use this cheat sheet to answer fast
+instead of re-reading the whole README:
+
+| User asks | Answer |
+|---|---|
+| "ใช้งานยังไง" / how do I start | Run step 3 (MLX server) + step 4 (CLI or Web UI) above |
+| "model offline" / agent ขึ้น offline | Step 3 server not running or wrong port — check `curl http://localhost:8080/v1/models` |
+| "เปลี่ยนโมเดล" / change model | Edit **both** `V2_MODEL` + `MLX_BASE_URL` (different port) in `.env` — changing only `V2_MODEL` is ignored. Restart `mlx_lm.server` with new `--model --port`. Min: Qwen3-14B |
+| "port ถูกใช้อยู่" / port in use | `lsof -ti:8080 \| xargs kill -9` (MLX) or `:8765` (agent_server) |
+| "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
+| "ลืม conversation เก่า" / load old chat | `/history` in CLI, or just reopen the Web UI (loads from `logs/history.db`) |
+| "ปลอดภัยไหม" / is my data safe | Yes — model runs 100% locally via MLX, no cloud LLM calls. See README "Security" |
+| "[BLOCKED] ..." error | Expected — path guard blocked read/write outside `workspace/` or to a protected system path. Not a bug |
+| "ทำ tool/skill ใหม่ยังไง" / add a tool | README "ต่อยอดได้ยังไง?" section |
+| "ต่อ web UI ของตัวเอง" / build own UI | README "ต่อ Web UI / Telegram ของตัวเอง" + step 6 above (`.agent_token` auth) |
+
+For anything not covered here, read `../README.md` — it has full detail on tools,
+architecture, config, and security model.

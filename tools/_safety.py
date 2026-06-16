@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """_safety.py — path guards (V2: simplified, WORKSPACE-scoped)
 
 write: เฉพาะใน WORKSPACE (override ด้วย env V2_ALLOW_OUTSIDE)

@@ -290,7 +290,8 @@ with open(path) as f:
 ```
 ถ้า `exists: False` → แจ้ง user ว่า save ไม่สำเร็จ อย่าแจ้ง "เสร็จแล้ว" จนกว่า verify ผ่าน
 
-**STEP 7 — ตรวจโครงสร้าง:**
+**STEP 7 — ตรวจ structure ของ skill ที่สร้าง:**
+python_exec ตรวจ 3 sections บังคับ:
 ```python
 import os
 project_root = os.path.dirname(os.getcwd())
@@ -302,8 +303,9 @@ if missing:
 else:
     print("structure OK — all 3 required sections present")
 ```
-ถ้าผ่าน → แจ้ง: "สร้าง /<name> เสร็จแล้ว — พิมพ์ /exit แล้วพิมพ์ /<name> ได้ทันที (ไม่ต้องรีสตาร์ท)"
-ถ้าไม่ผ่าน → แจ้ง section ที่ขาด + ให้ agent แก้ skill content แล้ว save ใหม่
+ถ้า missing → แก้ skill content และ save ใหม่ก่อนแจ้ง user
+
+แจ้ง: "สร้าง /<name> เสร็จแล้ว — พิมพ์ /exit แล้วพิมพ์ /<name> ได้ทันที (ไม่ต้องรีสตาร์ท)"
 
 ---
 

@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """graph.py — single-node orchestration
 
 START → react (main agent คุมเอง: ถ้าซับซ้อน → เรียก create_plan tool → ทำ steps → รวมคำตอบ) → END

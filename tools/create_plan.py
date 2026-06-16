@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """create_plan tool — main agent เรียกเมื่อเจอคำถามซับซ้อนหลายขั้นตอน
 
 Option B (advisor): tool wraps existing `planner.plan()` LLM ที่มี dedicated prompt

@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """llm.py — ChatOpenAI factory ชี้ไปที่ mlx_lm.server
 
 qwen3 reasoning ถูก mlx_lm.server ส่งใน field แยก แล้ว ChatOpenAI drop ทิ้ง

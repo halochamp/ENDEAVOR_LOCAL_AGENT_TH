@@ -1,3 +1,7 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
 """_doc_extract.py — PDF/Word/Excel → markdown via MarkItDown (Microsoft)
 
 Lazy-imports MarkItDown so the dependency is only loaded when a document is

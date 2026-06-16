@@ -9,6 +9,7 @@ venv/
 # Cython build artifacts (.c leaks plaintext source — never commit)
 *.c
 build/
+*.cpython-*.so
 
 # Tier 1 source (compiled to .so, not distributed) + build script
 # NOTE: leading \ is required — a bare "#" starts a comment in .gitignore
