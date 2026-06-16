@@ -62,8 +62,11 @@ mlx_lm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --port 8080
 # terminal 2: รัน agent — เลือกแบบที่ต้องการ
 conda activate mlx
 
-# แบบ CLI
+# แบบ CLI (วิธีที่ 1: activate เอง)
 python endeavor_agent.py
+
+# แบบ CLI (วิธีที่ 2: ไม่ต้อง activate — run.sh จัดการให้)
+bash run.sh
 
 # หรือแบบ Web UI (VS Code-style, เปิด browser ที่ http://localhost:8765/ui)
 python agent_server.py
@@ -378,8 +381,11 @@ mlx_lm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --port 8080
 # 5. รัน agent — เลือกแบบที่ต้องการ
 conda activate mlx
 
-# แบบ CLI:
+# แบบ CLI (วิธีที่ 1: activate เอง)
 python endeavor_agent.py
+
+# แบบ CLI (วิธีที่ 2: ไม่ต้อง activate — run.sh จัดการให้)
+bash run.sh
 
 # แบบ Web UI (เปิด browser ที่ http://localhost:8765/ui):
 python agent_server.py
