@@ -105,13 +105,21 @@ def _browse_summarize(url: str, context: str, idx: int, total: int) -> dict:
 
 
 def _read_file(path: str, context: str, idx: int, total: int) -> dict:
+    # Delegate to read_file tool — supports PDF/DOCX/XLSX, safety checks, size guard,
+    # and keyword-anchored _sample_coverage() for large docs (same as MAX).
+    from tools.read_file import read_file as _rf
     try:
-        from tools._safety import resolve_read_path
-        safe = resolve_read_path(path)
-        with open(safe, encoding="utf-8", errors="replace") as f:
-            content = f.read()
+        content = _rf.invoke({"path": path, "user_query": context})
+        if content.startswith("[error]"):
+            return {"path": path, "title": os.path.basename(path), "summary": content, "error": True}
         _progress(f"[{idx}/{total}] {os.path.basename(path)} ({len(content):,} chars)")
-        body = summarize(content[:TOOL_LOOP_READ_MAX_CHARS], url=path, user_query=context or "summarize") if len(content) > TOOL_LOOP_READ_SUMMARIZE_THRESHOLD else content
+        _first_line = content.split("\n", 1)[0]
+        already_compact = "structure map only" in _first_line or "sampled for coverage" in _first_line
+        body = (
+            summarize(content[:TOOL_LOOP_READ_MAX_CHARS], url=path, user_query=context or "summarize")
+            if len(content) > TOOL_LOOP_READ_SUMMARIZE_THRESHOLD and not already_compact
+            else content
+        )
         return {"path": path, "title": os.path.basename(path), "summary": body, "error": False}
     except Exception as e:
         return {"path": path, "title": os.path.basename(path), "summary": str(e), "error": True}
