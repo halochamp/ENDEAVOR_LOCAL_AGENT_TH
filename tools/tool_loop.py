@@ -90,7 +90,7 @@ def _browse_summarize(url: str, context: str, idx: int, total: int) -> dict:
         if cached is None:
             raw = web_cache.get(url)
             if raw is None:
-                raw = _fetch_jina(url)
+                raw = _fetch_jina(url, context)
                 if raw.startswith("[error]"):
                     return {"title": "[ดึงไม่ได้]", "summary": raw, "error": True}
                 web_cache.put(url, raw)

@@ -32,7 +32,7 @@ log = logging.getLogger(__name__)
 _JINA = "https://r.jina.ai/"
 
 
-def _fetch_jina(url: str) -> str:
+def _fetch_jina(url: str, query: str = "") -> str:
     """Raw Jina fetch. Returns body or '[error] ...'. No caching, no summarization."""
     try:
         _progress(f"fetching via Jina Reader: {url[:70]}")
@@ -49,7 +49,7 @@ def _fetch_jina(url: str) -> str:
             return "[error] empty response from Jina Reader"
         if len(content) > BROWSE_URL_MAX_CHARS:
             from tools.read_file import _sample_coverage
-            content = _sample_coverage(content, url, max_chars=BROWSE_URL_MAX_CHARS)
+            content = _sample_coverage(content, url, max_chars=BROWSE_URL_MAX_CHARS, query=query)
         _progress(f"fetched {len(content)} chars in {time.time()-t0:.1f}s")
         return content
     except Exception as e:
@@ -91,7 +91,7 @@ def browse_url(url: str, user_query: str = "") -> str:
 
     # Full miss → fetch + summarize + cache both
     _progress(f"cache MISS: {url[:70]}")
-    raw = _fetch_jina(url)
+    raw = _fetch_jina(url, effective_uq)
     if raw.startswith("[error]"):
         return raw
 

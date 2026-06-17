@@ -16,7 +16,7 @@ _DOC_EXT = {".pdf", ".docx", ".xlsx", ".xls"}
 
 
 @tool
-def read_file(path: str) -> str:
+def read_file(path: str, user_query: str = "") -> str:
     """Read file contents — plain text, code, and PDF/Word/Excel documents.
 
     Code files over the size limit return a structure map (symbols + line numbers).
@@ -24,6 +24,8 @@ def read_file(path: str) -> str:
     coverage (outline + paragraphs/rows spread across the whole file). Scanned or
     image-only PDFs (no extractable text) return [error] — use read_image instead.
     Files larger than READ_FILE_MAX_BYTES (default 5 MB) are rejected — use grep/bash to target sections.
+    Pass user_query with what you're looking for so specific figures in a large
+    document aren't sampled away.
     """
     if not path:
         return _missing_path_hint()
@@ -42,7 +44,7 @@ def read_file(path: str) -> str:
 
         suffix = p.suffix.lower()
         if suffix in _DOC_EXT:
-            return _read_document(p, path)
+            return _read_document(p, path, user_query)
 
         content = p.read_text(encoding="utf-8", errors="replace")
         if len(content) <= _MAX_CHARS:
@@ -81,7 +83,7 @@ def _missing_path_hint() -> str:
             f"Ask the user which file they mean — do not guess.")
 
 
-def _read_document(p: Path, path: str) -> str:
+def _read_document(p: Path, path: str, query: str = "") -> str:
     """Convert a PDF/DOCX/XLSX/XLS to markdown, sampling for coverage if large."""
     from ._doc_extract import to_markdown
     md = to_markdown(str(p))
@@ -92,15 +94,18 @@ def _read_document(p: Path, path: str) -> str:
                 f"Use read_image for image-based documents.")
     if len(md) <= _MAX_CHARS:
         return md
-    return _sample_coverage(md, path)
+    return _sample_coverage(md, path, query=query)
 
 
-def _sample_coverage(text: str, path: str, max_chars: int | None = None) -> str:
+def _sample_coverage(text: str, path: str, max_chars: int | None = None, query: str = "") -> str:
     """Approach C — outline + uniform sampling across the whole document.
 
     Keeps whole lines (paragraphs for prose, rows for tables) spread evenly so
     the head, middle, and tail are all represented, with [... skipped N ...] markers.
     max_chars overrides the module-level _MAX_CHARS for callers with a different budget.
+    query, if given, pins lines matching its keywords so specific figures aren't
+    diluted away by uniform sampling on large pages (e.g. a fee % buried at char
+    25,000 of a 1.2M-char JS-app page survives instead of being sampled out).
     """
     if max_chars is None:
         max_chars = _MAX_CHARS
@@ -123,6 +128,20 @@ def _sample_coverage(text: str, path: str, max_chars: int | None = None) -> str:
             pinned.add(i)
             if i > 0:
                 pinned.add(i - 1)
+
+    # Keyword-anchored pinning: capped so a keyword-dense page can't blow the
+    # budget and starve general coverage sampling.
+    keywords = [w.lower() for w in re.findall(r"\w+", query) if len(w) >= 2]
+    if keywords:
+        kw_budget = int(max_chars * 0.4)
+        kw_chars = 0
+        for i, u in enumerate(units):
+            if i in pinned or kw_chars >= kw_budget:
+                continue
+            lu = u.lower()
+            if any(kw in lu for kw in keywords):
+                pinned.add(i)
+                kw_chars += len(u)
 
     headings = [units[i].strip() for i in sorted(pinned)
                 if units[i].lstrip().startswith("#")][:40]
