@@ -11,6 +11,7 @@ On any LLM failure → graceful fallback: first SUMMARY_MAX_CHARS chars of raw +
 Short content (≤ SUMMARY_SKIP_LLM_BELOW) skips the LLM and uses raw as its own summary.
 """
 from __future__ import annotations
+import datetime
 import logging
 import re
 import sys
@@ -20,6 +21,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import SUMMARY_MAX_CHARS, SUMMARY_SKIP_LLM_BELOW, SUMMARY_MAX_TOKENS, SUMMARY_BATCH_MAX_TOKENS
 from tools._progress import progress as _progress
+from tools._freshness import staleness_note
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +62,17 @@ def _hard_truncate(s: str, n: int) -> str:
     return s[: n - 3].rstrip() + "..."
 
 
+def _with_note(body: str, note: str | None, max_chars: int) -> str:
+    """Append a staleness note, reserving budget so the note itself never gets
+    truncated away — the note is the whole point of this code path."""
+    if not note:
+        return _hard_truncate(body, max_chars)
+    budget = max_chars - len(note) - 2
+    if budget < 0:
+        return _hard_truncate(note, max_chars)
+    return _hard_truncate(body, budget) + "\n\n" + note
+
+
 def _parse_batch_response(text: str, n: int) -> dict[int, str] | None:
     """Split a "===SOURCE i===\\n<summary>" formatted response into {i: summary}.
 
@@ -87,23 +100,29 @@ def summarize(raw: str, url: str, user_query: str | None = None) -> str:
     if not raw:
         return "(เนื้อหาว่าง)"
 
+    today_d = datetime.date.today()
+    note = staleness_note(raw, url, today_d)
+
     # Short content → use raw as summary, save an LLM call.
     # SUMMARY_SKIP_LLM_BELOW (default 1500) covers most trafilatura outputs
     if len(raw) <= SUMMARY_SKIP_LLM_BELOW:
         _progress(f"raw ≤{SUMMARY_SKIP_LLM_BELOW} chars — skip LLM, use raw as summary")
-        return _hard_truncate(raw, SUMMARY_MAX_CHARS)
+        return _with_note(raw, note, SUMMARY_MAX_CHARS)
 
     raw = raw[:10_000]
+    today = today_d.isoformat()
 
     q = (user_query or "").strip()
     if q:
         prompt = (
             "คุณคือผู้ช่วยสรุปเนื้อหาเว็บ ตอบเป็นภาษาไทยเท่านั้น\n"
+            f"วันนี้: {today}\n"
             f"คำถามของผู้ใช้: {q}\n"
             f"URL: {url}\n\n"
             "งาน: สรุปเนื้อหาด้านล่างโดยเน้นข้อมูลที่ตอบคำถามของผู้ใช้\n"
             f"- ความยาวไม่เกิน {SUMMARY_MAX_CHARS} ตัวอักษร\n"
             "- ระบุข้อเท็จจริงและตัวเลขที่เกี่ยวข้อง\n"
+            "- หากเนื้อหามีวันที่ของข้อมูล หรือสถานะตลาด (เช่น เปิด/ปิด ตลาด, ราคา ณ เวลาใด) ให้คงคำเหล่านั้นไว้ตามต้นฉบับ ห้ามตัดสินเองว่าข้อมูลเก่าหรือใหม่\n"
             "- ห้ามแต่งข้อมูลที่ไม่อยู่ในเนื้อหา\n"
             "- ตอบเฉพาะเนื้อสรุป ไม่ต้องมีคำนำหรือคำลงท้าย\n\n"
             "เนื้อหา:\n"
@@ -112,9 +131,11 @@ def summarize(raw: str, url: str, user_query: str | None = None) -> str:
     else:
         prompt = (
             "คุณคือผู้ช่วยสรุปเนื้อหาเว็บ ตอบเป็นภาษาไทยเท่านั้น\n"
+            f"วันนี้: {today}\n"
             f"URL: {url}\n\n"
             f"งาน: สรุปเนื้อหาด้านล่าง ความยาวไม่เกิน {SUMMARY_MAX_CHARS} ตัวอักษร\n"
             "- ระบุประเด็นหลัก ข้อเท็จจริง และตัวเลขสำคัญ\n"
+            "- หากเนื้อหามีวันที่ของข้อมูล หรือสถานะตลาด (เช่น เปิด/ปิด ตลาด, ราคา ณ เวลาใด) ให้คงคำเหล่านั้นไว้ตามต้นฉบับ ห้ามตัดสินเองว่าข้อมูลเก่าหรือใหม่\n"
             "- ห้ามแต่งข้อมูลที่ไม่อยู่ในเนื้อหา\n"
             "- ตอบเฉพาะเนื้อสรุป ไม่ต้องมีคำนำหรือคำลงท้าย\n\n"
             "เนื้อหา:\n"
@@ -138,7 +159,7 @@ def summarize(raw: str, url: str, user_query: str | None = None) -> str:
                     _progress(f"attempt 1 empty — retrying with temperature=0.5")
                 continue
             _progress(f"summary ready ({len(text)} chars, {time.time()-t0:.1f}s, attempt={attempt})")
-            return _hard_truncate(text, SUMMARY_MAX_CHARS)
+            return _with_note(text, note, SUMMARY_MAX_CHARS)
         except Exception as e:
             last_error = str(e)
             if attempt == 1:
@@ -146,7 +167,7 @@ def summarize(raw: str, url: str, user_query: str | None = None) -> str:
 
     log.warning(f"[_summarize] LLM failed for {url[:60]} after 2 attempts: {last_error}")
     _progress(f"summary failed after 2 attempts — using raw prefix fallback")
-    return _hard_truncate(raw, SUMMARY_MAX_CHARS)
+    return _with_note(raw, note, SUMMARY_MAX_CHARS)
 
 
 def summarize_batch(items: list[tuple[str, str]], user_query: str | None = None) -> dict[str, str] | None:
@@ -159,8 +180,11 @@ def summarize_batch(items: list[tuple[str, str]], user_query: str | None = None)
     if len(items) < 2:
         return None
 
+    today_d = datetime.date.today()
+    notes = {u: staleness_note(r, u, today_d) for u, r in items}
+
     q = (user_query or "").strip()
-    lines = ["คุณคือผู้ช่วยสรุปเนื้อหาเว็บ ตอบเป็นภาษาไทยเท่านั้น"]
+    lines = ["คุณคือผู้ช่วยสรุปเนื้อหาเว็บ ตอบเป็นภาษาไทยเท่านั้น", f"วันนี้: {today_d.isoformat()}"]
     if q:
         lines.append(f"คำถามของผู้ใช้: {q}")
     lines.append("")
@@ -170,6 +194,7 @@ def summarize_batch(items: list[tuple[str, str]], user_query: str | None = None)
     )
     lines.append(f"- ความยาวไม่เกิน {SUMMARY_MAX_CHARS} ตัวอักษรต่อแหล่ง")
     lines.append("- ระบุข้อเท็จจริงและตัวเลข รวมถึงวันที่ของข้อมูล (ข้อมูล ณ ...) ถ้ามี")
+    lines.append("- หากเนื้อหามีวันที่ของข้อมูล หรือสถานะตลาด (เช่น เปิด/ปิด ตลาด, ราคา ณ เวลาใด) ให้คงคำเหล่านั้นไว้ตามต้นฉบับ ห้ามตัดสินเองว่าข้อมูลเก่าหรือใหม่")
     lines.append("- ห้ามแต่งข้อมูลที่ไม่อยู่ในเนื้อหา")
     lines.append(f"- ตอบทั้ง {len(items)} แหล่งโดยใช้ format นี้เท่านั้น ไม่มีข้อความอื่นนอก format:")
     lines.append("")
@@ -200,7 +225,10 @@ def summarize_batch(items: list[tuple[str, str]], user_query: str | None = None)
                     _progress("batch attempt 1 unparseable — retrying")
                 continue
             _progress(f"batch summary ready ({len(items)} sources, {time.time()-t0:.1f}s, attempt={attempt})")
-            return {items[i - 1][0]: _hard_truncate(parsed[i], SUMMARY_MAX_CHARS) for i in range(1, len(items) + 1)}
+            return {
+                items[i - 1][0]: _with_note(parsed[i], notes[items[i - 1][0]], SUMMARY_MAX_CHARS)
+                for i in range(1, len(items) + 1)
+            }
         except Exception as e:
             last_error = str(e)
             if attempt == 1:
