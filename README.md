@@ -182,8 +182,8 @@ START → react (agent คุมเองทั้งหมด) → END
 
 | ส่วน | ทำหน้าที่ |
 |---|---|
-| **`react.py`** (compiled `.so`) | สร้าง ReAct agent + system prompt + คำนวณ context stats |
-| **`planner.py`** (compiled `.so`) | ตรวจว่า query เป็น trivial หรือซับซ้อน → ควรเรียก `create_plan` ก่อนไหม |
+| **`react.py`** | สร้าง ReAct agent + system prompt + คำนวณ context stats |
+| **`planner.py`** | ตรวจว่า query เป็น trivial หรือซับซ้อน → ควรเรียก `create_plan` ก่อนไหม |
 | **`graph.py`** | ผูก agent เข้ากับ LangGraph state machine, จัดการ retry เมื่อ synthesis ล้มเหลว, deterministic intercept สำหรับ search/research intent |
 | **`llm.py`** | สร้าง `ChatOpenAI` client ชี้ไปที่ `mlx_lm.server` (OpenAI-compatible API) |
 | **`runtime_common.py`** | infra ร่วมระหว่าง CLI กับ Web UI — memory store, liveness check, skill detection (single source of truth ตาม Dual-Path Prohibition) |

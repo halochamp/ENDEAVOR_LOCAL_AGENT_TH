@@ -18,12 +18,14 @@ the verification checks — each step gates the next.
 ```bash
 uname -s   # must be "Darwin"
 uname -m   # must be "arm64"
-sysctl hw.memsize   # must be >= 48 GB for the default 35B model
+sysctl hw.memsize   # must be >= 48 GB for the default 35B model; otherwise set V2_MODEL + MLX_BASE_URL first
 command -v conda    # must exist — if missing, tell user to install Miniforge:
                      # https://github.com/conda-forge/miniforge
 ```
 
-If any check fails, stop and explain to the user what's missing before continuing.
+If the platform/Python/conda checks fail, stop and explain what's missing. If RAM is
+below 48 GB, continue only after the user has deliberately configured a smaller model
+with both `V2_MODEL` and `MLX_BASE_URL`.
 
 ## 2. Install dependencies (one command, idempotent)
 
@@ -33,8 +35,8 @@ bash install_library/install.sh
 
 This script:
 - creates/reuses conda env `mlx` (Python 3.11)
-- installs everything in `install_library/requirements.txt`
-- installs the Playwright chromium browser
+- installs the hash-locked dependencies in `install_library/requirements.txt`
+- attempts to install the optional Playwright Chromium browser (the agent still installs if this download fails)
 - copies `.env.example` → `.env` if `.env` doesn't exist yet
 
 Safe to re-run — it skips steps that are already done (existing env, satisfied pip
@@ -55,8 +57,10 @@ box; the user only needs to edit it if they want to change the model, ports, or 
 
 If the user does not have Homebrew, the script prints a warning but continues — Thonburi alone is sufficient for Thai graph rendering.
 
-If it fails partway, read the error, fix the underlying issue (e.g. missing system
-package), and re-run — do not skip with `--no-deps` or similar shortcuts.
+If the dependency install fails partway, read the error, fix the underlying issue
+(e.g. missing system package), and re-run — do not skip with `--no-deps` or similar
+shortcuts. If only the optional Chromium download fails, re-run
+`python -m playwright install chromium` later when browser tools are needed.
 
 ## 3. Start the LLM server (must run in a separate terminal/process)
 
