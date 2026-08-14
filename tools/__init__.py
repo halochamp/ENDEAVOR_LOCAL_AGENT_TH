@@ -5,6 +5,7 @@
 """V2 tools — LangChain @tool functions for create_react_agent"""
 from .web_search import web_search
 from .bash import bash
+from .bash_bg import bash_bg
 from .python_exec import python_exec
 from .plot import plot
 from .read_file import read_file
@@ -25,7 +26,7 @@ from .tool_loop import tool_loop
 from .skill_tools.research_orchestrator import research_orchestrator
 
 ALL_TOOLS = [
-    web_search, bash, python_exec, plot, read_file, write_file, edit, grep,
+    web_search, bash, bash_bg, python_exec, plot, read_file, write_file, edit, grep,
     create_plan, workspace_ls, browse_url, browser_use, recall_web, remember,
     fetch_sitemap, batch_browse, scrape_table,
     read_image,
