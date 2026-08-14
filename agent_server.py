@@ -238,6 +238,15 @@ async def _ws_busy_guard(websocket: WebSocket, msg: str = "agent กำลัง
 _active_ws: WebSocket | None = None
 _active_ws_loop: asyncio.AbstractEventLoop | None = None
 
+# Ceiling for one fired turn's total wall time. Nobody is watching a fired
+# turn — post_chat/ws_endpoint have no such timeout because a human notices a
+# stuck request and can restart, but a wedged LLM server (Metal-crash/GPU-hang
+# class scripts_max's monitor watches for) would otherwise hold _busy forever
+# on this path, silently 503-ing every future /chat and WS query with nobody
+# around to notice. Generous — real multi-tool research turns can run several
+# minutes — but bounded.
+_AWAKE_TURN_TIMEOUT_SEC = 600
+
 # Captured once in the FastAPI startup hook so AwakeEngine's fire callback —
 # invoked from the engine's OWN daemon thread (awake_engine.AwakeEngine._run)
 # — has a live loop to schedule onto.
@@ -340,6 +349,7 @@ async def _awake_queue_worker() -> None:
     concurrently)."""
     while True:
         watch_id = await _awake_queue.get()
+        ran = False
         message = None
         try:
             if getattr(_state, "app", None) is None:
@@ -349,6 +359,7 @@ async def _awake_queue_worker() -> None:
             try:
                 message = _awake_pending.get(watch_id, "")
                 await _run_awake_turn(watch_id, message)
+                ran = True
             finally:
                 _busy.release()
         except Exception:
@@ -360,8 +371,12 @@ async def _awake_queue_worker() -> None:
             # fire (a times= watcher's second slot lost for the whole day,
             # since awake_engine already marked it fired at detection time).
             # Re-queue once instead: if the pending message no longer matches
-            # what we just ran, a coalesce happened during the run.
-            if watch_id in _awake_pending and _awake_pending[watch_id] != message:
+            # what we just ran, a coalesce happened during the run. Gated on
+            # `ran` — without it, the "dropped, _state.app not ready" continue
+            # path leaves message=None while _awake_pending[watch_id] is a
+            # real string, so None != string is always true and the watch_id
+            # re-queues itself forever with no delay (tight spin).
+            if ran and watch_id in _awake_pending and _awake_pending[watch_id] != message:
                 log.info("awake: fire(%s) coalesced during its own run — re-queuing the newer message", watch_id)
                 await _awake_queue.put(watch_id)
             else:
@@ -402,16 +417,29 @@ async def _run_awake_turn(watch_id: str, message: str) -> None:
     Caller (_awake_queue_worker) must already hold _busy and is responsible
     for releasing it — this function neither acquires nor releases it, so it
     stays a pure run-and-deliver unit, independently testable the same way
-    _deliver_awake_result is. Unlike post_chat's own wait loop this has no
-    timeout — a stuck LLM call would hold _busy until it finishes, same
-    behavior as a real user turn hitting the same path today."""
+    _deliver_awake_result is. Bounded by _AWAKE_TURN_TIMEOUT_SEC — with a
+    human on a real user turn, a stuck request is noticed and the server
+    restarted; a fired turn has nobody watching, so an unattended hang here
+    would hold _busy forever and silently 503 every future query."""
     parts: list[str] = []
     try:
         loop = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue()
-        threading.Thread(target=_run_agent_sync, args=(message, q, loop), daemon=True).start()
+        cancel_event = threading.Event()
+        threading.Thread(
+            target=_run_agent_sync, args=(message, q, loop, None, None, None, cancel_event),
+            daemon=True,
+        ).start()
+        deadline = loop.time() + _AWAKE_TURN_TIMEOUT_SEC
         while True:
-            event = await q.get()
+            timeout = max(0.01, deadline - loop.time())
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=timeout)
+            except asyncio.TimeoutError:
+                log.error("awake: fire(%s) gave no done/error within %ss — abandoning wait",
+                          watch_id, _AWAKE_TURN_TIMEOUT_SEC)
+                cancel_event.set()
+                break
             etype = event.get("type")
             if etype == "response":
                 parts.append(event.get("content", ""))
