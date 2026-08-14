@@ -21,8 +21,10 @@ def _classify_bash_error(returncode: int, stderr: str, command: str, workspace: 
     if returncode == 126:
         return "permission denied executing that file — check it's executable (chmod +x) or not a directory."
     if returncode != 0 and any(m in stderr for m in _SANDBOX_DENY_MARKERS):
-        return (f"write/access denied by the sandbox — only workspace/ ({workspace}) and /tmp are "
-                f"writable; save output there instead of ~/Desktop, ~/Documents, etc.")
+        return (f"denied by the sandbox — writes are confined to workspace/ ({workspace}) and /tmp; "
+                f"a handful of sensitive read paths (/etc/passwd, ~/.ssh, credential stores, ...) are "
+                f"blocked too. If this was a write, save under workspace/ instead of ~/Desktop, "
+                f"~/Documents, etc.")
     return None
 
 
@@ -50,8 +52,28 @@ def _build_sandbox_profile(workspace: str, extra_write_paths: tuple[str, ...] = 
   (subpath "{home}/Library")
 )
 
-; deny read credentials + session history
+; deny read: user/credential enumeration files + credentials + session history.
+; NOT a blanket (subpath "/etc") deny: this sandbox's DENY always wins over a
+; later ALLOW for an overlapping subpath (verified empirically — textual order
+; does not matter for a subpath conflict, unlike the plain string this repo's
+; comments used to assume), so blanket-denying /etc would permanently break
+; /etc/ssl (TLS trust store — curl/git-over-https/openssl need it, no working
+; allow-exception is possible once the parent subpath is denied) with no way
+; to carve it back out. Named literals instead: /etc/passwd and /etc/group are
+; world-readable (verified: `stat -f %Sp` shows rw-r--r--) and were the actual
+; demonstrated leak (`bash('cat /etc/passwd')` returned real content, bypassing
+; read_file's protection entirely — sandbox-exec's file-write* deny above never
+; touched reads, only writes). master.passwd/shadow/sudoers are root-only or
+; group-read by OS permissions already (verified: rw-------, r--r-----) so the
+; OS itself blocks a normal user process regardless — listed anyway as
+; defense-in-depth, at zero cost to legitimate access other tools need under
+; /etc for ssl certs, hosts, resolv.conf, services, protocols, etc.
 (deny file-read*
+  (literal "/etc/passwd") (literal "/private/etc/passwd")
+  (literal "/etc/group") (literal "/private/etc/group")
+  (literal "/etc/master.passwd") (literal "/private/etc/master.passwd")
+  (literal "/etc/shadow") (literal "/private/etc/shadow")
+  (literal "/etc/sudoers") (literal "/private/etc/sudoers")
   (subpath "{home}/.ssh")
   (subpath "{home}/.aws")
   (subpath "{home}/.gnupg")
