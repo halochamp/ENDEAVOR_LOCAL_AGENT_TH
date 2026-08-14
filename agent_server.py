@@ -24,7 +24,7 @@ import threading
 import uuid
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.callbacks import BaseCallbackHandler
 
@@ -32,7 +32,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent_log import AgentLogger
 from awake_engine import AwakeEngine, Registry, drain_notices, restore_notices
-from config import MLX_BASE_URL, MODEL, RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED
+from config import (
+    MLX_BASE_URL, MODEL, RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED,
+    READ_FILE_MAX_BYTES, READ_FILE_AUDIO_VIDEO_MAX_BYTES,
+)
 from graph import build_graph, force_compact, rewarm_after_compact, summarize_history
 from react import get_system_prompt, ctx_stats as _ctx_stats
 from runtime_common import (
@@ -55,6 +58,9 @@ from tools._progress import (
     set_run_callbacks,
     ToolCancelled,
 )
+from tools._safety import resolve_path as _resolve_write_path, check_path as _check_write_path
+from tools._transcribe import _AUDIO_EXT, _VIDEO_EXT
+from tools.read_image import _KNOWN_IMG_EXTS
 from tools.web_cache import web_count_reset as _reset_web_counter
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -875,6 +881,69 @@ async def post_chat(body: dict):
     set_progress_callback(None)
     set_phase_callback(None)
     return {"response": response, "skill": _state.skill}
+
+
+def _sanitize_upload_name(name: str) -> str:
+    """basename only — no directory separators or traversal can survive this,
+    so the caller never needs to think about a hostile filename escaping uploads/"""
+    base = os.path.basename((name or "").strip().replace("\x00", ""))
+    base = re.sub(r"[^\w.\-]", "_", base) or "upload"
+    if base in (".", ".."):
+        base = "upload"
+    return base[:200]
+
+
+def _unique_upload_path(base: str) -> str:
+    """avoid clobbering an existing upload or a file the agent already produced"""
+    stem, ext = os.path.splitext(base)
+    candidate = os.path.join("uploads", base)
+    n = 1
+    while os.path.exists(_resolve_write_path(candidate)):
+        candidate = os.path.join("uploads", f"{stem}_{n}{ext}")
+        n += 1
+    return candidate
+
+
+def _attach_hint(rel_path: str) -> str:
+    """Text hint injected into the query so the model knows an attached file exists
+    and which tool reads it — mirrors AGENT_UI_MAX/renderer.js's _fileHint(), but the
+    wording matches TH's actual tool capabilities (OCR-only read_image, no VLM)."""
+    ext = os.path.splitext(rel_path)[1].lower()
+    if ext in _KNOWN_IMG_EXTS:
+        return (f"[ไฟล์แนบ (รูปภาพ): {rel_path}]\n"
+                f"ใช้ tool: read_image (OCR ข้อความ/ตาราง/QR ในรูป — ไม่สามารถอธิบายเนื้อหาภาพทั่วไปที่ไม่มีตัวอักษร)")
+    if ext in _AUDIO_EXT:
+        return f"[ไฟล์แนบ (เสียง): {rel_path}]\nใช้ tool: read_file (จะถอดเสียงเป็นข้อความอัตโนมัติ)"
+    if ext in _VIDEO_EXT:
+        return f"[ไฟล์แนบ (วิดีโอ): {rel_path}]\nใช้ tool: read_file (จะถอดเสียงจากวิดีโอเป็นข้อความอัตโนมัติ)"
+    return f"[ไฟล์แนบ: {rel_path}]\nใช้ tool: read_file"
+
+
+@api.post("/upload", dependencies=[Depends(_require_token)])
+async def post_upload(file: UploadFile = File(...)):
+    """Save a browser-uploaded file into workspace/uploads/ and return a text hint
+    the UI injects into the next query — TH has no Electron main process to hand the
+    model a real filesystem path (unlike AGENT_UI_MAX's native file-picker), so the
+    upload IS the attach mechanism here: bytes cross the wire once, land in workspace,
+    then read_file/read_image (already sandboxed to workspace) do the actual reading."""
+    safe_name = _sanitize_upload_name(file.filename or "upload")
+    ext = os.path.splitext(safe_name)[1].lower()
+    cap = READ_FILE_AUDIO_VIDEO_MAX_BYTES if ext in _AUDIO_EXT or ext in _VIDEO_EXT else READ_FILE_MAX_BYTES
+    data = await file.read(cap + 1)
+    if len(data) > cap:
+        return JSONResponse({"error": f"file too large (max {cap // (1024 * 1024)}MB)"}, status_code=413)
+    if not data:
+        return JSONResponse({"error": "empty file"}, status_code=400)
+
+    rel_path = _unique_upload_path(safe_name)
+    err = _check_write_path(rel_path)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    abs_path = _resolve_write_path(rel_path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    with open(abs_path, "wb") as f:
+        f.write(data)
+    return {"path": rel_path, "hint": _attach_hint(rel_path)}
 
 
 @api.websocket("/ws")

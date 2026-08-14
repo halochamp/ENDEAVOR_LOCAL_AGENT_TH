@@ -432,6 +432,40 @@ html, body {
 #stop-btn:hover   { background: #5c2626; }
 #stop-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+#attach-btn {
+  padding: 8px 10px;
+  background: #3c3c3c;
+  border: 1px solid #454545;
+  color: #d4d4d4;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 0.1s;
+}
+#attach-btn:hover   { background: #454545; }
+#attach-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+#attach-badge {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  background: #1e3a52;
+  border: 1px solid #2d6a9f;
+  color: #9cc9f0;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  max-width: 90%;
+}
+#attach-badge.show { display: flex; }
+#attach-badge-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#attach-badge-remove { cursor: pointer; color: #808080; flex-shrink: 0; }
+#attach-badge-remove:hover { color: #e57373; }
+
 /* Context bar */
 #ctx-bar {
   padding: 3px 16px 4px;
@@ -552,6 +586,12 @@ html, body {
 
     <div id="input-area" style="position:relative">
       <div id="cmd-picker"></div>
+      <div id="attach-badge">
+        <span id="attach-badge-name"></span>
+        <span id="attach-badge-remove" onclick="clearAttachment()" title="เอาไฟล์แนบออก">✕</span>
+      </div>
+      <button id="attach-btn" onclick="$('attach-file-input').click()" title="แนบไฟล์ (เอกสาร/รูปภาพ/เสียง/วิดีโอ)">📎</button>
+      <input id="attach-file-input" type="file" style="display:none" onchange="handleAttachChange(event)">
       <input id="input" type="text"
         placeholder="พิมพ์ข้อความ… (/ สำหรับคำสั่ง)"
         autocomplete="off">
@@ -603,6 +643,7 @@ const S = {
 
   // Run state
   busy: false, panelView: null, runId: null, cancelPending: false,
+  attachment: null, attachUploading: false,
   activity: [], streamEl: null, streamBuf: [],
   showStream: true,   // false while tools executing, true for direct/synthesis
 
@@ -910,8 +951,70 @@ function updateCtx() {
 function updateInput() {
   $('input').disabled    = S.busy;
   $('send-btn').disabled = S.busy;
+  $('attach-btn').disabled = S.busy;
   $('stop-btn').style.display = S.busy ? '' : 'none';
   $('stop-btn').disabled = S.cancelPending;
+}
+
+// ── File/image attach ────────────────────────────────────────────────────────
+// TH has no Electron main process to hand the model a real filesystem path (unlike
+// AGENT_UI_MAX's native file-picker) — the browser only gives us file bytes, so the
+// upload IS the attach mechanism: bytes go to POST /upload, land in workspace/uploads/,
+// and the returned hint text (naming the right tool: read_file / read_image) rides
+// along in the next query so the model reads it from there like any workspace file.
+async function handleAttachChange(ev) {
+  const f = ev.target.files && ev.target.files[0];
+  ev.target.value = '';  // allow re-selecting the same file later
+  if (f) await uploadAttachment(f);
+}
+
+async function uploadAttachment(file) {
+  S.attachUploading = true;
+  renderAttachBadge();
+  try {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    const r = await fetch('/upload', {
+      method: 'POST',
+      headers: S.token ? {'X-Auth-Token': S.token} : {},
+      body: fd,
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      appendSystem(`⚠ แนบไฟล์ไม่สำเร็จ: ${d.error || r.status}`);
+      S.attachment = null;
+    } else {
+      S.attachment = {path: d.path, hint: d.hint, name: file.name};
+    }
+  } catch (e) {
+    appendSystem(`⚠ แนบไฟล์ไม่สำเร็จ: ${e}`);
+    S.attachment = null;
+  } finally {
+    S.attachUploading = false;
+    renderAttachBadge();
+  }
+}
+
+function clearAttachment() {
+  S.attachment = null;
+  renderAttachBadge();
+}
+
+function renderAttachBadge() {
+  const badge  = $('attach-badge');
+  const name   = $('attach-badge-name');
+  const remove = $('attach-badge-remove');
+  if (S.attachUploading) {
+    badge.classList.add('show');
+    name.textContent = 'กำลังอัปโหลด…';
+    remove.style.display = 'none';
+  } else if (S.attachment) {
+    badge.classList.add('show');
+    name.textContent = `📎 ${S.attachment.name}`;
+    remove.style.display = '';
+  } else {
+    badge.classList.remove('show');
+  }
 }
 
 function doCancel() {
@@ -1189,17 +1292,21 @@ function runCmd(cmd) {
 function doSend() {
   const input = $('input');
   const text  = input.value.trim();
-  if (!text || S.busy) return;
+  if ((!text && !S.attachment) || S.busy || S.attachUploading) return;
   _hidePicker();
   input.value = '';
-  appendUser(text);
   if (text.startsWith('/')) {
+    appendUser(text);
     const cmd = text.toLowerCase();
     startSpinner(CMD_SPINNER_LABELS[cmd] || `${cmd}…`);
     send({type:'command', cmd});
-  } else {
-    send({type:'query', content: text});
+    return;
   }
+  const att = S.attachment;
+  appendUser(att ? (text ? `${text}  📎 ${att.name}` : `📎 ${att.name}`) : text);
+  const content = att ? (text ? `${text}\n\n${att.hint}` : att.hint) : text;
+  clearAttachment();
+  send({type:'query', content});
 }
 
 // ── Command picker ─────────────────────────────────────────────────────────────
