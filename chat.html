@@ -749,6 +749,15 @@ function send(obj) {
 function onOpen() {
   S.connected = true;
   $('banner').classList.remove('show');
+  // A disconnect mid-turn (server restart, network blip) leaves no way for the old
+  // run's done/error/cancelled event to ever arrive on a fresh connection — without
+  // this reset, S.busy stays stuck true forever and the input never re-enables.
+  if (S.busy || S.runId || S.cancelPending || S.attachUploading) {
+    stopSpinner();
+    S.busy = false; S.runId = null; S.cancelPending = false; S.attachUploading = false;
+    appendSystem('⚠ การเชื่อมต่อขาดหาย — งานก่อนหน้าอาจไม่เสร็จสมบูรณ์');
+  }
+  updateInput();
   updateHeader();
 }
 
@@ -1296,6 +1305,9 @@ function doSend() {
   _hidePicker();
   input.value = '';
   if (text.startsWith('/')) {
+    // commands don't carry an attachment forward — drop it here too, or it would
+    // silently glue onto whatever unrelated query the user sends next
+    if (S.attachment) clearAttachment();
     appendUser(text);
     const cmd = text.toLowerCase();
     startSpinner(CMD_SPINNER_LABELS[cmd] || `${cmd}…`);

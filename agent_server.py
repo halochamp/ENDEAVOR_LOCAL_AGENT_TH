@@ -24,7 +24,8 @@ import threading
 import uuid
 
 import uvicorn
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from langchain_core.callbacks import BaseCallbackHandler
 
@@ -893,8 +894,16 @@ def _sanitize_upload_name(name: str) -> str:
     return base[:200]
 
 
+_upload_lock = asyncio.Lock()  # serializes _unique_upload_path()'s check against the write
+                                # that claims it — both run under this lock in post_upload,
+                                # so two concurrent uploads of the same filename can never
+                                # race into the same path between the check and the write.
+
+
 def _unique_upload_path(base: str) -> str:
-    """avoid clobbering an existing upload or a file the agent already produced"""
+    """avoid clobbering an existing upload or a file the agent already produced.
+    Caller MUST hold _upload_lock across this call and the write that follows it —
+    on its own this is a check-then-act race."""
     stem, ext = os.path.splitext(base)
     candidate = os.path.join("uploads", base)
     n = 1
@@ -902,6 +911,12 @@ def _unique_upload_path(base: str) -> str:
         candidate = os.path.join("uploads", f"{stem}_{n}{ext}")
         n += 1
     return candidate
+
+
+def _write_upload_file(abs_path: str, data: bytes) -> None:
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+    with open(abs_path, "wb") as f:
+        f.write(data)
 
 
 def _attach_hint(rel_path: str) -> str:
@@ -920,29 +935,53 @@ def _attach_hint(rel_path: str) -> str:
 
 
 @api.post("/upload", dependencies=[Depends(_require_token)])
-async def post_upload(file: UploadFile = File(...)):
+async def post_upload(request: Request):
     """Save a browser-uploaded file into workspace/uploads/ and return a text hint
     the UI injects into the next query — TH has no Electron main process to hand the
     model a real filesystem path (unlike AGENT_UI_MAX's native file-picker), so the
     upload IS the attach mechanism here: bytes cross the wire once, land in workspace,
-    then read_file/read_image (already sandboxed to workspace) do the actual reading."""
+    then read_file/read_image (already sandboxed to workspace) do the actual reading.
+
+    Takes raw Request rather than `file: UploadFile = File(...)` on purpose: FastAPI
+    resolves File() params (i.e. parses the full multipart body into a spooled temp
+    file) BEFORE the endpoint body runs, and Starlette's parser has no size limit on
+    individual file parts — so a size check placed inside the function body, no matter
+    where, is always too late to stop the full upload from being received and spooled
+    to disk first. Reading Content-Length ourselves before touching the body is the
+    only way to reject an oversized upload before paying for it."""
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            if int(cl) > READ_FILE_AUDIO_VIDEO_MAX_BYTES:
+                return JSONResponse(
+                    {"error": f"request too large (max {READ_FILE_AUDIO_VIDEO_MAX_BYTES // (1024 * 1024)}MB)"},
+                    status_code=413,
+                )
+        except ValueError:
+            pass  # malformed header — let the body-size check below catch it instead
+
+    form = await request.form()
+    file = form.get("file")
+    if file is None or not hasattr(file, "filename"):
+        return JSONResponse({"error": "file field required"}, status_code=400)
+
     safe_name = _sanitize_upload_name(file.filename or "upload")
     ext = os.path.splitext(safe_name)[1].lower()
     cap = READ_FILE_AUDIO_VIDEO_MAX_BYTES if ext in _AUDIO_EXT or ext in _VIDEO_EXT else READ_FILE_MAX_BYTES
     data = await file.read(cap + 1)
+    await file.close()
     if len(data) > cap:
         return JSONResponse({"error": f"file too large (max {cap // (1024 * 1024)}MB)"}, status_code=413)
     if not data:
         return JSONResponse({"error": "empty file"}, status_code=400)
 
-    rel_path = _unique_upload_path(safe_name)
-    err = _check_write_path(rel_path)
-    if err:
-        return JSONResponse({"error": err}, status_code=400)
-    abs_path = _resolve_write_path(rel_path)
-    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-    with open(abs_path, "wb") as f:
-        f.write(data)
+    async with _upload_lock:
+        rel_path = _unique_upload_path(safe_name)
+        err = _check_write_path(rel_path)
+        if err:
+            return JSONResponse({"error": err}, status_code=400)
+        abs_path = _resolve_write_path(rel_path)
+        await run_in_threadpool(_write_upload_file, abs_path, data)
     return {"path": rel_path, "hint": _attach_hint(rel_path)}
 
 
