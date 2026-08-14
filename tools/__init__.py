@@ -25,6 +25,7 @@ from .read_image import read_image
 from .tool_loop import tool_loop
 from .mcp_client import mcp_list_tools, mcp_call_tool, mcp_add_server, mcp_remove_server
 from .speak import speak
+from .awake import awake
 from .skill_tools.research_orchestrator import research_orchestrator
 
 ALL_TOOLS = [
@@ -35,6 +36,7 @@ ALL_TOOLS = [
     tool_loop,
     mcp_list_tools, mcp_call_tool, mcp_add_server, mcp_remove_server,
     speak,
+    awake,
 ]
 
 # Tools bound only when their matching skill mode is active.

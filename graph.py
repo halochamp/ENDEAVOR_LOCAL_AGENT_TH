@@ -64,6 +64,23 @@ _SEARCH_DIRECTIVE = (
     "ตอบคำถามจริงของผู้ใช้ตามปกติ ไม่ต้อง search"
 )
 
+# ── Deterministic awake-FIRED pin (unsupervised background turn) ─────────────
+# A watcher firing sends the literal text "[AWAKE:<id>] ..." as the turn's own
+# HumanMessage (awake_engine.py's _check()) — categorically different from a
+# user typing a request above, and checked FIRST (before the search intercept)
+# since nobody is watching this turn regardless of what else its content
+# happens to match. TH ships no computer_use tool, so unlike MAX there is no
+# click/drag action cap to enforce here — the directive only needs to tell the
+# model it is unsupervised and must not silently invent that something was
+# done when it can only report back in text.
+_AWAKE_FIRED_PREFIX = "[AWAKE:"
+_AWAKE_FIRED_SCOPE_DIRECTIVE = (
+    "[AWAKE-FIRED SCOPE — deterministic intercept, no human watching this turn]\n"
+    "Turn นี้มาจาก background watcher (ไฟล์/เวลา/หน้าจอ) — ไม่มี user เฝ้าหน้าจออยู่ ณ ขณะนี้\n"
+    "fork นี้ไม่มี computer tool — ทำได้แค่ตรวจสอบ/สรุปข้อมูลแล้วรายงานผลกลับไปให้ user ทราบ "
+    "ห้ามแกล้งทำว่าได้คลิก/พิมพ์อะไรบนจอ ถ้างานต้องการการกระทำจริงบนเครื่อง ให้บอก user ในคำตอบแทน"
+)
+
 
 def _force_plan_or_directive(msgs: list) -> tuple[list, list]:
     """Deterministic research intercept — single path, no nudge-vs-nudge fallback.
@@ -87,6 +104,19 @@ def _force_plan_or_directive(msgs: list) -> tuple[list, list]:
     if idx is None:
         return msgs, []
     content = str(msgs[idx].content)
+
+    # Awake-FIRED pin — checked before anything else: this turn's own content,
+    # not a keyword match, proves nobody is watching the screen right now, so
+    # the unsupervised-turn scope must apply regardless of what else the fired
+    # task text happens to contain. Ephemeral patch, not persisted (matches the
+    # search directive below) — the raw "[AWAKE:id] ..." text is what gets
+    # persisted to history for the next real turn to see.
+    if content.startswith(_AWAKE_FIRED_PREFIX):
+        patched = list(msgs)
+        patched[idx] = HumanMessage(content=_AWAKE_FIRED_SCOPE_DIRECTIVE + "\n\n" + content)
+        log.info("[awake-fired-intercept] unsupervised-turn scope directive injected")
+        return patched, []
+
     if content.startswith("[SEARCH DIRECTIVE") or not _SEARCH_VERB_RE.search(content):
         return msgs, []
 

@@ -15,8 +15,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets
 import stat
+import subprocess
 import sys
 import threading
 import uuid
@@ -29,6 +31,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent_log import AgentLogger
+from awake_engine import AwakeEngine, Registry, drain_notices, restore_notices
 from config import MLX_BASE_URL, MODEL, RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED
 from graph import build_graph, force_compact, rewarm_after_compact, summarize_history
 from react import get_system_prompt, ctx_stats as _ctx_stats
@@ -219,6 +222,209 @@ async def _ws_busy_guard(websocket: WebSocket, msg: str = "agent กำลัง
         await websocket.send_json({"type": "error", "msg": msg})
         return True
     return False
+
+
+# ── Agent Awake — host wiring ──────────────────────────────────────────────────
+# This server owns ONE shared conversation thread (_state.thread_id) across
+# every /chat and /ws caller. An awake-fired turn is deliberately run on that
+# SAME thread via the SAME _run_agent_sync path post_chat/ws_endpoint use —
+# NOT a separate "awake" thread — so it becomes an ordinary turn in the one
+# live conversation. The macOS notification in _post_awake_notification is
+# only a "something happened" nudge for when nobody is looking at the UI right
+# now, not a transcript channel.
+#
+# Only the most-recently-connected WS is tracked (consistent with this file's
+# single-session design elsewhere — no multi-connection fan-out).
+_active_ws: WebSocket | None = None
+_active_ws_loop: asyncio.AbstractEventLoop | None = None
+
+# Captured once in the FastAPI startup hook so AwakeEngine's fire callback —
+# invoked from the engine's OWN daemon thread (awake_engine.AwakeEngine._run)
+# — has a live loop to schedule onto.
+_awake_loop: asyncio.AbstractEventLoop | None = None
+_awake_engine: AwakeEngine | None = None
+
+# FIFO queue of pending awake fires (holds watch_ids only — the message for
+# each lives in _awake_pending, see _enqueue_awake) + watch_id -> latest
+# message for ids currently queued or running (dedup/coalescing guard) + the
+# single consumer task draining the queue (see _awake_queue_worker). All
+# three set together in _start_awake_engine, once a running loop exists.
+_awake_queue: asyncio.Queue | None = None
+_awake_pending: dict[str, str] = {}
+_awake_worker_task: asyncio.Task | None = None
+
+
+def _notification_snippet(text: str, limit: int = 80) -> str:
+    """First line of `text`, minus a leading [AWAKE:id] tag (redundant — the
+    caller already puts watch_id in the notification separately), sanitized
+    for a literal AppleScript string and capped at `limit` chars."""
+    first_line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    first_line = re.sub(r"^\[AWAKE:[^\]]+\]\s*", "", first_line)
+    first_line = first_line.replace("\\", "").replace('"', "'")
+    return first_line[:limit] + ("…" if len(first_line) > limit else "")
+
+
+def _post_awake_notification(watch_id: str, snippet: str) -> None:
+    """Best-effort macOS notification for when no WS client is connected to
+    receive the fired turn's result — the user learns something happened even
+    with the UI closed. Runs via subprocess (blocking) — callers MUST invoke
+    this off the event loop (run_in_executor), never awaited directly.
+    try/except-everything: a failed notification must never take down the
+    awake turn or the server."""
+    try:
+        text = f"awake {watch_id}: {snippet}" if snippet else f"awake {watch_id} fired"
+        script = f'display notification "{text}" with title "ENDEAVOR TH"'
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
+    except Exception as e:
+        log.warning("awake: notification failed for %s: %s", watch_id, e)
+
+
+def _awake_fire(watch_id: str, message: str) -> None:
+    """AwakeEngine fire callback — called SYNCHRONOUSLY from the engine's own
+    daemon thread (awake_engine.py: tick() calls self._fire(wid, message)
+    directly, not awaited, wrapped only in a broad try/except). Must therefore
+    schedule-and-return immediately: running the turn inline here would stall
+    every OTHER watcher's check for as long as this turn takes, on every tick.
+    Schedules _enqueue_awake (dedup + FIFO put, see its docstring) onto the
+    server's own asyncio loop (captured at startup) — the actual turn runs
+    later, drained one at a time by _awake_queue_worker."""
+    loop = _awake_loop
+    if loop is None:
+        log.warning("awake: fire(%s) dropped — server loop not captured yet (starting up?)", watch_id)
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(_enqueue_awake(watch_id, message), loop)
+    except Exception as e:
+        # Defensive belt-and-suspenders: the engine already try/excepts fire(),
+        # but a scheduling failure here (e.g. loop closing during shutdown)
+        # must never propagate back onto the engine thread.
+        log.warning("awake: could not schedule fire(%s): %s", watch_id, e)
+
+
+async def _enqueue_awake(watch_id: str, message: str) -> None:
+    """Runs on the server's own event loop (scheduled via
+    run_coroutine_threadsafe from the engine's daemon thread, see
+    _awake_fire). Dedup/coalescing guard: if `watch_id` is already queued or
+    running, don't enqueue a second copy — but DO overwrite its stored
+    message with this newer one, so the eventual run uses whatever was most
+    recent rather than silently discarding a distinct occurrence.
+
+    Needed because "every" watchers re-detect due on every tick while queued
+    behind a long turn — e.g. interval_minutes=5 stuck behind a 20-minute user
+    turn would otherwise re-trigger at t=5,10,15 and pile up 4 near-identical
+    copies of the same task by the time the queue finally drains. The worker
+    reads _awake_pending[watch_id] at the LATEST possible moment (after
+    acquiring _busy, right before running) so a coalesce that lands anywhere
+    from "still queued" to "still waiting for the lock" is honored — only a
+    coalesce that lands after the turn has already started running is too
+    late to change anything."""
+    if watch_id in _awake_pending:
+        log.info("awake: fire(%s) coalesced — already queued/running, message updated to latest", watch_id)
+        _awake_pending[watch_id] = message
+        return
+    _awake_pending[watch_id] = message
+    await _awake_queue.put(watch_id)
+
+
+async def _awake_queue_worker() -> None:
+    """Single consumer draining _awake_queue in FIFO order, one turn at a
+    time — this is what gives colliding awake fires in-order execution
+    without a separate lock (a second/third queued fire just waits its turn
+    behind this loop). Started once by _start_awake_engine, runs for the
+    process lifetime, cancelled in _stop_awake_engine.
+
+    Each dequeued item still competes for _busy against real user turns
+    (post_chat/ws_endpoint) exactly as before — a queued fire waits as long as
+    it takes for the current user turn to finish, it is never dropped for
+    waiting too long (single-GPU rule — awake and user turns still never run
+    concurrently)."""
+    while True:
+        watch_id = await _awake_queue.get()
+        message = None
+        try:
+            if getattr(_state, "app", None) is None:
+                log.warning("awake: fire(%s) dropped — _state.app not ready (server booting/offline)", watch_id)
+                continue
+            await _busy.acquire()
+            try:
+                message = _awake_pending.get(watch_id, "")
+                await _run_awake_turn(watch_id, message)
+            finally:
+                _busy.release()
+        except Exception:
+            log.exception("awake: queue worker crashed handling fire(%s)", watch_id)
+        finally:
+            # A coalesce that lands WHILE _run_awake_turn above is already
+            # executing updates _awake_pending with nothing left to consume it
+            # — popping unconditionally here would silently discard that newer
+            # fire (a times= watcher's second slot lost for the whole day,
+            # since awake_engine already marked it fired at detection time).
+            # Re-queue once instead: if the pending message no longer matches
+            # what we just ran, a coalesce happened during the run.
+            if watch_id in _awake_pending and _awake_pending[watch_id] != message:
+                log.info("awake: fire(%s) coalesced during its own run — re-queuing the newer message", watch_id)
+                await _awake_queue.put(watch_id)
+            else:
+                _awake_pending.pop(watch_id, None)
+            _awake_queue.task_done()
+
+
+async def _deliver_awake_result(watch_id: str, parts: list[str], message: str) -> None:
+    """Deliver a finished awake turn — forward finished response part(s) + a
+    trailing 'done' to whatever WS is currently connected, reusing event types
+    the renderer already handles. No parts (error/cancelled with nothing to
+    show) or a dead WS both fall back to the notification: even with a live
+    WS, a silent 'done' with zero text is not useful feedback on its own.
+
+    Split out from _run_awake_turn so this branch is unit-testable with a
+    fake WS object — it does not touch _busy/_run_agent_sync/_state at all."""
+    delivered = False
+    if _active_ws is not None and parts:
+        try:
+            for part in parts:
+                await _active_ws.send_json({"type": "response", "content": part})
+            await _active_ws.send_json({"type": "done"})
+            delivered = True
+        except Exception:
+            delivered = False  # WS died between fire-start and now
+
+    if not delivered:
+        snippet = _notification_snippet(parts[0] if parts else message)
+        await asyncio.get_running_loop().run_in_executor(None, _post_awake_notification, watch_id, snippet)
+
+
+async def _run_awake_turn(watch_id: str, message: str) -> None:
+    """Executes one awake-fired turn's body and delivers the result. `message`
+    is the engine's own text verbatim ("[AWAKE:id] <task>" + any file/screen
+    context hints) — passed straight through to _run_agent_sync as the query,
+    same as a real user message.
+
+    Caller (_awake_queue_worker) must already hold _busy and is responsible
+    for releasing it — this function neither acquires nor releases it, so it
+    stays a pure run-and-deliver unit, independently testable the same way
+    _deliver_awake_result is. Unlike post_chat's own wait loop this has no
+    timeout — a stuck LLM call would hold _busy until it finishes, same
+    behavior as a real user turn hitting the same path today."""
+    parts: list[str] = []
+    try:
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue = asyncio.Queue()
+        threading.Thread(target=_run_agent_sync, args=(message, q, loop), daemon=True).start()
+        while True:
+            event = await q.get()
+            etype = event.get("type")
+            if etype == "response":
+                parts.append(event.get("content", ""))
+            elif etype in ("done", "error", "cancelled"):
+                if etype == "error":
+                    log.warning("awake: fire(%s) turn error: %s", watch_id, event.get("msg"))
+                break
+            # progress/phase — discarded here; no live streaming feed for an
+            # awake turn yet.
+    except Exception as e:
+        log.warning("awake: fire(%s) run failed: %s", watch_id, e)
+
+    await _deliver_awake_result(watch_id, parts, message)
 
 
 # ── Tool detail helper ─────────────────────────────────────────────────────────
@@ -659,6 +865,9 @@ async def ws_endpoint(websocket: WebSocket):
             return
     # Must echo the offered subprotocol or the browser aborts the connection
     await websocket.accept(subprotocol=_offered)
+    global _active_ws, _active_ws_loop
+    _active_ws = websocket
+    _active_ws_loop = asyncio.get_running_loop()
     loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
     # Dedicated WS reader: one persistent task owns websocket.receive_json().
@@ -966,11 +1175,44 @@ async def ws_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         log.info("WebSocket disconnected")
     finally:
+        if _active_ws is websocket:
+            _active_ws = None
+            _active_ws_loop = None
         ws_reader_task.cancel()
         try:
             await ws_reader_task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+# ── Agent Awake — engine lifecycle ─────────────────────────────────────────────
+
+@api.on_event("startup")
+async def _start_awake_engine() -> None:
+    """Capture the live asyncio loop (needed by _awake_fire's
+    run_coroutine_threadsafe), create the awake fire queue, start its single
+    consumer task, then start the engine's own tick thread."""
+    global _awake_loop, _awake_engine, _awake_queue, _awake_worker_task
+    _awake_loop = asyncio.get_running_loop()
+    _awake_queue = asyncio.Queue()
+    _awake_worker_task = asyncio.create_task(_awake_queue_worker())
+    _awake_engine = AwakeEngine(fire=_awake_fire, registry=Registry(), owner="agent_server")
+    _awake_engine.start()
+    restore_notices(drain_notices())
+
+
+@api.on_event("shutdown")
+async def _stop_awake_engine() -> None:
+    global _awake_worker_task
+    if _awake_engine is not None:
+        _awake_engine.stop()
+    if _awake_worker_task is not None:
+        _awake_worker_task.cancel()
+        _awake_worker_task = None
+    # A pending coalesced fire left in _awake_pending would coalesce-skip
+    # every future fire for that watch_id forever (the guard checks
+    # `if watch_id in _awake_pending`) — clear it so a restart starts clean.
+    _awake_pending.clear()
 
 
 if __name__ == "__main__":
