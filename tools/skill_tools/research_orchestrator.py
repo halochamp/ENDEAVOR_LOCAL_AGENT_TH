@@ -12,6 +12,8 @@ Architecture (State Machine):
 """
 from __future__ import annotations
 
+import glob
+import hashlib
 import json
 import os
 import re
@@ -30,7 +32,11 @@ from tools.browse_url import _fetch_jina
 from tools._summarize import summarize, summarize_batch
 from tools._progress import phase as _phase, progress as _progress
 from tools import web_cache
-from tools.web_cache import web_count_inc as _wc_inc
+from tools.web_cache import (
+    web_count_check as _wc_check,
+    web_count_check_and_inc as _wc_check_and_inc,
+    web_count_remaining as _wc_remaining,
+)
 from config import SUMMARY_SKIP_LLM_BELOW, SUMMARY_MAX_CHARS, SUMMARY_BATCH_MAX_TOKENS
 
 log = logging.getLogger(__name__)
@@ -119,7 +125,6 @@ def _fetch_and_summarize_batch(batch: list[str], topic: str) -> list[dict]:
     cached: dict[str, str] = {}
     need_raw: list[str] = []
     for url in batch:
-        _wc_inc()
         s = web_cache.get_summary(url, topic)
         if s is not None:
             cached[url] = s
@@ -128,10 +133,36 @@ def _fetch_and_summarize_batch(batch: list[str], topic: str) -> list[dict]:
 
     raws: dict[str, str] = {}
     if need_raw:
-        _phase(f"⚡ Parallel fetch {len(need_raw)} URLs…")
-        with ThreadPoolExecutor(max_workers=5) as ex:
-            for url, raw in ex.map(_fetch_raw, need_raw):
-                raws[url] = raw
+        # Reserve budget before fetching, not after — this used to fetch every
+        # uncached URL first and meter afterward, so it could blow past the
+        # per-turn web cap or fetch anyway once another tool already exhausted
+        # it. Mirrors batch_browse.py's check-then-inc pattern.
+        err = _wc_check()
+        if err:
+            for url in need_raw:
+                raws[url] = err
+            need_raw = []
+        else:
+            remaining = _wc_remaining()
+            if remaining < len(need_raw):
+                _phase(f"⚠️ web budget: capping fetch to {remaining}/{len(need_raw)} URLs")
+                for url in need_raw[remaining:]:
+                    raws[url] = "[web_limit] ค้นครบ budget ของ turn นี้แล้ว"
+                need_raw = need_raw[:remaining]
+
+        if need_raw:
+            _phase(f"⚡ Parallel fetch {len(need_raw)} URLs…")
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                for url, raw in ex.map(_fetch_raw, need_raw):
+                    raws[url] = raw
+            # Meter only successful fetches, atomically — check_and_inc (not a
+            # bare inc) since ToolNode can run this tool concurrently with
+            # other web tools sharing the same counter.
+            for url in need_raw:
+                if not raws.get(url, "").startswith("[error]"):
+                    err = _wc_check_and_inc()
+                    if err:
+                        raws[url] = err
 
     # ── Phase 2: batch summarize long content ─────────────────────────────────
     need_llm = [
@@ -242,9 +273,23 @@ def _append_final_summary(path: str, topic: str, all_mini: list[dict], all_summa
 def _cp_path(topic: str) -> str:
     """Per-topic checkpoint path. A fresh run used to overwrite a single fixed
     /tmp file, silently clobbering a different topic's paused checkpoint — keying
-    on the topic slug keeps interleaved research runs from colliding."""
+    on the topic slug keeps interleaved research runs from colliding.
+
+    The readable slug is truncated to 25 chars, so two distinct long topics that
+    share the same first 25 chars would otherwise collide on the same checkpoint
+    file — append a short hash of the full topic to disambiguate.
+    """
     slug = re.sub(r"[^\w]", "_", topic)[:25].strip("_") or "untitled"
-    return os.path.join(tempfile.gettempdir(), f"news_research_{slug}.json")
+    h = hashlib.md5(topic.encode("utf-8")).hexdigest()[:8]
+    return os.path.join(tempfile.gettempdir(), f"news_research_{slug}_{h}.json")
+
+
+def _latest_cp_path() -> Optional[str]:
+    """Most recently modified checkpoint file, for resume=True with topic="" —
+    there's nothing to hash into _cp_path() so fall back to whichever research
+    run was paused most recently."""
+    candidates = glob.glob(os.path.join(tempfile.gettempdir(), "news_research_*.json"))
+    return max(candidates, key=os.path.getmtime) if candidates else None
 
 
 def _save_cp(cp: dict, path: str) -> None:
@@ -290,19 +335,28 @@ def research_orchestrator(topic: str, n: int = 30, resume: bool = False, keyword
     """
     n = max(1, min(100, int(n)))
     ws = _workspace()
-    cp_path = _cp_path(topic)   # per-topic — resume keys on the same topic slug
 
     try:
         # ── RESUME or fresh START ──────────────────────────────────────────────
         if resume:
-            cp = _load_cp(cp_path)
+            # Documented resume call shape is topic="", n=0, resume=True — with
+            # no topic there's nothing to hash into _cp_path(), so fall back to
+            # the most recently touched checkpoint.
+            cp_path = _cp_path(topic) if topic else _latest_cp_path()
+            cp = _load_cp(cp_path) if cp_path else None
             if cp is None:
                 return "[error] ไม่พบ checkpoint — ลอง resume=False เพื่อเริ่มใหม่"
+            if topic and cp.get("topic") != topic:
+                # cp_path is hash-keyed on topic now, so this should be unreachable
+                # outside a hash collision — guard kept as defense-in-depth so a stale
+                # checkpoint never silently swaps in someone else's topic.
+                return "[error] checkpoint topic ไม่ตรงกับ topic ที่ระบุ — ลอง resume=False เพื่อเริ่มใหม่"
             topic = cp["topic"]
             filename = cp["filename"]
             path = os.path.join(ws, filename)
             _phase(f"▶️ Resume: {topic} ({len(cp['completed'])}/{len(cp['all_urls'])} แหล่งแล้ว)")
         else:
+            cp_path = _cp_path(topic)
             # Create output file
             slug = re.sub(r"[^\w]", "_", topic)[:25].strip("_")
             filename = f"news_{slug}.md"
@@ -327,12 +381,13 @@ def research_orchestrator(topic: str, n: int = 30, resume: bool = False, keyword
                 "all_urls": all_urls, "completed": [],
                 "batch_num": 0, "total_batches": total_batches,
                 "batch_summaries": [],
+                "all_summaries": [],  # full per-URL summaries — persisted so resume keeps pre-pause sources
             }
             _save_cp(cp, cp_path)
             _phase(f"📡 {topic} | {len(all_urls)} แหล่ง | {total_batches} batch — เริ่ม…")
 
         # ── BATCH LOOP — Python loop, ไม่ต้องพึ่ง LLM ──────────────────────────
-        all_summaries: list[str] = []   # accumulate full per-URL summaries for return
+        all_summaries: list[str] = cp.setdefault("all_summaries", [])  # ref to cp's list → resume keeps pre-pause sources
         while len(cp["completed"]) < len(cp["all_urls"]):
             remaining = [u for u in cp["all_urls"] if u not in cp["completed"]]
             batch = remaining[:5]
