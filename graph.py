@@ -45,7 +45,7 @@ _SYNTH_RETRY_PROMPT = (
 # Explicit research/search VERBS only — NOT bare "หา" (avoids matching "หาค่าเฉลี่ย" = compute).
 # Negative lookahead excludes retrospective phrasing ("...ค้นหาที่ผ่านมา" = "past
 # searches", a meta-question about history, not a new search request) so it doesn't
-# wrongly inject _SEARCH_DIRECTIVE for questions like "scratch_write มีประโยชน์ไหม
+# wrongly inject _SEARCH_DIRECTIVE for questions like "tool_loop มีประโยชน์ไหม
 # ในการค้นหาที่ผ่านมา".
 _SEARCH_VERB_RE = re.compile(
     r"(?:ทำวิจัย|วิจัย|ค้นหา|ค้นคว้า|สืบค้น|หาข้อมูล|หาข่าว|เช็คข้อมูล|ค้นจาก|หาจาก|search)"
@@ -407,6 +407,11 @@ def react_node(state: V2State, config: RunnableConfig) -> dict:
     Retry logic: ถ้า agent ทำ tool ครบแต่ไม่ synthesize (final='') →
     inject synthesis prompt แล้ว call LLM 1 ครั้ง (ไม่ใช่ full react loop ใหม่)
     """
+    # Docstring-split first-call tracker (bash/read_file/tool_loop/python_exec,
+    # KNOW-LITE-DOCSTRING-SPLIT) — once-per-turn reset.
+    from tools._call_guard import reset as _reset_call_guard
+    _reset_call_guard()
+
     trimmed = trim_messages(
         state["messages"],
         max_tokens=CONTEXT_MAX_CHARS,
