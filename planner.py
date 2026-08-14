@@ -1,6 +1,7 @@
-"""planner.py — trivial-skip + classify simple/complex + plan
+"""planner.py — is_trivial (diagnostic-only) + classify simple/complex + plan
 
-- trivial-skip: greeting/thanks/recall → ข้าม planner (knowhow A5: deterministic before LLM)
+- is_trivial: greeting/thanks/recall detector — NOT wired into any production path.
+  Used only by the unit test suite as a sanity-check for the trivial/recall regexes.
 - planner: 1 LLM call → {"mode":"simple"} | {"mode":"complex","plan":[str,...]}
 - STOP-chain (knowhow C2), plan = list[str] เท่านั้น (locked contract)
 - JSON retry 1 รอบ (robustness #2); fallback → simple (safe: simple→react)
@@ -14,21 +15,23 @@ from llm import build_llm
 
 log = logging.getLogger(__name__)
 
-# trivial-skip — conservative (false-positive ของ complex แย่กว่า miss; miss แค่เสีย planner call เปล่า)
+# diagnostic-only detector — conservative (false-positive ของ complex แย่กว่า miss; miss แค่เสีย planner call เปล่า)
 # แยก Thai (ไม่มี \b — knowhow: \b ไม่ทำงานกับ Thai combining chars) ออกจาก English (\b กัน "hi"⊂"highway")
 _TRIVIAL_RE = re.compile(
     r'^\s*(สวัสดี|หวัดดี|ดีครับ|ดีค่ะ|ขอบคุณ|ขอบใจ|โอเค|บาย)'
-    r'|^\s*(hello|hi|hey|thanks?|bye|okay?)\b',
+    r'|^\s*(hello|hi|hey|thanks?|bye|ok(ay)?)\b',
     re.IGNORECASE,
 )
 _RECALL_RE = re.compile(
-    r'เมื่อกี้|ก่อนหน้า(นี้)?|ที่ถามไป|ถามอะไร(ไป|มา)|คุยเรื่องอะไร|ที่แล้ว',
+    r'เมื่อกี้|ก่อนหน้า(นี้)?|ที่ถามไป|ถามอะไร(ไป|มา)|คุยเรื่องอะไร|(ครั้ง|รอบ|คราว)ที่แล้ว|^\s*ที่แล้ว',
     re.IGNORECASE,
 )
 
 
 def is_trivial(query: str) -> bool:
-    """greeting/thanks/recall → ข้าม planner ไป react ตรงๆ (optimization)"""
+    """greeting/thanks/recall detector — DIAGNOSTIC ONLY, not called from any production
+    path (no caller in graph.py/react.py/tools/). Used by the unit test suite to sanity-check
+    the trivial/recall regexes stay correct."""
     q = query.strip()
     return bool(_TRIVIAL_RE.match(q) or _RECALL_RE.search(q))
 
@@ -77,7 +80,10 @@ BAD steps — never use these:
 
 
 def _parse(text: str) -> dict | None:
-    """ดึง JSON + validate locked contract (mode simple/complex, plan=list[str]≥2)"""
+    """ดึง JSON + validate locked contract (mode simple/complex, plan=list[str]≥2).
+    Returns None on ANY schema violation (bad JSON, unknown mode, plan not a list,
+    <2 valid steps) so plan()'s retry loop fires — never silently coerces a
+    schema violation to simple; only the final fallback in plan() does that."""
     text = text.strip()
     start = text.find("{")
     if start == -1:
@@ -109,23 +115,40 @@ def _parse(text: str) -> dict | None:
                 if mode == "simple":
                     return {"mode": "simple"}
                 if mode == "complex":
-                    steps = [str(s).strip() for s in obj.get("plan", []) if str(s).strip()]
+                    raw_plan = obj.get("plan", [])
+                    if not isinstance(raw_plan, list):
+                        return None  # schema ผิด (เช่น plan เป็น string) → retry, not simple
+                    steps = [str(s).strip() for s in raw_plan if str(s).strip()]
                     if len(steps) >= 2:
-                        return {"mode": "complex", "plan": steps[:6]}
-                    return {"mode": "simple"}  # complex แต่ <2 step → simple
+                        if len(steps) > 6:
+                            # keep head + final step: the last step is the synthesis
+                            # step — never drop it via a blunt head-only truncation
+                            steps = steps[:5] + steps[-1:]
+                        return {"mode": "complex", "plan": steps}
+                    return None  # complex แต่ <2 step → retry, not simple
                 return None
     return None
 
 
+_planner_llm = None  # module-level cache: avoid rebuilding ChatOpenAI + httpx pool every plan() call
+
+
+def _get_planner_llm():
+    global _planner_llm
+    if _planner_llm is None:
+        # planner = JSON classification task (simple/complex + step list)
+        # ไม่ต้อง reasoning chain → ปิด thinking ลด latency ~10× (verified 2026-05-29)
+        _planner_llm = build_llm(
+            temperature=0.0,
+            max_tokens=768,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+    return _planner_llm
+
+
 def plan(query: str) -> dict:
     """คืน {"mode":"simple"} หรือ {"mode":"complex","plan":[...]}"""
-    # planner = JSON classification task (simple/complex + step list)
-    # ไม่ต้อง reasoning chain → ปิด thinking ลด latency ~10× (verified 2026-05-29)
-    llm = build_llm(
-        temperature=0.0,
-        max_tokens=768,
-        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-    )
+    llm = _get_planner_llm()
     system = _PLANNER_SYSTEM.replace("__TODAY__", _today())
     messages = [
         {"role": "system", "content": system},
@@ -138,7 +161,7 @@ def plan(query: str) -> dict:
                 {"role": "assistant", "content": last},
                 {"role": "user", "content": "Invalid. Output ONLY the JSON object, nothing else."},
             ]
-        resp = llm.invoke(messages)
+        resp = llm.invoke(messages, config={"callbacks": []})
         last = resp.content or ""
         parsed = _parse(last)
         if parsed:
