@@ -417,6 +417,21 @@ html, body {
 #send-btn:hover   { background: #264d70; }
 #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+#stop-btn {
+  padding: 8px 14px;
+  background: #4a1e1e;
+  border: 1px solid #9f2d2d;
+  color: #e57373;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+#stop-btn:hover   { background: #5c2626; }
+#stop-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* Context bar */
 #ctx-bar {
   padding: 3px 16px 4px;
@@ -541,6 +556,7 @@ html, body {
         placeholder="พิมพ์ข้อความ… (/ สำหรับคำสั่ง)"
         autocomplete="off">
       <button id="send-btn" onclick="doSend()">ส่ง ↵</button>
+      <button id="stop-btn" onclick="doCancel()" style="display:none">■ หยุด</button>
     </div>
 
     <div id="ctx-bar">
@@ -586,7 +602,7 @@ const S = {
   histPairs: null, histTotal: 0, histLoading: false,
 
   // Run state
-  busy: false, panelView: null,
+  busy: false, panelView: null, runId: null, cancelPending: false,
   activity: [], streamEl: null, streamBuf: [],
   showStream: true,   // false while tools executing, true for direct/synthesis
 
@@ -777,6 +793,7 @@ function onEvent(ev) {
   // ── Streaming ──────────────────────────────────────────────────
   } else if (t === 'start') {
     S.busy = true; S.streamBuf = []; S.showStream = true;
+    S.runId = ev.run_id || null; S.cancelPending = false;
     updateInput(); startSpinner('thinking…');
     // Create streaming message bubble
     const wrap = document.createElement('div');
@@ -815,8 +832,9 @@ function onEvent(ev) {
     }
 
   } else if (t === 'token') {
-    S.streamBuf.push(ev.text || '');
-    if (S.showStream && S.streamEl) {
+    if (S.cancelPending) { /* swallow post-cancel tokens */ }
+    else S.streamBuf.push(ev.text || '');
+    if (!S.cancelPending && S.showStream && S.streamEl) {
       const visible = stripThink(S.streamBuf.join(''));
       S.streamEl.innerHTML = (visible ? md(visible) : '') + '<span class="cursor">▋</span>';
       scrollDown();
@@ -833,6 +851,7 @@ function onEvent(ev) {
 
   } else if (t === 'done') {
     stopSpinner(); S.busy = false; S.histPairs = null;
+    S.runId = null; S.cancelPending = false;
     updateInput();
     S.activity.push({kind:'sep', name:'', detail:'', ts:''});
     if (S.panelView === 'activity') renderPanel();
@@ -844,13 +863,13 @@ function onEvent(ev) {
       S.streamEl.innerHTML = `<span style="color:#f48771">❌ ${esc(ev.msg||'error')}</span>`;
     else
       appendSystem(`❌ ${ev.msg || 'error'}`);
-    S.busy = false; updateInput();
+    S.busy = false; S.runId = null; S.cancelPending = false; updateInput();
 
   } else if (t === 'cancelled') {
     stopSpinner();
     if (S.streamEl)
       S.streamEl.innerHTML = '<span style="color:#808080">✕ ยกเลิกแล้ว</span>';
-    S.busy = false; updateInput();
+    S.busy = false; S.runId = null; S.cancelPending = false; updateInput();
   }
 }
 
@@ -891,6 +910,20 @@ function updateCtx() {
 function updateInput() {
   $('input').disabled    = S.busy;
   $('send-btn').disabled = S.busy;
+  $('stop-btn').style.display = S.busy ? '' : 'none';
+  $('stop-btn').disabled = S.cancelPending;
+}
+
+function doCancel() {
+  if (!S.connected || !S.busy || !S.runId || S.cancelPending) return;
+  send({type: 'command', cmd: 'cancel', run_id: S.runId});
+  // Cancel is not instant — the running turn only stops at the next checkpoint
+  // (mid token-gen or mid tool call can take a moment). Acknowledge immediately
+  // so the click doesn't feel like nothing happened, and disable the button so
+  // a frustrated user can't spam more cancels.
+  S.cancelPending = true;
+  startSpinner('กำลังหยุด… รอสักครู่');
+  updateInput();
 }
 
 // ── Spinner ────────────────────────────────────────────────────────────────────
