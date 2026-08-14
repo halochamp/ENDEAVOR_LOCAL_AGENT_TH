@@ -91,9 +91,6 @@ _TOOL_LABELS: dict[str, str] = {
     "workspace_ls":      "Workspace",
     "create_plan":       "Planning",
     "remember":          "Remember",
-    "scratch_write":     "Note",
-    "scratch_read":      "Read Notes",
-    "scratch_clear":     "Clear Notes",
 }
 
 _SPINNER_LABELS: dict[str, str] = {
@@ -111,9 +108,6 @@ _SPINNER_LABELS: dict[str, str] = {
     "create_plan":       "create_plan",
     "workspace_ls":      "workspace_ls",
     "remember":          "remember",
-    "scratch_write":     "scratch_write",
-    "scratch_read":      "scratch_read",
-    "scratch_clear":     "scratch_clear",
     "tool_loop":         "tool_loop",
 }
 

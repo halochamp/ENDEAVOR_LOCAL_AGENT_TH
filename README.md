@@ -308,14 +308,11 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 |---|---|
 | `read_image` | อ่านข้อความจากภาพด้วย Apple Vision OCR — แม่นยำสำหรับภาษาไทยและอังกฤษ รองรับทั้งไฟล์ local และ URL |
 
-### 🧠 Memory & Scratchpad
+### 🧠 Memory
 
 | Tool | คำอธิบาย |
 |---|---|
 | `remember` | บันทึกข้อมูลสำคัญเกี่ยวกับผู้ใช้ลง `memory.md` แบบถาวร — จำได้ข้าม session |
-| `scratch_write` | บันทึก note ชั่วคราวระหว่างทำงาน multi-step |
-| `scratch_read` | อ่าน notes ทั้งหมดในscratchpad — เรียกก่อน synthesize คำตอบสุดท้ายเสมอ |
-| `scratch_clear` | ล้าง scratchpad ทั้งหมดเมื่อเริ่มงานใหม่ |
 
 ### 🗺️ Planning & Loops
 

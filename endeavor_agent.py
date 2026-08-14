@@ -39,7 +39,6 @@ import atexit
 from tools import ALL_TOOLS, SKILL_TOOLS
 from tools._progress import set_callback as set_progress_callback, set_phase_callback, set_plan_callback
 from tools.web_cache import web_count_reset as _reset_web_counter
-from tools.scratchpad import _PAD as _scratch_pad
 from agent_log import AgentLogger
 from ui_cli import (
     Spinner, print_header, print_divider, print_user_prompt,
@@ -108,10 +107,6 @@ def _get_tool_detail(name: str, args: dict) -> str:
         for line in code.splitlines():
             if line.strip():
                 return line.strip()[:55]
-    if name == "scratch_write":
-        key = args.get("key", "")
-        val = str(args.get("value", ""))
-        return f"[{key}] {val[:40]}" if key else val[:55]
     if name in ("browse_url", "recall_web"):
         url = args.get("url", "")
         # แสดง domain + path สั้นๆ
@@ -137,7 +132,7 @@ def _make_label(name: str, args: dict) -> str:
     return base
 
 
-_PLAN_SKIP = {"scratch_write", "scratch_read", "scratch_clear", "create_plan"}
+_PLAN_SKIP = {"create_plan"}
 
 
 class _Turn:
@@ -149,7 +144,7 @@ class _Turn:
         self.web_refs: list = []
         self.final = ""
         self.plan_steps: list[str] = []   # from create_plan output
-        self.plan_step_idx: int = 0       # non-scratch tool calls since create_plan
+        self.plan_step_idx: int = 0       # tool calls since create_plan
 
     def _bind(self) -> None:
         s = self.spinner
@@ -316,7 +311,7 @@ def _run_turn(app, q: str, cfg: dict, *, thread_id: str, saver, db_conn,
         run_turn_core(
             app, q, stream_cfg,
             thread_id=thread_id, saver=saver, db_conn=db_conn,
-            clear_scratch=_scratch_pad.clear, reset_web_counter=_reset_web_counter,
+            reset_web_counter=_reset_web_counter,
             on_final=_on_final,
         )
 

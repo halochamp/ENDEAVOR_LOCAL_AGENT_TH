@@ -611,10 +611,10 @@ function stripThink(text) {
   // Remove tool call lines with args: [name(args)] — not markdown [text](url)
   // [^\]]* matches args that may contain ) e.g. [web_search(query="foo(bar)")]
   s = s.replace(/\[[a-zA-Z_]\w*\([^\]]*\)\](?!\()/g, '');
-  // Remove bare zero-arg tool-call echoes: [workspace_ls], [scratch_read], [scratch_clear]
+  // Remove bare zero-arg tool-call echoes: [workspace_ls]
   // (deliberately a small known list, not a generic [a-zA-Z_]\w*] match — the latter
   // would also strip legitimate bracket text like [note]/[error]/[TODO])
-  s = s.replace(/\[(workspace_ls|scratch_read|scratch_clear)\](?!\()/g, '');
+  s = s.replace(/\[(workspace_ls)\](?!\()/g, '');
   // Remove trailing incomplete tool call still being streamed ([name( but no closing )])
   const lastBracket = s.search(/\[[a-zA-Z_]\w*\([^\]]*$/);
   if (lastBracket !== -1 && s.indexOf(')]', lastBracket) === -1)

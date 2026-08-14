@@ -52,7 +52,6 @@ from tools._progress import (
     set_run_callbacks,
     ToolCancelled,
 )
-from tools.scratchpad import _PAD as _scratch_pad
 from tools.web_cache import web_count_reset as _reset_web_counter
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -275,10 +274,6 @@ def _tool_detail(name: str, args: dict) -> str:
         n = len(args.get("items", []))
         ctx = args.get("context", "")
         return f"{action}  {n} items" + (f"  [{ctx[:40]}]" if ctx else "")
-    if name == "scratch_write":
-        key = args.get("key", "")
-        val = str(args.get("value", ""))[:60]
-        return f"[{key}] {val}" if key else val
     if name == "create_plan":
         return args.get("query", "")[:100]
     if name == "plot":
@@ -473,7 +468,7 @@ def _run_agent_sync(
         final = run_turn_core(
             _state.app, actual_q, stream_cfg,
             thread_id=_state.thread_id, saver=_state._saver, db_conn=_state._db_conn,
-            clear_scratch=_scratch_pad.clear, reset_web_counter=_reset_web_counter,
+            reset_web_counter=_reset_web_counter,
             on_final=lambda _: cb._put({"type": "phase", "label": "synthesizing…"}),
         )
         cb._cancel_timer()

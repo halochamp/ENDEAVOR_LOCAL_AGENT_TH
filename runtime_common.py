@@ -402,24 +402,23 @@ def run_turn_core(
     thread_id: str,
     saver: SqliteSaver,
     db_conn: sqlite3.Connection,
-    clear_scratch: Callable[[], None],
     reset_web_counter: Callable[[], None],
     on_final: Callable[[str], None] | None = None,
 ) -> str:
     """Shared turn skeleton for both entry points.
 
     _run_turn (CLI) and _run_agent_sync (AGENT_UI) each drove an identical
-    clear-scratch → reset-web-counter → app.stream(stream_mode="updates") →
+    reset-web-counter → app.stream(stream_mode="updates") →
     AIMessage final-content loop → trim_memory/enforce_db_limit sequence —
     only the callback object inside stream_cfg and the UI reaction to the
     final chunk differed. Single source so the two can't drift apart
     (Dual-Path Prohibition, CLAUDE.md §5).
 
-    clear_scratch/reset_web_counter are injected rather than imported here:
-    both resolve to `tools.scratchpad`/`tools.web_cache` symbols, and importing
-    either pulls in all of `tools/__init__.py` (27 tools incl. browser/RAG
-    deps, ~1s) — infra (this module) staying free of the tool layer keeps
-    `import runtime_common` cheap for callers like _test_thinking_timer.py.
+    reset_web_counter is injected rather than imported here: it resolves to
+    a `tools.web_cache` symbol, and importing it pulls in all of
+    `tools/__init__.py` (tools incl. browser deps, ~1s) — infra (this
+    module) staying free of the tool layer keeps `import runtime_common`
+    cheap for callers like _test_thinking_timer.py.
 
     Housekeeping runs in `finally`: the old CLI _run_turn swallowed stream
     exceptions internally and returned normally, so the REPL loop's
@@ -434,7 +433,6 @@ def run_turn_core(
     into their own turn-state object, etc). The return value is the same
     final text, for callers that don't keep their own running copy.
     """
-    clear_scratch()
     reset_web_counter()
     final = ""
     try:

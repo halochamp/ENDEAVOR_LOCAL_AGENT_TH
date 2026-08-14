@@ -21,7 +21,6 @@ from .fetch_sitemap import fetch_sitemap
 from .batch_browse import batch_browse
 from .scrape_table import scrape_table
 from .read_image import read_image
-from .scratchpad import scratch_write, scratch_read, scratch_clear
 from .tool_loop import tool_loop
 from .skill_tools.research_orchestrator import research_orchestrator
 
@@ -30,7 +29,6 @@ ALL_TOOLS = [
     create_plan, workspace_ls, browse_url, browser_use, recall_web, remember,
     fetch_sitemap, batch_browse, scrape_table,
     read_image,
-    scratch_write, scratch_read, scratch_clear,
     tool_loop,
 ]
 
