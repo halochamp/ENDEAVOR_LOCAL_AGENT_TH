@@ -81,11 +81,14 @@ BATCH_BROWSE_MAX_URLS    = int(os.getenv("V2_BATCH_BROWSE_MAX_URLS",    "8"))
 SUMMARY_MAX_TOKENS       = int(os.getenv("V2_SUMMARY_MAX_TOKENS",       "1024"))
 SUMMARY_BATCH_MAX_TOKENS = int(os.getenv("V2_SUMMARY_BATCH_MAX_TOKENS", "3072"))
 FETCH_SITEMAP_MAX_URLS   = int(os.getenv("V2_FETCH_SITEMAP_MAX_URLS",   "200"))
+FETCH_SITEMAP_SHOWN      = int(os.getenv("V2_FETCH_SITEMAP_SHOWN",      "30"))  # URLs shown to the model per call
 SCRAPE_TABLE_MAX_CHARS   = int(os.getenv("V2_SCRAPE_TABLE_MAX_CHARS",   "10000"))
 
 # ── File + loop tool limits ───────────────────────────────────────────────
 READ_FILE_MAX_CHARS                = int(os.getenv("V2_READ_FILE_MAX_CHARS",                "10000"))
-READ_FILE_MAX_BYTES                = int(os.getenv("V2_READ_FILE_MAX_BYTES",                str(5 * 1024 * 1024)))
+READ_FILE_MAX_BYTES                = int(os.getenv("V2_READ_FILE_MAX_BYTES",                str(50 * 1024 * 1024)))
+READ_FILE_AUDIO_VIDEO_MAX_BYTES        = int(os.getenv("V2_READ_FILE_AUDIO_VIDEO_MAX_BYTES",        str(500 * 1024 * 1024)))
+READ_FILE_AUDIO_VIDEO_MAX_DURATION_SEC = int(os.getenv("V2_READ_FILE_AUDIO_VIDEO_MAX_DURATION_SEC", str(90 * 60)))
 TOOL_LOOP_DDG_MAX_RESULTS          = int(os.getenv("V2_TOOL_LOOP_DDG_MAX_RESULTS",          "8"))
 TOOL_LOOP_READ_MAX_CHARS           = int(os.getenv("V2_TOOL_LOOP_READ_MAX_CHARS",           "6000"))
 TOOL_LOOP_READ_SUMMARIZE_THRESHOLD = int(os.getenv("V2_TOOL_LOOP_READ_SUMMARIZE_THRESHOLD", "3000"))
