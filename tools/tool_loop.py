@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import re
 import sys
 import time
 
@@ -27,6 +28,7 @@ from langchain_core.tools import tool
 
 from tools._progress import phase as _phase, progress as _progress
 from tools._summarize import summarize
+from tools._result_title import title_from_browse_summary, title_from_command, title_from_path
 from config import (
     TOOL_LOOP_DDG_MAX_RESULTS,
     TOOL_LOOP_READ_MAX_CHARS,
@@ -41,33 +43,17 @@ _VALID_ACTIONS = {"search_and_browse", "browse_summarize", "read_file", "bash_ea
 _TOOL_LOOP_WEB_MAX = 100  # tool_loop raises the per-turn web cap to this when needed
 
 
-# ── DDG search ─────────────────────────────────────────────────────────────────
-
-def _ddg_search(query: str, max_results: int = TOOL_LOOP_DDG_MAX_RESULTS) -> list[str]:
-    try:
-        from ddgs import DDGS
-        time.sleep(1.0)
-        results = list(DDGS().text(query, max_results=max_results, region="wt-wt"))
-        return [r.get("href", "") for r in results if r.get("href")]
-    except Exception as e:
-        log.warning(f"DDG search failed: {e}")
-        time.sleep(3.0)
-        try:
-            from ddgs import DDGS
-            results = list(DDGS().text(query, max_results=max_results, region="wt-wt"))
-            return [r.get("href", "") for r in results if r.get("href")]
-        except Exception:
-            return []
-
-
 def _collect_urls(keywords: list[str], max_n: int) -> list[str]:
+    from tools.web_search import _search_urls
+
     seen: set[str] = set()
     urls: list[str] = []
     for kw in keywords:
         if len(urls) >= max_n:
             break
         _phase(f"🔍 ค้นหา: {kw[:60]}")
-        for u in _ddg_search(kw):
+        remaining = max_n - len(urls)
+        for u in _search_urls(kw, user_query=kw, max_results=min(TOOL_LOOP_DDG_MAX_RESULTS, remaining)):
             if u and u not in seen and u.startswith("http"):
                 seen.add(u)
                 urls.append(u)
@@ -78,82 +64,77 @@ def _collect_urls(keywords: list[str], max_n: int) -> list[str]:
 # ── Action handlers ─────────────────────────────────────────────────────────────
 
 def _browse_summarize(url: str, context: str, idx: int, total: int) -> dict:
-    from tools.browse_url import _fetch_jina
-    from tools import web_cache
-    from tools.web_cache import web_count_check as _wc_check, web_count_inc as _wc_inc
-
-    if _wc_check():
-        return {"title": "[web limit reached]", "summary": "[error] web call limit reached", "error": True}
-    _wc_inc()
+    # Delegate entirely to browse_url — it handles _wc_check/_wc_inc and caching.
+    from tools.browse_url import browse_url as _bu
+    from tools.browse_url import _split_browse_result as _split
     try:
-        cached = web_cache.get_summary(url, context)
-        if cached is None:
-            raw = web_cache.get(url)
-            if raw is None:
-                raw = _fetch_jina(url, context)
-                if raw.startswith("[error]"):
-                    return {"title": "[ดึงไม่ได้]", "summary": raw, "error": True}
-                web_cache.put(url, raw)
-            cached = summarize(raw, url=url, user_query=context)
-            web_cache.put_summary(url, context, cached)
-        lines = [l.strip() for l in cached.split("\n") if l.strip()]
-        title = lines[0][:80] if lines else url.split("/")[-1][:60]
+        result = _bu.invoke({"url": url, "user_query": context})
+        result_url, summary, ok = _split(result)
+        if not ok:
+            title = "[web limit reached]" if result.startswith("[web_limit]") else "[ดึงไม่ได้]"
+            return {"url": url, "title": title, "summary": result, "error": True}
+        title = title_from_browse_summary(result_url or url, summary)
         _progress(f"[{idx}/{total}] {title[:50]}")
-        return {"url": url, "title": title, "summary": cached, "error": False}
+        return {"url": result_url or url, "title": title, "summary": summary, "error": False}
     except Exception as e:
         return {"url": url, "title": "[error]", "summary": str(e), "error": True}
 
 
 def _read_file(path: str, context: str, idx: int, total: int) -> dict:
-    # Delegate to read_file tool — supports PDF/DOCX/XLSX, safety checks, size guard,
-    # and keyword-anchored _sample_coverage() for large docs (same as MAX).
-    from tools.read_file import read_file as _rf
+    # Delegate to read_file's plain callable (not the @tool wrapper) — supports
+    # PDF/DOCX/XLSX, safety checks, size guard, and keyword-anchored
+    # _sample_coverage() for large docs.
+    from tools.read_file import _read_file_impl as _rf
+    from tools.read_file import _is_compact_read_result as _is_compact
+    title = title_from_path(path)
     try:
-        content = _rf.invoke({"path": path, "user_query": context})
+        content = _rf(path, user_query=context)
         if content.startswith("[error]"):
-            return {"path": path, "title": os.path.basename(path), "summary": content, "error": True}
-        _progress(f"[{idx}/{total}] {os.path.basename(path)} ({len(content):,} chars)")
-        _first_line = content.split("\n", 1)[0]
-        already_compact = "structure map only" in _first_line or "sampled for coverage" in _first_line
+            return {"path": path, "title": title, "summary": content, "error": True}
+        _progress(f"[{idx}/{total}] {title} ({len(content):,} chars)")
+        already_compact = _is_compact(content)
         body = (
             summarize(content[:TOOL_LOOP_READ_MAX_CHARS], url=path, user_query=context or "summarize")
             if len(content) > TOOL_LOOP_READ_SUMMARIZE_THRESHOLD and not already_compact
             else content
         )
-        return {"path": path, "title": os.path.basename(path), "summary": body, "error": False}
+        return {"path": path, "title": title, "summary": body, "error": False}
     except Exception as e:
-        return {"path": path, "title": os.path.basename(path), "summary": str(e), "error": True}
+        return {"path": path, "title": title, "summary": str(e), "error": True}
 
 
 def _bash_each(command: str, idx: int, total: int) -> dict:
-    import subprocess
+    # Delegate to bash's plain callable (not the @tool wrapper) — handles sandbox
+    # profile, finally cleanup, 10k truncation.
+    from tools.bash import _bash_impl as _bash
+    from tools._truncate import truncate_with_save
     from config import WORKSPACE
-    from tools.bash import _build_sandbox_profile
-    import tempfile
-
     _progress(f"[{idx}/{total}] {command[:60]}")
-    profile_path = None
     try:
-        profile = _build_sandbox_profile(WORKSPACE)
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".sb", delete=False) as pf:
-            pf.write(profile)
-            profile_path = pf.name
-        result = subprocess.run(
-            ["sandbox-exec", "-f", profile_path, "bash", "-c", command],
-            capture_output=True, text=True, timeout=TOOL_LOOP_BASH_TIMEOUT, cwd=WORKSPACE,
-        )
-        output = (result.stdout + result.stderr).strip()
-        if len(output) > TOOL_LOOP_BASH_MAX_CHARS:
-            output = output[:TOOL_LOOP_BASH_MAX_CHARS] + "\n...[truncated]"
-        return {"cmd": command, "title": command[:60], "summary": output or "(no output)", "error": result.returncode != 0}
+        output = _bash(command, TOOL_LOOP_BASH_TIMEOUT)
+        error = output.startswith("[error]")
+        # Heuristic, not a guaranteed detection: a command whose legitimate stdout happens to
+        # start with this exact literal (e.g. `cat`-ing an earlier "_bash_output_*.txt" recovery
+        # file inside a batch) would also take the truncated-already branch below. Degrades
+        # gracefully either way (falls back to the pre-fix blind slice), so left as-is.
+        if output.startswith("...[bash] truncated:"):
+            # bash.py already truncated+saved a recovery file (raw output > its own 10k
+            # cap) — its marker_first design means the marker (and recovery path) survives
+            # a further blind cut, so just slice here; re-running truncate_with_save on an
+            # already-truncated string would write a second, redundant recovery file that
+            # duplicates already-lossy data instead of the true original.
+            if len(output) > TOOL_LOOP_BASH_MAX_CHARS:
+                output = output[:TOOL_LOOP_BASH_MAX_CHARS] + "\n...[truncated]"
+        else:
+            # bash.py did NOT truncate (raw output <= its own 10k cap) — outputs in the
+            # 2k-10k range reach here unmarked with no recovery file yet, so this secondary
+            # cut needs its own save.
+            output = truncate_with_save(
+                output, TOOL_LOOP_BASH_MAX_CHARS, WORKSPACE, "bash_each", marker_first=True
+            )
+        return {"cmd": command, "title": title_from_command(command), "summary": output or "(no output)", "error": error}
     except Exception as e:
-        return {"cmd": command, "title": command[:60], "summary": str(e), "error": True}
-    finally:
-        if profile_path:
-            try:
-                os.unlink(profile_path)
-            except Exception:
-                pass
+        return {"cmd": command, "title": title_from_command(command), "summary": str(e), "error": True}
 
 
 # ── Output writer ───────────────────────────────────────────────────────────────
@@ -174,78 +155,46 @@ def _write_output(path: str, results: list[dict], context: str, action: str) -> 
 
 # ── Main tool ───────────────────────────────────────────────────────────────────
 
-@tool
-def tool_loop(
+# @tool tool_loop's docstring keeps only the routing-critical half; per-action
+# examples/PARAMETERS/post-call guidance only matter once the model has already
+# chosen this tool — deferred here, injected on the first call each turn.
+_SYNTAX_MANUAL = (
+    "\n\n[tool_loop usage notes]\n"
+    "search_and_browse — items = keywords → DDG search → browse + summarize each URL.\n"
+    "  ✅ items=[\"Thai AI startup funding 2026\", \"LLM benchmark Thailand 2026\"]  (specific, multi-word)\n"
+    "  ❌ items=[\"AI\", \"technology\", \"news\"]  (generic → DDG returns noise)\n"
+    "  Keyword tips: match language to source (Thai news → Thai keywords, tech/academic → English); "
+    "include year/timeframe; use ~max_n/4 keywords (DDG returns ~4-8 URLs each — e.g. max_n=20 → 5 keywords).\n"
+    "browse_summarize — items = full https:// URLs.\n"
+    "  ❌ items=[\"example.com\", \"/article\"]  (not full URLs → error)\n"
+    "read_file — items = ABSOLUTE file paths → read + summarize.\n"
+    "  ✅ bash(\"rg --files | rg '\\.md$'\") → read output → tool_loop(items=[paths from output], action=\"read_file\")\n"
+    "  ❌ tool_loop(items=[\"/Users/.../file.md\"], action=\"read_file\")  path not from tool output this round\n"
+    "  ❌ items=[\"report.md\"]  (relative → resolves to workspace/report.md → file not found)\n"
+    "bash_each — items = complete self-contained commands, absolute paths (sandboxed, cwd = workspace/).\n"
+    "  ✅ items=[\"grep -n TODO /abs/a.py\", \"wc -l /abs/b.py\"]\n"
+    "  ❌ items=[\"grep TODO a.py\"]  (relative path → resolves inside workspace/ → usually not found)\n"
+    "  Unknown paths → call bash first to get real absolute paths. Output per command truncated at 2000 "
+    "chars — pipe big output (\"grep -rn TODO /abs | head -30\"). No env variables or aliases — sandbox has none.\n"
+    "PARAMETERS:\n"
+    "  context     — always set to the user's primary goal, in the user's own words "
+    "(e.g. \"สรุปข่าว AI funding ไทย 2026\") → keeps summaries on-topic; empty → off-topic.\n"
+    "  output_file — user says \"บันทึก / เก็บ / เขียนไฟล์\" → set output_file=\"filename.md\" (written in "
+    "workspace/); omitted → results are lost when the turn ends.\n"
+    "  max_n       — cap on items processed (default 50; web actions capped at 100).\n"
+    "AFTER TOOL RETURNS — tool returns a preview (first 5 titles + ok/error counts): always synthesize the "
+    "real content for the user — never paste raw \"✅ done X/Y items\"; if some items errored, tell the user "
+    "(\"X of Y failed to load\")."
+)
+
+
+def _tool_loop_impl(
     items: list[str],
     action: str,
     context: str = "",
     max_n: int = 50,
     output_file: str = "",
 ) -> str:
-    """วน loop ประมวลผล items ด้วย Python — ไม่หลุด loop ไม่ว่า items จะมากแค่ไหน
-
-    LLM เรียก tool นี้ครั้งเดียว → Python loop จัดการทุก iteration อัตโนมัติ ไม่ต้อง "continue" เอง
-    ใช้เมื่อต้องทำงานเดิมซ้ำกับ input หลายตัว เช่น สรุป 30 เว็บ อ่าน 10 ไฟล์ รัน 20 คำสั่ง
-
-    SCALE GATE — เลือก tool ก่อนเรียก:
-      browse_summarize + N ≤ 8 + ไม่ต้องการ output_file  →  batch_browse แทน (parallel, เร็วกว่า)
-      browse_summarize + N > 8  หรือ  ต้องการ output_file →  tool_loop
-      search_and_browse / read_file / bash_each            →  tool_loop เสมอ (ไม่มีทางเลือกอื่น)
-
-    ACTIONS — gotchas ที่ต้องระวัง:
-
-      search_and_browse — items = keyword list → DDG search → URLs → summarize ทุก URL
-        ✅ items=["Thai AI startup funding 2026", "LLM benchmark Thailand 2026"]  (specific, multi-word)
-        ❌ items=["AI", "technology", "news"]                                      (generic → DDG คืน noise)
-
-      browse_summarize — items = URL list → fetch+summarize แต่ละ URL
-        ✅ items=["https://example.com/article", "https://site.com/page"]  (full https:// URLs)
-        ❌ items=["example.com", "/article"]                               (ไม่ใช่ URL เต็ม → error)
-
-      read_file — items = absolute file path list → อ่าน+summarize
-        HARD RULE: ก่อน call tool_loop(read_file) ทุกครั้ง ต้องผ่าน SELF-CHECK นี้ก่อน:
-          "paths ใน items มาจาก workspace_ls() หรือ bash ที่เพิ่ง call ในรอบนี้ไหม?"
-           YES (มี tool output ในรอบนี้) → ดำเนินการได้
-           NO  (จำ / เดา / copy จาก context) → ต้องเรียก workspace_ls() ก่อนเสมอ ห้ามข้ามขั้นตอน
-        ✅ workspace_ls() → อ่าน output → tool_loop(items=[paths จาก output], action="read_file")
-        ❌ tool_loop(items=["/Users/.../file.md"], action="read_file")  ← ถ้า path ไม่ได้มาจาก tool output รอบนี้
-        ❌ items=["report.md"]  (relative → resolves to workspace/report.md → ไม่เจอไฟล์)
-        !! NEVER call read_file (single tool) one-at-a-time — แม้แค่ 2 ไฟล์ ต้องใช้ tool_loop เสมอ
-
-      bash_each — items = complete bash command list → รัน ผ่าน sandbox (cwd = workspace/, same limits as bash tool)
-        ✅ items=["grep -n TODO /abs/a.py", "wc -l /abs/b.py"]  (full commands, absolute paths)
-        ❌ items=["grep TODO a.py"]  (relative path → resolves inside workspace/ → มักไม่เจอไฟล์)
-        !! paths ใน command ไม่รู้ → เรียก workspace_ls() หรือ bash ก่อนเพื่อหา absolute path จริง
-
-    KEYWORD TIPS (search_and_browse):
-      - ภาษา: ข่าวไทย → ใช้ภาษาไทย, tech/academic → English — ตรงกับแหล่งข้อมูล
-      - ใส่ปี/timeframe: "Thai AI startup 2026" ดีกว่า "Thai AI startup" → DDG ตัด stale content
-      - จำนวน keywords ≈ max_n / 4  (DDG คืน ~4-8 URL ต่อ keyword)
-        เช่น max_n=20 → ใส่ 5 keywords; max_n=50 → ใส่ 10-12 keywords
-        ❌ keyword เดียว + max_n=50 → browse แค่ ~8 URLs ทั้งที่ตั้ง max_n ไว้สูง
-
-    CONTEXT TIPS:
-      - ระบุมุมที่ต้องการจาก content: "ผลกระทบต่อตลาดงานไทย" ดีกว่า "AI"
-      - ใช้คำเดียวกับที่ user ถาม → summarizer เน้นมุมนั้น ตัดส่วนไม่เกี่ยวออก
-
-    PARAMETERS:
-      context     — ใส่ user's primary goal เสมอ เช่น "สรุปข่าว AI funding ไทย 2026"
-                    → ช่วยให้ summarizer สรุปตรงประเด็น  ❌ ปล่อยว่าง → summaries off-topic
-      output_file — user พูดว่า "บันทึก / เก็บ / เขียนไฟล์" → ใส่ output_file="filename.md"
-                    → เขียนใน workspace/ (sandbox อนุญาต)  ❌ ลืมใส่ → ผลหายเมื่อ turn จบ
-      max_n       — cap จำนวน items ที่จะประมวล (default 50, web actions capped at 100)
-
-    AFTER TOOL RETURNS — tool คืน preview (titles 5 แรก + จำนวน ok/error):
-      → ต้องสรุปเนื้อหาจริงให้ user เสมอ  ❌ ห้าม copy-paste raw "✅ เสร็จ X/Y items" โชว์ตรงๆ
-      → ถ้ามี error บางรายการ ให้แจ้ง user ด้วย ("X จาก Y รายการโหลดไม่ได้")
-
-    BASH_EACH TIPS:
-      - output ต่อ command ถูก truncate ที่ 2000 chars — ถ้า command คืนผลเยอะ ให้ pipe ก่อน
-        เช่น "grep -rn TODO /abs/path | head -30"  แทน  "grep -rn TODO /abs/path"
-      - command ต้องสมบูรณ์ในตัวเอง: ห้ามอ้าง env variable หรือ alias ที่ไม่มีใน sandbox
-
-    คืน: สรุปผลทั้งหมด หรือ "[error] reason"
-    """
     if action not in _VALID_ACTIONS:
         return f"[error] action '{action}' ไม่รู้จัก — ใช้ได้: {', '.join(sorted(_VALID_ACTIONS))}"
     if not items:
@@ -257,17 +206,16 @@ def tool_loop(
         # tool_loop explicitly needs more. If prior calls already consumed budget, the
         # remaining headroom shrinks accordingly.
         if action in ("browse_summarize", "search_and_browse"):
-            from tools.web_cache import _WEB_COUNT, _WEB_LIMIT, web_count_set_limit
+            from tools.web_cache import web_count_ensure_headroom
             max_n = min(max_n, _TOOL_LOOP_WEB_MAX)
-            needed_limit = _WEB_COUNT[0] + max_n
-            if needed_limit > _WEB_LIMIT[0]:
-                web_count_set_limit(min(needed_limit, _TOOL_LOOP_WEB_MAX))
-            remaining = max(0, _WEB_LIMIT[0] - _WEB_COUNT[0])
+            # Atomically raise the limit if needed and read remaining in one lock acquisition
+            # — no TOCTOU gap between reading _WEB_COUNT and setting the new limit.
+            remaining = web_count_ensure_headroom(max_n, _TOOL_LOOP_WEB_MAX)
             if remaining < max_n:
-                _phase(f"⚠ web budget: สูงสุด {remaining} items (ใช้ไปแล้ว {_WEB_COUNT[0]} จากทุก tool ใน turn นี้)")
+                _phase(f"⚠ web budget: สูงสุด {remaining} items เหลือใน turn นี้")
                 max_n = remaining
             if max_n == 0:
-                return f"[web_limit] ค้นครบ {_WEB_LIMIT[0]} ครั้งแล้ว — หยุดค้นและสรุปจากข้อมูลที่มีได้เลย"
+                return f"[web_limit] ค้นครบแล้ว — หยุดค้นและสรุปจากข้อมูลที่มีได้เลย"
 
         # search_and_browse: expand keywords → URLs first, then browse
         if action == "search_and_browse":
@@ -300,23 +248,101 @@ def tool_loop(
         out_path = ""
         if output_file:
             from config import WORKSPACE
-            fname = output_file if "." in output_file else output_file + ".md"
+            fname = os.path.basename(output_file) or "output.md"
+            if "." not in fname:
+                fname += ".md"
             out_path = os.path.join(WORKSPACE, fname)
             _phase("✍️ เขียนไฟล์…")
             _write_output(out_path, results, context, action)
 
         ok = sum(1 for r in results if not r.get("error"))
         err = total - ok
-        previews = "\n".join(
-            f"- {r.get('title','')[:60]}: {r.get('summary','')[:100]}"
-            for r in results
-        )
-
-        out_msg = f"\n📄 ไฟล์: {out_path}" if out_path else ""
         err_msg = f" ({err} error)" if err else ""
-        output = f"✅ เสร็จ {ok}/{total} items{err_msg}{out_msg}\n\n{previews}"
+
+        if out_path:
+            # File written — compact preview is enough; full content is in the file.
+            body = "\n".join(
+                f"- {r.get('title','')[:60]}: {r.get('summary','')[:100]}"
+                for r in results
+            )
+            out_msg = (
+                f"\n📄 ไฟล์: {os.path.basename(out_path)}"
+                f"\n📁 directory: {os.path.dirname(out_path)}"
+                f"\n🔗 full path: {out_path}"
+            )
+        else:
+            # No file — collect up to 100k (inner), then outer-summarize to 20k for state.
+            _BODY_BUDGET = 100_000
+            _OUTER_LIMIT = 20_000
+            parts: list[str] = []
+            budget = _BODY_BUDGET
+            for r in results:
+                title = r.get("title", "")[:80]
+                summary = r.get("summary", "")
+                ref = r.get("url", r.get("path", r.get("cmd", "")))
+                ref_str = f" ({ref[:80]})" if ref and ref != title else ""
+                entry = f"[{title}]{ref_str}\n{summary}"
+                if len(entry) > budget:
+                    parts.append(entry[:budget] + "…")
+                    budget = 0
+                    break
+                parts.append(entry)
+                budget -= len(entry) + 2  # +2 for \n\n separator
+            recall_hint = " — เรียก recall_web(url) เพื่อดูเนื้อหาเพิ่ม" if action == "browse_summarize" else ""
+            truncated_note = (
+                f"\n\n… (แสดง {len(parts)}/{total} items — ถึง budget 100k chars{recall_hint})"
+                if budget == 0 and len(parts) < total else ""
+            )
+            body = "\n\n".join(parts) + truncated_note
+            if len(body) > _OUTER_LIMIT:
+                # Recovery-file paths ("Full output saved at: X.txt") are load-bearing pointers,
+                # not prose — summarize() has no concept of them and can silently mangle/cut the
+                # path mid-string. Pull them out first, reattach verbatim BEFORE the summary
+                # (mirrors _truncate.py's marker_first reasoning) so they survive both the LLM
+                # pass and the _OUTER_LIMIT slice below.
+                recovery_paths = list(dict.fromkeys(re.findall(r"Full output saved at: (\S+\.txt)\.", body)))
+                _phase("📝 สรุปรวม…")
+                body = summarize(body[:100_000], url="loop_results", user_query=context or "summarize all results")
+                if recovery_paths:
+                    appendix = "\n".join(f"- {p}" for p in recovery_paths)
+                    body = f"[recovery files — full untruncated output of any item above]\n{appendix}\n\n{body}"
+            body = body[:_OUTER_LIMIT]
+            out_msg = ""
+
+        output = f"✅ เสร็จ {ok}/{total} items{err_msg}{out_msg}\n\n{body}"
         return output[:20000]
 
     except Exception as e:
         log.exception("tool_loop failed")
         return f"[error] tool_loop: {e}"
+
+
+@tool
+def tool_loop(
+    items: list[str],
+    action: str,
+    context: str = "",
+    max_n: int = 50,
+    output_file: str = "",
+) -> str:
+    """Loop over many items in ONE call — Python runs every iteration; never drops out of the loop.
+
+    Use when repeating the same action on many inputs (summarize 30 sites, read 10 files, run 20 commands).
+    Tool choice: browse_summarize + N ≤ 8 + no output_file → use batch_browse instead; everything else → tool_loop.
+    !! NEVER call read_file one-at-a-time for multiple files — even 2 files must go through tool_loop.
+
+    ACTIONS: search_and_browse (items=keywords), browse_summarize (items=full https:// URLs), read_file
+    (items=ABSOLUTE file paths — must come from bash output THIS round, never remembered/guessed/copied
+    from context), bash_each (items=complete self-contained commands with absolute paths).
+
+    Detailed per-action examples, PARAMETERS (context/output_file/max_n), and post-call synthesis
+    guidance appear in this tool's own result the first time you call it this turn.
+
+    Returns: summary of all results, or "[error] reason".
+    """
+    from tools._call_guard import first_call_this_turn
+    first = first_call_this_turn("tool_loop")
+    result = _tool_loop_impl(items, action, context, max_n, output_file)
+    if first:
+        result += _SYNTAX_MANUAL
+    return result
