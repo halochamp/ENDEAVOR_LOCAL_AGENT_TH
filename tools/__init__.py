@@ -23,6 +23,7 @@ from .batch_browse import batch_browse
 from .scrape_table import scrape_table
 from .read_image import read_image
 from .tool_loop import tool_loop
+from .mcp_client import mcp_list_tools, mcp_call_tool, mcp_add_server, mcp_remove_server
 from .skill_tools.research_orchestrator import research_orchestrator
 
 ALL_TOOLS = [
@@ -31,6 +32,7 @@ ALL_TOOLS = [
     fetch_sitemap, batch_browse, scrape_table,
     read_image,
     tool_loop,
+    mcp_list_tools, mcp_call_tool, mcp_add_server, mcp_remove_server,
 ]
 
 # Tools bound only when their matching skill mode is active.
