@@ -36,7 +36,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 - [หลักการทำงานของ Agent](#หลักการทำงานของ-agent)
 - [เทคโนโลยีที่ใช้](#เทคโนโลยีที่ใช้)
 - [Security](#security)
-- [Tools ที่มีให้ (22 tools)](#tools-ที่มีให้-22-tools)
+- [Tools ที่มีให้ (26 tools)](#tools-ที่มีให้-26-tools)
 - [Skill Modes](#skill-modes)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -137,6 +137,8 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 - **Commands panel**: เมนู `/clear`, `/compact`, `/history`, skill ต่าง ๆ (`/research`, `/pdf_to_text`) — กดเปิด/ปิดได้โดยไม่ต้องพิมพ์
 - แชทแบบ streaming token-by-token, รองรับ markdown, command autocomplete พิมพ์ `/` แล้วเลือกจาก dropdown
 - เมื่อเปิด skill mode (เช่น `/pdf_to_text`) ป้ายชื่อผู้ตอบในแชทจะเปลี่ยนเป็น `Agent | pdf_to_text` ให้เห็นชัดว่ากำลังอยู่ใน mode ไหน
+- **หยุดกลางคัน**: ปุ่ม ■ หยุด ระหว่าง agent กำลังทำงาน — ยกเลิก turn ที่รันอยู่ได้ทันที ไม่ต้องรอจบ
+- **แนบไฟล์/รูปภาพ**: ปุ่ม 📎 แนบไฟล์เข้ากับคำถามได้ — ไฟล์ถูกอัปโหลดเข้า `workspace/uploads/` แล้ว agent อ่านเองด้วย `read_file`/`read_image` ตามชนิดไฟล์ (รูปภาพใช้ OCR อ่านข้อความ/ตาราง/QR เท่านั้น ไม่ใช่ vision model ทั่วไป)
 
 ทั้ง 2 แบบเชื่อมต่อ MLX server ตัวเดียวกัน (`localhost:8080`) — เลือกใช้ตัวไหนก็ได้ ไม่ต้องรันพร้อมกัน
 
@@ -155,7 +157,7 @@ user input
 │                                               │
 │   1. วิเคราะห์ query + ประวัติการสนทนา        │
 │   2. งานซับซ้อน? → เรียก create_plan ก่อน     │
-│   3. เลือก tool ที่เหมาะสมจาก 22 tools         │
+│   3. เลือก tool ที่เหมาะสมจาก 26 tools         │
 │   4. รัน tool → ได้ผลลัพธ์ (Observation)       │
 │   5. คิดต่อ: ทำต่อ tool ถัดไป หรือ ตอบเลย      │
 │      ↑_____________________________│         │
@@ -183,10 +185,11 @@ START → react (agent คุมเองทั้งหมด) → END
 | ส่วน | ทำหน้าที่ |
 |---|---|
 | **`react.py`** | สร้าง ReAct agent + system prompt + คำนวณ context stats |
-| **`planner.py`** | ตรวจว่า query เป็น trivial หรือซับซ้อน → ควรเรียก `create_plan` ก่อนไหม |
+| **`planner.py`** | LLM call เดียวจัดหมวด query เป็น simple/complex → ถ้า complex คืน step list ให้ `create_plan` ก่อนเริ่มทำงานจริง |
 | **`graph.py`** | ผูก agent เข้ากับ LangGraph state machine, จัดการ retry เมื่อ synthesis ล้มเหลว, deterministic intercept สำหรับ search/research intent |
 | **`llm.py`** | สร้าง `ChatOpenAI` client ชี้ไปที่ `mlx_lm.server` (OpenAI-compatible API) |
 | **`runtime_common.py`** | infra ร่วมระหว่าง CLI กับ Web UI — memory store, liveness check, skill detection (single source of truth ตาม Dual-Path Prohibition) |
+| **`awake_engine.py`** | daemon thread คอยเช็ค standing trigger ที่ตั้งไว้ผ่าน `awake` tool (file/every/times/once) — fire แล้วส่ง query เข้า agent เองโดยไม่ต้องมีคนพิมพ์ |
 
 ### Context & Memory Management
 
@@ -249,12 +252,12 @@ Agent ตัวนี้ออกแบบมาให้ "เขียนได
 
 ### การควบคุม `bash` / `python_exec` (process-level sandbox)
 
-Tool ที่ spawn process จริง (`bash`, `python_exec`) ถูกครอบด้วย **macOS `sandbox-exec`** (Seatbelt) เพิ่มอีกชั้น แยกจาก path-guard ข้างบน:
+Tool ที่ spawn process จริง (`bash`, `bash_bg`, `python_exec`) ถูกครอบด้วย **macOS `sandbox-exec`** (Seatbelt) เพิ่มอีกชั้น แยกจาก path-guard ข้างบน:
 
 - `(deny file-write*)` ครอบ `/etc`, `/usr`, `/bin`, `/sbin`, `/System`, `/Library`, `/Applications`, และโฟลเดอร์ผู้ใช้ที่สำคัญ — `~/Desktop`, `~/Documents`, `~/Downloads`, `~/Movies`, `~/Music`, `~/Pictures`, `~/Library`, `~/.ssh`, `~/.aws`, `~/.config`, `~/.gnupg`
-- `(deny file-read*)` ครอบ `~/.ssh`, `~/.aws`, `~/.gnupg` — แม้ใน sandbox process ก็อ่าน credentials เหล่านี้ไม่ได้
-- `(allow file-write*)` เปิดเฉพาะ `workspace/` และ `/private/tmp` (last-match wins ใน sandbox profile → override deny ด้านบน)
-- ทุก process มี **timeout** (`bash` default 30s, `python_exec` ปรับตาม workload) — กัน infinite loop ค้าง resource
+- `(deny file-read*)` ครอบ `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.claude`, `~/.config`, และไฟล์เฉพาะที่ทุก process อ่านได้ตามสิทธิ์ระบบแต่มีความเสี่ยง — `/etc/passwd`, `/etc/group` (world-readable ตาม design ของ Unix, ไม่ใช่ credential แต่ enumerate user account ได้), `/etc/master.passwd`, `/etc/shadow`, `/etc/sudoers` — **ไม่ block ทั้งโฟลเดอร์ `/etc`** เพราะ deny ทั้งพาธจะพัง `/etc/ssl` (TLS trust store ที่ curl/git ต้องใช้) โดยไม่มีทางเปิด exception กลับมาได้ — sandbox-exec ให้ deny ชนะ allow เสมอเมื่อ path ซ้อนกัน ไม่ว่าจะเขียนก่อนหรือหลังใน profile ก็ตาม จึงต้อง block เฉพาะไฟล์ (`literal`) แทนที่จะ block ทั้งโฟลเดอร์ (`subpath`)
+- `(allow file-write*)` เปิดเฉพาะ `workspace/` และ `/private/tmp`
+- ทุก process มี **timeout** (`bash` default 30s, `python_exec` ปรับตาม workload) — กัน infinite loop ค้าง resource; งานที่ต้องรันนานกว่านั้นใช้ `bash_bg` แทน (register-then-poll, ไม่บล็อก)
 
 ### สรุป
 
@@ -268,7 +271,7 @@ Tool ที่ spawn process จริง (`bash`, `python_exec`) ถูกค�
 
 ---
 
-## Tools ที่มีให้ (22 tools)
+## Tools ที่มีให้ (26 tools)
 
 Agent เลือก tool เองตาม docstring ของแต่ละ tool — ไม่ต้องสั่งตรง ๆ
 
@@ -299,7 +302,8 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 | Tool | คำอธิบาย |
 |---|---|
 | `python_exec` | รัน Python code ใน interpreter เดียวกับ agent — `pandas`, `numpy`, `matplotlib` พร้อมใช้ทันที |
-| `bash` | รันคำสั่ง bash บนเครื่อง (cwd = workspace) สำหรับงาน system-level — รันใน macOS sandbox จำกัดการเขียนไฟล์นอก workspace |
+| `bash` | รันคำสั่ง bash บนเครื่อง (cwd = workspace) สำหรับงาน system-level — รันใน macOS sandbox จำกัดการเขียนไฟล์นอก workspace, timeout 30s |
+| `bash_bg` | รันคำสั่งที่ใช้เวลานานกว่า `bash`'s timeout แบบ background — start แล้ว poll/list/kill ทีหลังได้ ไม่บล็อก agent ระหว่างรอ (เหมาะกับ dev server, งาน build ยาว ๆ) |
 | `plot` | สร้างกราฟด้วย matplotlib จาก Python code — รองรับฟอนต์ไทยเต็มรูปแบบ, บันทึกและเปิดไฟล์ให้อัตโนมัติ |
 
 ### 🖼️ Vision
@@ -313,6 +317,26 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 | Tool | คำอธิบาย |
 |---|---|
 | `remember` | บันทึกข้อมูลสำคัญเกี่ยวกับผู้ใช้ลง `memory.md` แบบถาวร — จำได้ข้าม session |
+
+### 🔊 Audio
+
+| Tool | คำอธิบาย |
+|---|---|
+| `speak` | อ่านข้อความออกเสียงผ่านลำโพงเครื่องนี้ด้วย macOS `say` — เสียงจะเล่นที่เครื่องที่รัน agent process เสมอ แม้เรียกผ่าน Telegram/remote host ก็ตาม |
+
+### 🔌 MCP (Model Context Protocol)
+
+| Tool | คำอธิบาย |
+|---|---|
+| `mcp_add_server` / `mcp_remove_server` | ลงทะเบียน/ถอด MCP server (Streamable HTTP) เข้า/ออกจาก workspace registry ตอนคุยกัน — ไม่ต้องแก้ config.py |
+| `mcp_list_tools` | ดูรายการ tool ที่ MCP server ที่ลงทะเบียนไว้มีให้ใช้ |
+| `mcp_call_tool` | เรียก tool ของ MCP server ที่ลงทะเบียนไว้ |
+
+### ⏰ Automation (standing triggers)
+
+| Tool | คำอธิบาย |
+|---|---|
+| `awake` | ตั้ง trigger ให้ agent ทำงานเองโดยไม่ต้องมีคนพิมพ์ถาม — `file` (ไฟล์เปลี่ยน), `every` (ทุก N นาที), `times`/`run_at` (เวลาที่กำหนด), `once` (ครั้งเดียวหลัง delay), `screen` (เฝ้าหน้าจอผ่าน OCR — เห็นการเปลี่ยนแปลงและแจ้งได้ แต่ fork นี้คลิก/พิมพ์บนจอเองไม่ได้ ต้องมี `computer_use` tool ซึ่งไม่ได้รวมไว้) — ทำงานอยู่เบื้องหลังตราบใดที่ agent process ยังรันอยู่ |
 
 ### 🗺️ Planning & Loops
 
@@ -432,6 +456,7 @@ python agent_server.py   # เปิด WebSocket + REST บน http://127.0.0.1
 | `GET /ui-token` | ดึง auth token สำหรับหน้า `/ui` (ใช้เฉพาะ same-origin) |
 | `ws://localhost:8765/ws` | real-time chat พร้อม token streaming (สำหรับ web UI) |
 | `POST /chat` | sync request/response (สำหรับ Telegram bot ฯลฯ) |
+| `POST /upload` | อัปโหลดไฟล์เข้า `workspace/uploads/` แล้วคืน hint text ไว้แปะเข้ากับ query ถัดไป (ใช้โดยปุ่ม 📎 ใน web UI) |
 | `GET /status`, `/files`, `/file` | health check / อ่านไฟล์ workspace |
 
 **Auth (สำคัญ):** ทุก request ต้องมี token —
