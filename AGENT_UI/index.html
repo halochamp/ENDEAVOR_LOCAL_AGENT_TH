@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws://localhost:8765">
+<title>ENDEAVOR_LOCAL_AGENT_TH</title>
+<link id="hljs-theme" rel="stylesheet" href="./node_modules/@highlightjs/cdn-assets/styles/github-dark.min.css">
+<script src="lib/theme.js"></script>
+<style>
+/* ── Reset ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:        #1e1e1e;
+  --bg2:       #252526;
+  --bg3:       #2d2d2d;
+  --bg4:       #3c3c3c;
+  --border:    #333333;
+  --text:      #cccccc;
+  --text-dim:  #888888;
+  --text-faint:#555555;
+  --text-bright:#e0e0e0;
+  --text-mid:  #777777;
+  --accent:    #569cd6;
+  --teal:      #4ec9b0;
+  --green:     #4caf50;
+  --red:       #f48771;
+  --orange:    #ff9800;
+  --user-bg:   #094771;
+  --user-text: #d4e8fa;
+  --error-bg:  #3d1a1a;
+  --divider:       #444444;
+  --divider-hover: #555555;
+  --md-border: #3a3a3a;
+  --md-accent: #b0c4d8;
+  --md-italic: #aaaaaa;
+  --code-bg:   #1a1a1a;
+  --quote-text:#999999;
+  --table-stripe:#232323;
+  --link:       #6b9fd4;
+  --link-hover: #8bb8e8;
+  --overlay: rgba(0,0,0,0.55);
+  --shadow:  rgba(0,0,0,0.4);
+  --accent-tint:        rgba(86,156,214,0.1);
+  --accent-tint-strong: rgba(86,156,214,0.12);
+  --radius:    6px;
+  --font:      -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono:      'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+:root[data-theme="light"] {
+  --bg:        #ffffff;
+  --bg2:       #f6f6f6;
+  --bg3:       #ececec;
+  --bg4:       #e0e0e0;
+  --border:    #d9d9d9;
+  --text:      #24292e;
+  --text-dim:  #57606a;
+  --text-faint:#6e7781;
+  --text-bright:#1a1a1a;
+  --text-mid:  #57606a;
+  --accent:    #0969da;
+  --teal:      #0b7285;
+  --green:     #1a7f37;
+  --red:       #cf222e;
+  --orange:    #9a6700;
+  --user-bg:   #d0e7ff;
+  --user-text: #0b3d63;
+  --error-bg:  #ffebe9;
+  --divider:       #d0d7de;
+  --divider-hover: #afb8c1;
+  --md-border: #d0d7de;
+  --md-accent: #0969da;
+  --md-italic: #57606a;
+  --code-bg:   #f6f8fa;
+  --quote-text:#57606a;
+  --table-stripe:#f6f8fa;
+  --link:       #0969da;
+  --link-hover: #0550ae;
+  --overlay: rgba(0,0,0,0.25);
+  --shadow:  rgba(0,0,0,0.15);
+  --accent-tint:        rgba(9,105,218,0.1);
+  --accent-tint-strong: rgba(9,105,218,0.12);
+}
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--divider-hover); }
+
+/* ── Loading overlay ───────────────────────────────────── */
+#loading {
+  position: fixed; inset: 0; background: var(--bg);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 16px; z-index: 999;
+  transition: opacity 0.4s;
+}
+#loading.fade-out { opacity: 0; pointer-events: none; }
+#loading.hidden { display: none; }
+.loading-logo { font-size: 22px; font-weight: 700; color: var(--accent); letter-spacing: 1px; }
+.loading-sub { font-size: 12px; color: var(--text-dim); }
+.loading-spinner {
+  width: 28px; height: 28px;
+  border: 3px solid var(--bg3); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+#loading-log {
+  font-size: 11px; color: var(--text-faint); font-family: var(--mono);
+  max-width: 400px; text-align: center; min-height: 16px;
+}
+
+/* ── Header ────────────────────────────────────────────── */
+#header {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px 0 80px; /* 80px for macOS traffic lights */
+  height: 38px;
+  display: flex; align-items: center; gap: 10px;
+  -webkit-app-region: drag;
+  flex-shrink: 0;
+}
+.h-title { font-size: 12px; font-weight: 600; color: var(--text-bright); }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.dot.green { background: var(--green); }
+.dot.red   { background: var(--red); }
+.dot.gray  { background: var(--divider-hover); }
+.h-label { font-size: 10px; color: var(--text-faint); }
+.h-model {
+  font-size: 10px; color: var(--text-faint);
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 6px; border: 1px solid var(--bg4); border-radius: 4px;
+}
+.h-model:empty { display: none; }
+.h-spacer { flex: 1; }
+.skill-badge {
+  font-size: 10px; padding: 2px 8px; border-radius: 3px;
+  background: transparent; color: var(--accent); border: 1px solid var(--accent);
+  -webkit-app-region: no-drag; cursor: pointer;
+}
+.skill-badge:hover { background: var(--accent-tint); }
+.h-btn {
+  background: none; border: 1px solid var(--border);
+  color: var(--text-dim); border-radius: 4px;
+  padding: 3px 9px; font-size: 10px; cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.h-btn:hover { background: var(--bg3); color: var(--text); }
+
+/* ── Main layout ───────────────────────────────────────── */
+#main { display: flex; flex: 1; overflow: hidden; }
+
+/* ── Icon sidebar ──────────────────────────────────────── */
+#icon-bar {
+  width: 48px; flex-shrink: 0;
+  background: var(--bg2);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  align-items: center;
+  padding: 8px 0; gap: 2px;
+}
+.icon-btn {
+  width: 40px; height: 46px;
+  background: none; border: none; cursor: pointer; border-radius: 6px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; color: var(--text-faint);
+  transition: background 0.12s, color 0.12s;
+  -webkit-app-region: no-drag;
+}
+.icon-btn:hover { background: var(--bg3); color: var(--text-dim); }
+.icon-btn.active { background: var(--accent-tint-strong); color: var(--accent); }
+.icon-btn-icon { font-size: 17px; line-height: 1; }
+.icon-btn-label { font-size: 8px; letter-spacing: 0.3px; text-transform: uppercase; font-weight: 500; }
+
+/* ── Left panel ────────────────────────────────────────── */
+#left-panel {
+  width: 0; flex-shrink: 0; overflow: hidden;
+  transition: width 0.2s ease;
+  display: flex; flex-direction: column;
+  background: var(--bg2);
+}
+#left-panel.open {
+  width: 260px;
+  border-right: 1px solid var(--border);
+}
+.left-view { display: none; flex-direction: column; flex: 1; min-height: 0; }
+.left-view.active { display: flex; }
+
+/* ── Panel header ──────────────────────────────────────── */
+.panel-hdr {
+  padding: 7px 10px; background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px; font-weight: 600; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.8px;
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+}
+
+/* ── Activity list ─────────────────────────────────────── */
+#activity-list {
+  flex: 1; overflow-y: auto; padding: 5px 6px;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.act-item {
+  display: flex; flex-direction: column; gap: 1px;
+  font-size: 11px; padding: 3px 6px; border-radius: 3px;
+  animation: slideIn 0.15s ease;
+  border-left: 2px solid transparent;
+}
+.act-item:hover { background: var(--bg3); border-left-color: var(--teal); }
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.act-name { color: var(--teal); font-weight: 600; font-family: var(--mono); display: flex; align-items: center; gap: 4px; }
+.act-ts { margin-left: auto; color: var(--text-faint); font-size: 9px; font-weight: 400; flex-shrink: 0; }
+.act-detail {
+  color: var(--text-mid); font-size: 10px; font-family: var(--mono);
+  padding-left: 12px; line-height: 1.4;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.act-sep {
+  text-align: center; color: var(--divider); font-size: 9px; font-family: var(--mono);
+  padding: 4px 0; letter-spacing: 1px; user-select: none;
+}
+
+/* ── History panel ─────────────────────────────────────── */
+#history-list {
+  flex: 1; overflow-y: auto; padding: 5px 6px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.hist-item {
+  padding: 7px 8px; border-radius: 5px; cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.1s, border-color 0.1s;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.hist-item:hover { background: var(--bg3); border-color: var(--border); }
+.hist-q {
+  font-size: 11px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 500;
+}
+.hist-a {
+  font-size: 10px; color: var(--text-dim); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  line-height: 1.3;
+}
+.hist-idx { font-size: 9px; color: var(--text-faint); margin-bottom: 1px; }
+.hist-empty { padding: 16px 10px; text-align: center; font-size: 11px; color: var(--text-faint); }
+
+/* ── Files panel ───────────────────────────────────────── */
+#file-list { flex: 1; overflow-y: auto; padding: 4px; }
+.file-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 8px; border-radius: 4px; cursor: pointer;
+  font-size: 12px; transition: background 0.1s;
+}
+.file-item:hover { background: var(--bg3); }
+.file-icon { font-size: 12px; flex-shrink: 0; }
+.file-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-actions { display: none; gap: 1px; flex-shrink: 0; }
+.file-item:hover .file-actions { display: inline-flex; }
+.file-act {
+  background: none; border: none; cursor: pointer;
+  font-size: 11px; line-height: 1; padding: 1px 3px;
+  border-radius: 3px; opacity: 0.65;
+}
+.file-act:hover { opacity: 1; background: var(--bg4); }
+.file-size { color: var(--text-faint); font-size: 10px; font-family: var(--mono); flex-shrink: 0; }
+.files-empty { padding: 10px; font-size: 11px; color: var(--text-faint); text-align: center; }
+.files-open-btn {
+  margin: 4px 8px; padding: 4px;
+  background: none; border: 1px solid var(--border);
+  border-radius: 4px; color: var(--text-faint);
+  font-size: 10px; cursor: pointer; text-align: center; flex-shrink: 0;
+}
+.files-open-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── Chat panel ────────────────────────────────────────── */
+#chat-panel {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
+}
+#messages {
+  flex: 1; overflow-y: auto;
+  padding: 16px; display: flex;
+  flex-direction: column; gap: 14px;
+}
+
+/* ── Message bubbles ───────────────────────────────────── */
+.msg { display: flex; flex-direction: column; gap: 3px; max-width: 85%; }
+.msg.user  { align-self: flex-end; align-items: flex-end; }
+.msg.agent { align-self: flex-start; }
+.msg.system { align-self: center; max-width: none; }
+.msg-label { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.5px; }
+.msg-bubble {
+  padding: 9px 13px; border-radius: 8px;
+  font-size: 13px; line-height: 1.65; word-break: break-word;
+}
+.msg.user  .msg-bubble { background: var(--user-bg); color: var(--user-text); white-space: pre-wrap; }
+.msg.agent .msg-bubble { background: var(--bg3); color: var(--text); }
+.msg.error .msg-bubble { background: var(--error-bg); color: var(--red); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+.msg.system .msg-bubble { background: transparent; color: var(--text-faint); font-size: 11px; padding: 2px 0; text-align: center; }
+
+/* ── Markdown in agent bubble ──────────────────────────── */
+.msg.agent .msg-bubble h1,
+.msg.agent .msg-bubble h2,
+.msg.agent .msg-bubble h3 { color: var(--text-bright); font-weight: 600; margin: 10px 0 4px; line-height: 1.3; }
+.msg.agent .msg-bubble h1 { font-size: 15px; }
+.msg.agent .msg-bubble h2 { font-size: 14px; border-bottom: 1px solid var(--md-border); padding-bottom: 3px; }
+.msg.agent .msg-bubble h3 { font-size: 13px; color: var(--md-accent); }
+.msg.agent .msg-bubble p  { margin: 0 0 6px; }
+.msg.agent .msg-bubble p:last-child { margin-bottom: 0; }
+.msg.agent .msg-bubble ul,
+.msg.agent .msg-bubble ol { margin: 4px 0 6px 16px; }
+.msg.agent .msg-bubble li { margin: 2px 0; }
+.msg.agent .msg-bubble strong { color: var(--text-bright); font-weight: 600; }
+.msg.agent .msg-bubble em { color: var(--md-italic); font-style: italic; }
+.msg.agent .msg-bubble code { background: var(--code-bg); color: var(--teal); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 11px; }
+.msg.agent .msg-bubble pre { background: var(--code-bg); border-radius: 5px; padding: 8px 10px; overflow-x: auto; margin: 6px 0; }
+.msg.agent .msg-bubble pre code { background: none; padding: 0; color: var(--text); font-size: 11px; }
+.msg.agent .msg-bubble hr { border: none; border-top: 1px solid var(--md-border); margin: 8px 0; }
+.msg.agent .msg-bubble blockquote { border-left: 3px solid var(--divider); padding-left: 10px; color: var(--quote-text); margin: 4px 0; }
+.msg.agent .msg-bubble table { border-collapse: collapse; margin: 6px 0; font-size: 12px; display: block; overflow-x: auto; }
+.msg.agent .msg-bubble th,
+.msg.agent .msg-bubble td { border: 1px solid var(--md-border); padding: 4px 9px; text-align: left; vertical-align: top; }
+.msg.agent .msg-bubble th { background: var(--code-bg); color: var(--md-accent); font-weight: 600; }
+.msg.agent .msg-bubble tbody tr:nth-child(even) td { background: var(--table-stripe); }
+.web-refs { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 6px; }
+.web-refs summary { cursor: pointer; color: var(--text-dim); font-size: 11px; user-select: none; list-style: none; }
+.web-refs summary::-webkit-details-marker { display: none; }
+.web-refs summary:hover { color: var(--text); }
+.web-refs ul { margin: 5px 0 0 0; padding: 0; list-style: none; }
+.web-refs li { padding: 2px 0; }
+.web-refs a { color: var(--link); font-size: 11px; text-decoration: none; word-break: break-all; }
+.web-refs a:hover { text-decoration: underline; color: var(--link-hover); }
+
+/* ── Phase bar ─────────────────────────────────────────── */
+#phase-bar {
+  padding: 5px 14px; background: var(--bg2);
+  border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--text-faint);
+  display: flex; align-items: center; gap: 6px;
+  flex-shrink: 0; font-family: var(--mono);
+  transition: color 0.2s;
+}
+#phase-bar.active { color: var(--accent); }
+.mini-spinner {
+  width: 9px; height: 9px;
+  border: 2px solid var(--bg3); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+  flex-shrink: 0; display: none;
+}
+#phase-bar.active .mini-spinner { display: block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Context bar ───────────────────────────────────────── */
+#ctx-bar {
+  padding: 4px 14px; background: var(--bg2);
+  border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--mono); font-size: 10px; color: var(--text-faint);
+  flex-shrink: 0;
+}
+#ctx-pct  { min-width: 30px; }
+#ctx-pct.warn   { color: var(--orange); }
+#ctx-pct.danger { color: var(--red); }
+#ctx-graph { letter-spacing: 1px; color: var(--divider); }
+#ctx-graph .filled { color: var(--accent); }
+#ctx-chars { color: var(--text-faint); margin-left: 4px; }
+
+/* ── Thinking spinner bubble ───────────────────────────── */
+.thinking-bubble { padding: 8px 12px; display: flex; flex-direction: column; gap: 3px; }
+.ts-main { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; }
+.ts-frame { color: var(--accent); font-size: 13px; width: 14px; flex-shrink: 0; }
+.ts-label { color: var(--text-dim); }
+.ts-sub   { display: flex; align-items: baseline; gap: 5px; padding-left: 20px; min-height: 16px; }
+.ts-arrow { color: var(--text-faint); font-size: 11px; flex-shrink: 0; }
+.ts-detail { font-size: 11px; color: var(--text-mid); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Streaming response bubble ────────────────────────── */
+.stream-bubble { white-space: pre-wrap; }
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.stream-cursor { display: inline-block; color: var(--accent); animation: blink 0.8s step-start infinite; margin-left: 1px; line-height: 1; vertical-align: text-bottom; }
+
+/* ── Input area ────────────────────────────────────────── */
+#input-area {
+  padding: 10px 14px; background: var(--bg2);
+  display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0;
+}
+#input {
+  flex: 1; background: var(--bg4);
+  border: 1px solid var(--divider-hover); border-radius: 5px;
+  color: var(--text); font-size: 13px;
+  padding: 7px 11px; resize: none;
+  min-height: 35px; max-height: 120px;
+  font-family: var(--font); outline: none;
+  transition: border-color 0.15s;
+}
+#input:focus { border-color: var(--accent); }
+#input:disabled { opacity: 0.5; }
+.btn { padding: 6px 13px; border-radius: 5px; border: none; cursor: pointer; font-size: 12px; font-weight: 500; transition: opacity 0.15s; white-space: nowrap; }
+.btn:hover:not(:disabled) { opacity: 0.85; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-ghost   { background: var(--bg4); color: var(--text-dim); border: 1px solid var(--divider-hover); }
+.btn-cancel  { background: var(--error-bg); color: var(--red); border: 1px solid var(--red); }
+
+/* ── File attachment badge ─────────────────────────────── */
+#file-badge {
+  display: none; align-items: center; gap: 6px;
+  padding: 4px 10px; background: var(--bg4);
+  border-top: 1px solid var(--divider); font-size: 11px;
+}
+#file-badge-name { color: var(--accent); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#file-badge-remove { background: none; border: none; color: var(--text-faint); cursor: pointer; font-size: 13px; padding: 0 2px; line-height: 1; }
+#file-badge-remove:hover { color: var(--red); }
+
+/* ── File viewer modal ─────────────────────────────────── */
+#modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: var(--overlay); z-index: 100;
+  align-items: center; justify-content: center;
+}
+#modal-overlay.open { display: flex; }
+#modal {
+  background: var(--bg2); border: 1px solid var(--divider);
+  border-radius: 8px; width: 72vw; max-height: 82vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 24px 64px var(--shadow);
+  animation: modalIn 0.15s ease;
+}
+@keyframes modalIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+#modal-header { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+#modal-title { font-size: 13px; font-weight: 600; flex: 1; }
+#modal-lines { font-size: 10px; color: var(--text-faint); }
+.modal-btn { background: var(--bg3); border: none; border-radius: 4px; color: var(--text-dim); cursor: pointer; padding: 3px 9px; font-size: 11px; }
+.modal-btn:hover { background: var(--bg4); color: var(--text); }
+#modal-body {
+  flex: 1; overflow-y: auto; padding: 14px 16px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.75;
+  white-space: pre-wrap; word-break: break-word; tab-size: 2;
+}
+#modal-body.code, #modal-body.md { white-space: normal; }
+#modal-body.code pre { margin: 0; }
+#modal-body.code .hljs { border-radius: 6px; padding: 12px 14px; font-family: var(--mono); font-size: 12px; line-height: 1.6; overflow-x: auto; }
+#modal-body.md { line-height: 1.6; }
+#modal-body.md h1, #modal-body.md h2, #modal-body.md h3, #modal-body.md h4 { color: var(--text-bright); margin: 12px 0 6px; line-height: 1.3; }
+#modal-body.md h1 { font-size: 18px; border-bottom: 1px solid var(--md-border); padding-bottom: 4px; }
+#modal-body.md h2 { font-size: 16px; }
+#modal-body.md h3 { font-size: 14px; }
+#modal-body.md p  { margin: 6px 0; }
+#modal-body.md ul, #modal-body.md ol { margin: 6px 0 6px 20px; }
+#modal-body.md li { margin: 3px 0; }
+#modal-body.md a  { color: var(--link); }
+#modal-body.md strong { color: var(--text-bright); font-weight: 600; }
+#modal-body.md em { color: var(--md-italic); }
+#modal-body.md hr { border: none; border-top: 1px solid var(--md-border); margin: 10px 0; }
+#modal-body.md blockquote { border-left: 3px solid var(--divider); padding-left: 12px; color: var(--quote-text); margin: 6px 0; }
+#modal-body.md code { background: var(--code-bg); color: var(--teal); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+#modal-body.md pre { background: var(--code-bg); border-radius: 6px; padding: 0; margin: 8px 0; overflow-x: auto; }
+#modal-body.md pre code { background: none; padding: 10px 12px; display: block; color: var(--text); font-size: 11px; }
+#modal-body.md table { border-collapse: collapse; margin: 8px 0; font-size: 12px; display: block; overflow-x: auto; }
+#modal-body.md th, #modal-body.md td { border: 1px solid var(--md-border); padding: 5px 10px; text-align: left; vertical-align: top; }
+#modal-body.md th { background: var(--code-bg); color: var(--md-accent); font-weight: 600; }
+#modal-body.md tbody tr:nth-child(even) td { background: var(--table-stripe); }
+#modal-footer { padding: 8px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-shrink: 0; }
+
+/* ── Input autocomplete suggest ───────────────────────── */
+#suggest-list {
+  display: none; background: var(--bg2); border: 1px solid var(--divider);
+  border-radius: 6px; max-height: 220px; overflow-y: auto;
+  box-shadow: 0 -10px 28px var(--shadow);
+  margin: 0 14px 4px; z-index: 150; flex-shrink: 0;
+}
+#suggest-list.open { display: block; }
+.suggest-item { padding: 6px 12px; cursor: pointer; display: flex; align-items: center; gap: 10px; border-radius: 3px; transition: background 0.1s; }
+.suggest-item:hover, .suggest-item.selected { background: var(--bg3); }
+.suggest-cmd { font-family: var(--mono); font-size: 12px; color: var(--accent); min-width: 100px; flex-shrink: 0; }
+.suggest-desc { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Skill picker dropdown ─────────────────────────────── */
+#skill-menu {
+  display: none; position: fixed;
+  background: var(--bg2); border: 1px solid var(--divider);
+  border-radius: 6px; min-width: 160px;
+  box-shadow: 0 8px 24px var(--shadow);
+  z-index: 200; overflow: hidden;
+}
+#skill-menu.open { display: block; }
+.skill-menu-item { padding: 7px 12px; font-size: 12px; cursor: pointer; color: var(--text); }
+.skill-menu-item:hover { background: var(--bg3); }
+.skill-menu-item.active { color: var(--accent); }
+.skill-menu-item.exit { color: var(--text-dim); }
+.skill-menu-sep { border-top: 1px solid var(--border); margin: 3px 0; }
+.modal-img-error { color: var(--red); font-family: var(--mono); }
+
+/* ── Theme toggle button ───────────────────────────────── */
+#btn-theme { font-size: 13px; padding: 3px 7px; }
+#btn-compact { font-size: 12px; padding: 3px 7px; }
+
+/* ── Compact mode ──────────────────────────────────────── */
+/* Mirrors SERVER_MONITOR's Compact toggle: hides everything but chat + input
+   so the window can shrink to a small always-on-top mini widget (main.js
+   resizes/pins the BrowserWindow on the 'set-compact' IPC message). */
+body.compact #icon-bar,
+body.compact #left-panel,
+body.compact #ctx-bar,
+body.compact .h-model,
+body.compact .h-label,
+body.compact .skill-badge,
+body.compact #btn-skill {
+  display: none !important;
+}
+body.compact #header { padding-right: 10px; gap: 6px; }
+body.compact #btn-compact { color: var(--accent); border-color: var(--accent); }
+body.compact #messages { padding: 10px; gap: 10px; }
+body.compact .msg { max-width: 94%; }
+body.compact #phase-bar { padding: 4px 10px; font-size: 10px; }
+body.compact #input-area { padding: 8px 10px; }
+body.compact #input { min-height: 30px; font-size: 12px; }
+body.compact .btn { padding: 5px 10px; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading">
+  <div class="loading-logo">ENDEAVOR</div>
+  <div class="loading-sub">Agent MAX</div>
+  <div class="loading-spinner"></div>
+  <div id="loading-log">กำลังเริ่มต้น...</div>
+</div>
+
+<!-- Header -->
+<div id="header">
+  <span class="h-title">ENDEAVOR_LOCAL_AGENT_TH</span>
+  <span class="h-model" id="lbl-model" title="local model"></span>
+  <div class="dot gray" id="dot-mlx" title="MLX Server"></div>
+  <span class="h-label" id="lbl-mlx">MLX</span>
+  <div class="dot gray" id="dot-net" title="Internet"></div>
+  <span class="h-label" id="lbl-net">Internet</span>
+  <div class="h-spacer"></div>
+  <span class="skill-badge" id="skill-badge" style="display:none"></span>
+  <button class="h-btn" id="btn-skill">/ skill</button>
+  <button class="h-btn" id="btn-theme" title="สลับ Light/Dark">🌙</button>
+  <button class="h-btn" id="btn-compact" title="ย่อเป็นหน้าต่างเล็ก">◱</button>
+</div>
+
+<!-- Skill menu -->
+<div id="skill-menu">
+  <div id="skill-menu-items"></div>
+</div>
+
+<!-- Main -->
+<div id="main">
+
+  <!-- Icon sidebar -->
+  <div id="icon-bar">
+    <button class="icon-btn" id="btn-workspace" title="Workspace">
+      <span class="icon-btn-icon">📁</span>
+      <span class="icon-btn-label">Files</span>
+    </button>
+    <button class="icon-btn" id="btn-activity" title="Tool Activity">
+      <span class="icon-btn-icon">⚡</span>
+      <span class="icon-btn-label">Activity</span>
+    </button>
+    <button class="icon-btn" id="btn-history" title="History">
+      <span class="icon-btn-icon">🕐</span>
+      <span class="icon-btn-label">History</span>
+    </button>
+  </div>
+
+  <!-- Left panel (collapsible) -->
+  <div id="left-panel">
+
+    <!-- Workspace view -->
+    <div id="left-workspace" class="left-view">
+      <div class="panel-hdr" style="gap:6px;">
+        <span>📁</span>
+        <span id="files-crumb" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">workspace</span>
+        <button id="files-back"
+          style="display:none;background:none;border:1px solid var(--border);border-radius:3px;
+                 color:var(--text-faint);font-size:10px;padding:1px 6px;cursor:pointer;">⬆ back</button>
+      </div>
+      <div id="file-list"></div>
+      <button class="files-open-btn">เปิดใน Finder</button>
+    </div>
+
+    <!-- Activity view -->
+    <div id="left-activity" class="left-view">
+      <div class="panel-hdr">⚡ Tool Activity</div>
+      <div id="activity-list"></div>
+    </div>
+
+    <!-- History view -->
+    <div id="left-history" class="left-view">
+      <div class="panel-hdr" style="justify-content:space-between;">
+        <span>🕐 History</span>
+        <span id="history-count" style="font-size:9px;color:var(--text-faint);font-weight:400;text-transform:none;letter-spacing:0;"></span>
+      </div>
+      <div id="history-list"></div>
+    </div>
+
+  </div>
+
+  <!-- Chat -->
+  <div id="chat-panel">
+    <div id="messages"></div>
+    <div id="phase-bar">
+      <div class="mini-spinner"></div>
+      <span id="phase-text">พร้อม</span>
+    </div>
+    <div id="ctx-bar">
+      <span id="ctx-pct">0%</span>
+      <span id="ctx-graph">░░░░░░░░░░░░░░░░░░</span>
+      <span id="ctx-chars">0 / 0</span>
+    </div>
+    <div id="suggest-list"></div>
+    <div id="file-badge">
+      <span>📎</span>
+      <span id="file-badge-name"></span>
+      <button id="file-badge-remove" title="ลบไฟล์ที่แนบ">✕</button>
+    </div>
+    <div id="input-area">
+      <textarea id="input" placeholder="พิมพ์ข้อความ... (Enter ส่ง, Shift+Enter ขึ้นบรรทัด)" rows="1"></textarea>
+      <button class="btn btn-cancel" id="cancel-btn" style="display:none">■ Stop</button>
+      <button class="btn btn-primary" id="send-btn">Send</button>
+      <button class="btn btn-ghost" id="btn-upload" title="แนบไฟล์">📎</button>
+      <button class="btn btn-ghost" id="btn-clear">Clear</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- File modal -->
+<div id="modal-overlay">
+  <div id="modal">
+    <div id="modal-header">
+      <span>📄</span>
+      <span id="modal-title"></span>
+      <span id="modal-lines"></span>
+      <button class="modal-btn modal-copy">Copy</button>
+      <button class="modal-btn modal-close">✕</button>
+    </div>
+    <div id="modal-body"></div>
+    <div id="modal-footer">
+      <button class="modal-btn modal-copy">Copy all</button>
+      <button class="modal-btn modal-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="./node_modules/marked/lib/marked.umd.js"></script>
+<script src="./node_modules/dompurify/dist/purify.min.js"></script>
+<script src="./node_modules/@highlightjs/cdn-assets/highlight.min.js"></script>
+<script src="lib/format.js"></script>
+<script src="lib/busy_state.js"></script>
+<script src="lib/waiting_status.js"></script>
+<script src="renderer.js"></script>
+</body>
+</html>

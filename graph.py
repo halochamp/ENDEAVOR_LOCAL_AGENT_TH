@@ -69,16 +69,51 @@ _SEARCH_DIRECTIVE = (
 # HumanMessage (awake_engine.py's _check()) — categorically different from a
 # user typing a request above, and checked FIRST (before the search intercept)
 # since nobody is watching this turn regardless of what else its content
-# happens to match. TH ships no computer_use tool, so unlike MAX there is no
-# click/drag action cap to enforce here — the directive only needs to tell the
-# model it is unsupervised and must not silently invent that something was
-# done when it can only report back in text.
+# happens to match. This fork now ships tools/computer_use.py (forked
+# 2026-08-16) — an unsupervised background turn gets a hard action-count
+# ceiling and an absolute block on delete/remove-looking targets, enforced in
+# tools/computer_use.py (set_computer_turn_scope), not left to model discipline.
 _AWAKE_FIRED_PREFIX = "[AWAKE:"
+_AWAKE_COMPUTER_ACTION_MAX = 5
 _AWAKE_FIRED_SCOPE_DIRECTIVE = (
     "[AWAKE-FIRED SCOPE — deterministic intercept, no human watching this turn]\n"
     "Turn นี้มาจาก background watcher (ไฟล์/เวลา/หน้าจอ) — ไม่มี user เฝ้าหน้าจออยู่ ณ ขณะนี้\n"
-    "fork นี้ไม่มี computer tool — ทำได้แค่ตรวจสอบ/สรุปข้อมูลแล้วรายงานผลกลับไปให้ user ทราบ "
-    "ห้ามแกล้งทำว่าได้คลิก/พิมพ์อะไรบนจอ ถ้างานต้องการการกระทำจริงบนเครื่อง ให้บอก user ในคำตอบแทน"
+    f"computer tool ใน turn นี้ถูกจำกัดไว้ที่ {_AWAKE_COMPUTER_ACTION_MAX} actions และ action ที่ดูเกี่ยวกับ "
+    "delete/ลบ/remove/เอาออก/uninstall/format/wipe ถูกปฏิเสธเสมอ (ระบบจะ terminate สิทธิ์ computer ของ turn นี้ทันที "
+    "ถ้าพยายามกด — ไม่ใช่แค่ error ให้ลองใหม่)\n"
+    "ทำได้: action เดียว/สองสาม step ที่ชัดเจนไม่กำกวม (เช่น กดปุ่ม Allow/OK/Dismiss ของ dialog ที่ระบุไว้ใน task) "
+    "แล้วรายงานผลกลับไปให้ user ทราบเสมอ\n"
+    "ห้ามทำ: งานหลายขั้นตอน/หลาย dialog ต่อกัน, การกระทำที่ไม่แน่ใจผลลัพธ์, หรือ action ใดๆ ที่ทำลาย/ลบ/แก้ไขถาวร — "
+    "กรณีเหล่านี้ให้ตอบ (ไม่เรียก computer เพิ่ม) อธิบายว่าพบอะไรและให้ user มาจัดการเอง"
+)
+
+# Same protection extended to ordinary, human-supervised turns (not just
+# awake-fired ones): an ambiguous request ("จัดการโฟลเดอร์ Downloads ให้หน่อย")
+# should never let computer casually reach a Delete/Trash-looking control just
+# because the model interpreted "จัดการ" broadly. Mirrors _DESTRUCTIVE_MARKERS
+# in tools/computer_use.py (kept as a separate literal here — that module's
+# marker list is import-guarded for LLM-free unit tests and this check must
+# stay a plain regex, no cross-import needed for a same-content check).
+_DESTRUCTIVE_INTENT_RE = re.compile(
+    # "เอา...ออก" ("take X out") is natural Thai for remove/uninstall — the
+    # object noun sits BETWEEN เอา and ออก ("เอาแอปนี้ออกจากเครื่อง"), so a
+    # literal "เอาออก" substring never matches real sentences; เอา.{0,20}ออก
+    # bridges that gap without being so wide it swallows unrelated text.
+    #
+    # Bare "ลบ" needs the (?<![ผหก]) exclusion — Thai has no spaces, so \b
+    # word-boundary matching does NOT work here. Plain substring matching
+    # instead false-positives on ผลบวก ("sum", math), ผลบอล ("football
+    # results"), หลบ ("dodge"), กลบ ("bury/cover") — common Thai words that
+    # happen to contain "ลบ". Excluding the single character immediately
+    # before "ลบ" (ผ/ห/ก) rules out all four without a real Thai
+    # word-segmentation tokenizer. Known residual gap: "ลบ" is also the Thai
+    # word for mathematical "minus/subtract" (e.g. "20 ลบ 5"), a genuine
+    # polysemy no regex can resolve — low practical risk here since this only
+    # relaxes an ADDITIONAL safety net (the awake-fired hard block is
+    # unaffected either way).
+    r"(?<![ผหก])ลบ|เอา.{0,20}ออก|ถังขยะ|ถอนการติดตั้ง|ลบล้าง|ล้างข้อมูล"
+    r"|\bdelete\b|\bremove\b|\btrash\b|\buninstall\b|\berase\b|\bformat\b|\bwipe\b",
+    re.IGNORECASE,
 )
 
 
@@ -112,9 +147,11 @@ def _force_plan_or_directive(msgs: list) -> tuple[list, list]:
     # search directive below) — the raw "[AWAKE:id] ..." text is what gets
     # persisted to history for the next real turn to see.
     if content.startswith(_AWAKE_FIRED_PREFIX):
+        from tools.computer_use import set_computer_turn_scope
+        set_computer_turn_scope(action_max=_AWAKE_COMPUTER_ACTION_MAX, block_destructive=True)
         patched = list(msgs)
         patched[idx] = HumanMessage(content=_AWAKE_FIRED_SCOPE_DIRECTIVE + "\n\n" + content)
-        log.info("[awake-fired-intercept] unsupervised-turn scope directive injected")
+        log.info("[awake-fired-intercept] computer scoped to max=%d, destructive blocked", _AWAKE_COMPUTER_ACTION_MAX)
         return patched, []
 
     if content.startswith("[SEARCH DIRECTIVE") or not _SEARCH_VERB_RE.search(content):
@@ -441,6 +478,10 @@ def react_node(state: V2State, config: RunnableConfig) -> dict:
     # KNOW-LITE-DOCSTRING-SPLIT) — once-per-turn reset.
     from tools._call_guard import reset as _reset_call_guard
     _reset_call_guard()
+    # computer_use's per-turn action cap/repeat-guard is the same class of
+    # state and resets on the same once-per-REAL-turn schedule.
+    from tools.computer_use import reset_computer_guards
+    reset_computer_guards()
 
     trimmed = trim_messages(
         state["messages"],
@@ -500,6 +541,25 @@ def react_node(state: V2State, config: RunnableConfig) -> dict:
             ctx_stats["cooldown"] = True
             ctx_stats["compact_msg"] = cut_idx
             log.info(f"[compact] after: {ctx_stats['chars']:,} chars ({ctx_stats['chars']/CONTEXT_MAX_CHARS*100:.0f}%)")
+
+    # Default every human-supervised turn to refusing a destructive-looking
+    # computer click/drag/hotkey UNLESS this turn's OWN request explicitly
+    # signals delete/remove intent — closes the gap where an ambiguous request
+    # could otherwise reach a Delete/Trash control with zero code-level
+    # friction (previously only the awake-fired path had any such guard).
+    # Checked against the raw, pre-directive content (this is a background
+    # safety-scope decision, not a prompt directive, so it must not depend on
+    # whatever _force_plan_or_directive patches in afterward) — the
+    # awake-FIRED pin above still unconditionally re-applies block_destructive
+    # for a background-fired turn regardless of what its own task text says.
+    _last_human_msg = next((m for m in reversed(trimmed) if isinstance(m, HumanMessage)), None)
+    if _last_human_msg is not None:
+        _human_text = _last_human_msg.content if isinstance(_last_human_msg.content, str) else " ".join(
+            seg.get("text", "") for seg in (_last_human_msg.content or []) if isinstance(seg, dict) and seg.get("type") == "text"
+        )
+        if not _DESTRUCTIVE_INTENT_RE.search(_human_text):
+            from tools.computer_use import set_computer_turn_scope
+            set_computer_turn_scope(block_destructive=True)
 
     # Deterministic intercept: when user explicitly commands research, seed create_plan
     # in code (complex) or nudge (simple). `seeded` must be persisted so the plan call

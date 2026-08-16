@@ -36,7 +36,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 - [หลักการทำงานของ Agent](#หลักการทำงานของ-agent)
 - [เทคโนโลยีที่ใช้](#เทคโนโลยีที่ใช้)
 - [Security](#security)
-- [Tools ที่มีให้ (26 tools)](#tools-ที่มีให้-26-tools)
+- [Tools ที่มีให้ (28 tools)](#tools-ที่มีให้-28-tools)
 - [Skill Modes](#skill-modes)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -50,6 +50,12 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 ---
 
 ## เริ่มใช้งานเร็ว (Quick Start)
+
+**ทางลัด — ไม่อยากยุ่งกับ terminal เลย:** ดับเบิลคลิก `agent_start.command` ที่ root ของโปรเจกต์ — เปิดครั้งแรกจะติดตั้งให้อัตโนมัติทั้งหมด (conda env + AGENT_UI dependencies) แล้วเปิด desktop app ให้เลย โดยไม่ต้องเปิด MLX server เองแยกต่างหาก (AGENT_UI จัดการให้เองในตัว) ครั้งต่อๆ ไปดับเบิลคลิกซ้ำแค่เปิดแอปตรงๆ ไม่ติดตั้งซ้ำ
+
+มีปัญหา/อยากเริ่มใหม่สะอาดๆ → ดับเบิลคลิก `agent_stop.command` — kill mlx_lm.server, agent_server.py, หน้าต่าง AGENT_UI, และ CLI ที่ค้างอยู่ทั้งหมด (kill process เท่านั้น ไม่แตะ workspace/ข้อมูล/config) แล้วค่อยเปิด `agent_start.command` ใหม่
+
+หรือทำเองทีละขั้นผ่าน terminal:
 
 ```bash
 # ขั้นที่ 1: ติดตั้งครั้งเดียว (สร้าง conda env "mlx" + ติดตั้งทุกอย่าง + copy .env)
@@ -71,7 +77,7 @@ bash run.sh
 conda activate mlx && python agent_server.py
 ```
 
-ถ้า run ไม่ได้เพราะ port ถูกใช้อยู่ (เช่น เปิด server ค้างจากรอบก่อน) ให้ kill ตัวเก่าก่อน:
+ถ้า run ไม่ได้เพราะ port ถูกใช้อยู่ (เช่น เปิด server ค้างจากรอบก่อน) ให้ kill ตัวเก่าก่อน — ดับเบิลคลิก `agent_stop.command` (เคลียร์ให้ครบทุกอย่างในทีเดียว) หรือ kill เองทีละตัว:
 
 ```bash
 # kill MLX server (port 8080)
@@ -115,7 +121,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 ---
 
-## UI ที่มีให้ (2 แบบ)
+## UI ที่มีให้ (3 แบบ)
 
 เลือกใช้ได้ทั้ง 2 แบบ — ทำงานเหมือนกัน ต่างกันที่หน้าตา ทุกแบบ**บอก user เสมอว่า agent กำลังทำอะไรอยู่** ไม่ใช่แค่รอคำตอบเฉย ๆ
 
@@ -140,7 +146,26 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 - **หยุดกลางคัน**: ปุ่ม ■ หยุด ระหว่าง agent กำลังทำงาน — ยกเลิก turn ที่รันอยู่ได้ทันที ไม่ต้องรอจบ
 - **แนบไฟล์/รูปภาพ**: ปุ่ม 📎 แนบไฟล์เข้ากับคำถามได้ — ไฟล์ถูกอัปโหลดเข้า `workspace/uploads/` แล้ว agent อ่านเองด้วย `read_file`/`read_image` ตามชนิดไฟล์ (รูปภาพใช้ OCR อ่านข้อความ/ตาราง/QR เท่านั้น ไม่ใช่ vision model ทั่วไป)
 
-ทั้ง 2 แบบเชื่อมต่อ MLX server ตัวเดียวกัน (`localhost:8080`) — เลือกใช้ตัวไหนก็ได้ ไม่ต้องรันพร้อมกัน
+### 3. AGENT_UI — Electron Desktop App
+
+- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง (ไม่ใช่ browser tab) หน้าตาเหมือน Web UI ทุกอย่าง
+- **ไม่ได้ bundle Electron ไว้ในรีโป** ต้อง `npm install` เองครั้งแรก:
+  ```bash
+  cd AGENT_UI
+  npm install     # โหลด Electron + dependencies (~150MB, ครั้งเดียว)
+  npm start
+  ```
+- ต่างจาก 2 แบบข้างบนตรงที่**ไม่ต้องเปิด MLX server เองก่อน** — แอปจะ spawn `mlx_lm.server` และ `agent_server.py` ให้อัตโนมัติตอนเปิด (เห็น log ความคืบหน้าบนหน้าจอ loading), คอย monitor และ restart ให้เองถ้า MLX server ค้าง/ตาย
+- ปิดแอป = ปิด MLX server + agent_server.py ให้อัตโนมัติด้วย (ไม่ต้องไป kill port เอง)
+- ใช้ conda env `mlx` เดียวกับที่ตั้งค่าไว้ตอน Setup ด้านล่าง (auto-detect ผ่าน `conda info`, override ได้ด้วย `MLX_CONDA_ENV`/`MLX_PYTHON`)
+- **RAM < 48GB:** อ่าน env `V2_MODEL`/`MLX_BASE_URL` เหมือนกับ `config.py` เป๊ะ (ต้องตั้งทั้งคู่พร้อมกัน ไม่งั้นยังโหลด 35B ตัวเต็มเหมือนเดิม) — เครื่อง RAM ไม่พอแนะนำ **Qwen3-14B** เป็นขั้นต่ำ เช่น
+  ```bash
+  export V2_MODEL="mlx-community/Qwen3-14B-4bit" MLX_BASE_URL="http://localhost:8888/v1"
+  npm start
+  ```
+  (ตั้งก่อนเปิด `agent_start.command`/`npm start` ในเทอร์มินัลเดียวกัน หรือ export ถาวรไว้ใน `~/.zshrc`)
+
+ทั้ง 3 แบบเชื่อมต่อ MLX server ตัวเดียวกัน (`localhost:8080`) — เลือกใช้ตัวไหนก็ได้ ไม่ต้องรันพร้อมกัน (AGENT_UI เปิดพร้อม CLI/Web UI อื่นได้ ถ้า MLX server ตัวเดิมรันอยู่แล้วมันจะ adopt ไม่ restart ทับ)
 
 ---
 
@@ -271,7 +296,7 @@ Tool ที่ spawn process จริง (`bash`, `bash_bg`, `python_exec`) ถ
 
 ---
 
-## Tools ที่มีให้ (26 tools)
+## Tools ที่มีให้ (28 tools)
 
 Agent เลือก tool เองตาม docstring ของแต่ละ tool — ไม่ต้องสั่งตรง ๆ
 
@@ -312,11 +337,23 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 |---|---|
 | `read_image` | อ่านข้อความจากภาพด้วย Apple Vision OCR — แม่นยำสำหรับภาษาไทยและอังกฤษ รองรับทั้งไฟล์ local และ URL |
 
+### 🖱️ Computer Use
+
+| Tool | คำอธิบาย |
+|---|---|
+| `computer` | คลิก/พิมพ์/scroll บนหน้าจอจริงของเครื่อง ทีละ action พร้อม guard — แต่ละ action คืนผลเป็น OCR text ของสิ่งที่เปลี่ยนไป (ไม่ใช่ vision model เห็นภาพ, main model เป็น text-only) จำกัด action ต่อ turn (เข้มขึ้นตอนไม่มีคนเฝ้าหน้าจอผ่าน `awake`'s `screen` trigger) และปฏิเสธ action ที่ดูเหมือนลบ/ถอนการติดตั้ง/ format เสมอเว้นแต่ user สั่งชัดเจน |
+
 ### 🧠 Memory
 
 | Tool | คำอธิบาย |
 |---|---|
 | `remember` | บันทึกข้อมูลสำคัญเกี่ยวกับผู้ใช้ลง `memory.md` แบบถาวร — จำได้ข้าม session |
+
+### 📚 Knowledge Base (ต้องตั้งค่าเอง)
+
+| Tool | คำอธิบาย |
+|---|---|
+| `rag_search` | ค้นหาความรู้ในฐานข้อมูลส่วนตัวของคุณเอง (BM25 + vector search) — **ไม่ได้ bundle engine หรือฐานข้อมูลมาให้** ต้อง clone/สร้าง RAG engine เอง (MiniLM + ChromaDB + BM25 + RRF) เป็นโฟลเดอร์พี่น้องชื่อ `ENDEAVOR_RAG_TH` (อยู่นอกรีโปนี้ ระดับเดียวกัน) พร้อม `rag_retrieve.py` ที่ export `rag_retrieve` เป็น LangChain tool — ถ้าไม่พบ tool จะตอบ `[error]` บอกวิธีตั้งค่าแทนที่จะ crash หรือเงียบ |
 
 ### 🔊 Audio
 
@@ -336,7 +373,7 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 
 | Tool | คำอธิบาย |
 |---|---|
-| `awake` | ตั้ง trigger ให้ agent ทำงานเองโดยไม่ต้องมีคนพิมพ์ถาม — `file` (ไฟล์เปลี่ยน), `every` (ทุก N นาที), `times`/`run_at` (เวลาที่กำหนด), `once` (ครั้งเดียวหลัง delay), `screen` (เฝ้าหน้าจอผ่าน OCR — เห็นการเปลี่ยนแปลงและแจ้งได้ แต่ fork นี้คลิก/พิมพ์บนจอเองไม่ได้ ต้องมี `computer_use` tool ซึ่งไม่ได้รวมไว้) — ทำงานอยู่เบื้องหลังตราบใดที่ agent process ยังรันอยู่ |
+| `awake` | ตั้ง trigger ให้ agent ทำงานเองโดยไม่ต้องมีคนพิมพ์ถาม — `file` (ไฟล์เปลี่ยน), `every` (ทุก N นาที), `times`/`run_at` (เวลาที่กำหนด), `once` (ครั้งเดียวหลัง delay), `screen` (เฝ้าหน้าจอผ่าน OCR — เห็นการเปลี่ยนแปลงและแจ้งได้ พร้อมกดปุ่ม/action ง่ายๆ ต่อเองผ่าน `computer` tool ได้ด้วย ภายใต้ limit ที่เข้มกว่าปกติตอนไม่มีคนเฝ้าหน้าจอ) — ทำงานอยู่เบื้องหลังตราบใดที่ agent process ยังรันอยู่ |
 
 ### 🗺️ Planning & Loops
 
@@ -372,6 +409,7 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 - RAM ≥ 48 GB (สำหรับ 35B model)
 - Python 3.11 via conda (`mlx` env)
 - `mlx-lm` installed
+- (optional) `computer` tool works without any extra setup (OCR-only), but System Settings → Privacy & Security → **Accessibility** access for the process running the agent gives it richer element data — the tool tells you in its own output (`ax=permission_required`) if this is off, no crash either way
 
 > **หมายเหตุเรื่องโมเดล:** harness นี้ออกแบบและ tune มาเพื่อ **Qwen3.6-35B-A3B (MoE)** ซึ่งเป็น production model ที่ใช้อยู่ — ค่า default ทั้งหมด (prompt, thinking budget, repetition penalty, tool-calling behavior) คาดหวังความสามารถระดับนี้
 >
