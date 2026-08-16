@@ -118,13 +118,26 @@ _AUTH_TOKEN = _load_or_create_token()
 _ALLOWED_ORIGINS = {f"http://127.0.0.1:{SERVER_PORT}", f"http://localhost:{SERVER_PORT}"}
 
 
+_OPAQUE_ORIGINS = {"null", "file://"}
+
+
 def _origin_ok(origin: str | None) -> bool:
     """Reject cross-origin browser requests (DNS rebinding to 127.0.0.1).
 
     Browsers always send Origin on fetch()/WS; non-browser clients (curl, bots)
-    typically omit it, so a missing header is allowed.
+    typically omit it, so a missing header is allowed. A page loaded from
+    file:// (AGENT_UI's Electron renderer) has an opaque origin — live-reproduced
+    2026-08-16: every WS connection from AGENT_UI got HTTP 403'd here, the
+    loading screen stuck forever (confirmed via Chrome DevTools Protocol
+    against the actual running renderer, not assumed): this Electron build
+    sends the literal string "file://", not the spec-standard "null" a regular
+    browser would send for the same opaque-origin case — first fixing only
+    "null" was verified insufficient live before landing this. Allowing either
+    doesn't weaken the DNS-rebinding protection this exists for — that attack
+    needs a real attacker-controlled domain as Origin, never one of these two
+    literal opaque-origin strings.
     """
-    return origin is None or origin in _ALLOWED_ORIGINS
+    return origin is None or origin in _OPAQUE_ORIGINS or origin in _ALLOWED_ORIGINS
 
 
 def _require_token(x_auth_token: str | None = Header(default=None)):
