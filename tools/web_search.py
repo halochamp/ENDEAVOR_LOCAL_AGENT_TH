@@ -104,10 +104,52 @@ def _filter_adult(results: list[dict]) -> list[dict]:
     return out
 
 
+# Date tokens ("23", "สิงหาคม", "2569") are not topical discriminators: every
+# page published that day carries them in its title, so a topically-unrelated
+# dated page outscores the right one. Observed twice on this exact shape — a
+# daily-horoscope page (2026-08-23) and a TV programme listing (2026-08-21)
+# each beat the actual forecast for "สภาพอากาศ… <date>", and each cost a full
+# extra web_search round-trip when the agent re-searched. Freshness is enforced
+# upstream by the engine's own time filter (timelimit / tbs=qdr), never by this
+# ranker, so ranking drops them.
+_TH_MONTHS = frozenset((
+    "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+))
+_EN_MONTHS = frozenset((
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+))
+
+
+def _is_numeric_date(term: str) -> bool:
+    """A bare number that reads as a day (1-31), a CE year, or a BE year."""
+    if not term.isdigit():
+        return False
+    n = int(term)
+    return 1 <= n <= 31 or 1900 <= n <= 2100 or 2400 <= n <= 2600
+
+
+def _is_date_term(term: str, has_numeric_date: bool) -> bool:
+    """True for a token that carries only a date. English month names double as
+    ordinary words ("may", "march"), so they count as a date only alongside a
+    numeric day/year token; Thai month names are unambiguous on their own."""
+    if _is_numeric_date(term) or term in _TH_MONTHS:
+        return True
+    return has_numeric_date and term in _EN_MONTHS
+
+
 def _rank_results(results: list[dict], query: str) -> list[dict]:
     # _query_terms/_score_chunk from _summarize handle Thai queries (no word
     # boundaries) via 4-gram fragments — plain query.split() scores 0 on Thai.
     terms = _query_terms(query)
+    has_numeric_date = any(_is_numeric_date(t) for t, _ in terms)
+    topic_terms = [(t, g) for t, g in terms if not _is_date_term(t, has_numeric_date)]
+    # A query that is nothing but a date leaves no topical signal — there the
+    # date tokens are all we have, so keep them rather than ranking on length.
+    if topic_terms:
+        terms = topic_terms
     scored = []
     for r in results:
         text = (r.get("title", "") + " " + r.get("snippet", "")).lower()
