@@ -603,6 +603,14 @@ def _batch_infer(
     _progress(f"batch summarizing {len(items)} sources ({len(prompt)} chars)…")
     t0 = time.time()
     last_error = None
+    # Every branch below logs as well as emitting progress. _progress() reaches
+    # only the live UI/Telegram status stream and is never persisted, so before
+    # 2026-08-23 a batch that retried once and then succeeded left NO trace on
+    # disk at all — only the total-failure path at the end of this function had
+    # a log line. A 315s summarize (turn 10da2165) could not be attributed to a
+    # number of generations for exactly that reason. Prompt/response sizes are
+    # included because elapsed time alone cannot distinguish "one slow
+    # generation" from "two normal ones".
     for attempt, temp in enumerate([0.1, 0.5], 1):
         try:
             llm = _get_batch_summarize_llm(temp)
@@ -611,10 +619,19 @@ def _batch_infer(
             parsed = _parse_batch_response(text, len(items))
             if parsed is None:
                 last_error = "parse failed or incomplete sections"
+                log.warning(
+                    f"[_summarize] batch attempt {attempt} unparseable: "
+                    f"{len(text)} chars back for {len(items)} sources "
+                    f"in {time.time()-t0:.1f}s (prompt {len(prompt)} chars)"
+                )
                 if attempt == 1:
                     _progress("batch attempt 1 unparseable — retrying")
                 continue
             _progress(f"batch summary ready ({len(items)} sources, {time.time()-t0:.1f}s, attempt={attempt})")
+            log.info(
+                f"[_summarize] batch ready: {len(items)} sources, attempt={attempt}, "
+                f"{time.time()-t0:.1f}s, prompt {len(prompt)} chars -> {len(text)} chars"
+            )
             out: dict[str, str] = {}
             for i, (url, full) in enumerate(items, 1):
                 out[url] = _with_note(
@@ -623,6 +640,10 @@ def _batch_infer(
             return out
         except Exception as e:
             last_error = str(e)
+            log.warning(
+                f"[_summarize] batch attempt {attempt} raised after "
+                f"{time.time()-t0:.1f}s: {e}"
+            )
             if attempt == 1:
                 _progress(f"batch attempt 1 failed: {e} — retrying")
 
