@@ -1212,6 +1212,39 @@ async def ws_endpoint(websocket: WebSocket):
                     })
                 elif cmd in ("/status", "status"):
                     await websocket.send_json({"type": "status", **get_status()})
+                elif cmd == "/build_kb":
+                    if await _ws_busy_guard(websocket): continue
+                    def _do_build_kb():
+                        from tools.rag_tool import _rag_engine_available, _missing_engine_message, _ensure_rag_path
+                        if not _rag_engine_available():
+                            return None, _missing_engine_message()
+                        _ensure_rag_path()
+                        import ingestor
+                        import llm_client
+                        llm_client.ensure_mlx_server()
+                        result = ingestor.sync_knowledge_base()
+                        return result, None
+                    async with _busy:
+                        try:
+                            result, engine_error = await asyncio.get_running_loop().run_in_executor(None, _do_build_kb)
+                        except Exception as e:
+                            await websocket.send_json({"type": "error", "msg": f"build_kb ล้มเหลว: {e}"})
+                            continue
+                        if engine_error:
+                            await websocket.send_json({"type": "error", "msg": engine_error})
+                            continue
+                        counts: dict[str, int] = {}
+                        for row in result["rows"]:
+                            counts[row["status"]] = counts.get(row["status"], 0) + 1
+                        await websocket.send_json({
+                            "type": "build_kb_ok",
+                            "data_dir": result["data_dir"],
+                            "total": result["total_found"],
+                            "counts": counts,
+                            "elapsed": result["elapsed"],
+                            "health_issues": result["health_issues"],
+                            "ghost_count": result["ghost_count"],
+                        })
                 elif cmd == "cancel":
                     pass  # stale cancel — agent already finished; safe to ignore
                 else:

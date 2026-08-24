@@ -50,6 +50,7 @@ from ui_cli import (
     setup_skill_completer, update_ctx_info, print_compact_notice,
     _SPINNER_LABELS,
     PHASE_THINKING, PHASE_EXECUTING, PHASE_SYNTH,
+    C_ARROW, C_GREEN, C_WARN, C_META, R,
 )
 
 
@@ -274,6 +275,60 @@ def _activate_skill(sname: str) -> tuple[str, str]:
     return sname, content
 
 
+def _run_build_kb() -> None:
+    """/build_kb — real chunk+embed+BM25 ingestion of the sibling ENDEAVOR_RAG
+    engine's knowledge base, driven straight from this CLI (no need to open
+    ENDEAVOR_RAG's own main.py separately). Reuses ingestor.sync_knowledge_base()
+    — the same pipeline ENDEAVOR_RAG's own main.py runs.
+
+    Unlike agent_max_vlm's /build_kb, there is no topics/tags rebuild step
+    here — this fork has no rag_index_builder.py / rag_rebuild_index tool, so
+    /build_kb only ingests and reports a health check."""
+    from tools.rag_tool import _RAG_DIR, _ensure_rag_path, _rag_engine_available, _missing_engine_message
+    if not _rag_engine_available():
+        print(f"\n   {C_WARN}{_missing_engine_message()}{R}\n")
+        return
+    _ensure_rag_path()
+    import ingestor
+    import llm_client
+
+    total_preview = sum(1 for f in ingestor.DATA_DIR.rglob("*") if ingestor._is_indexable_file(f))
+    print()
+    print(f"   {C_META}folder: {C_ARROW}{ingestor.DATA_DIR}{R}")
+    print(f"   {C_META}found:  {total_preview} file(s){R}")
+    print()
+
+    if total_preview == 0:
+        print(f"   {C_WARN}No supported files found in knowledge/{R}\n")
+        return
+
+    with Spinner("⚙️  กำลังเปิด RAG's LLM (novelty check)…") as sp:
+        llm_client.ensure_mlx_server(status_cb=sp.update_sub)
+
+    def _on_start(idx, total, name):
+        print(f"   {C_META}[{idx}/{total}]{R} {name}…")
+
+    def _on_file(idx, total, name, status, n_chunks, err):
+        if err:
+            print(f"   {C_ARROW}{name.ljust(32)}{R}  {C_WARN}✗ error{R}  {C_META}{err[:60]}{R}")
+        else:
+            tag = f"{C_GREEN}✓ {status}{R}"
+            print(f"   {C_ARROW}{name.ljust(32)}{R}  {tag}  {C_META}{n_chunks} chunks{R}")
+
+    result = ingestor.sync_knowledge_base(on_file=_on_file, on_file_start=_on_start)
+    print()
+    issues, ghost_count = result["health_issues"], result["ghost_count"]
+    if not issues and not ghost_count:
+        print(f"   {C_GREEN}✓ self-check: no anomalies{R}\n")
+    else:
+        print(f"   {C_WARN}⚠ self-check found anomalies:{R}")
+        for issue in issues:
+            print(f"     {C_WARN}- {issue}{R}")
+        if ghost_count:
+            print(f"     {C_META}- {ghost_count} registered file(s) have zero chunks (dedup ghosts, informational){R}")
+        print()
+
+
 def _run_turn(app, q: str, cfg: dict, *, thread_id: str, saver, db_conn,
               logger: "AgentLogger | None" = None, system_prompt: str = "") -> None:
     """รัน 1 turn พร้อม UI: spinner, tool steps, plan, web refs, final"""
@@ -468,6 +523,10 @@ def main() -> None:
                 if thread_id != _MEMORY_THREAD:
                     _purge_thread(_db_conn, thread_id)
                 break
+            continue
+
+        if q.strip().lower() == "/build_kb":
+            _run_build_kb()
             continue
 
         if q.strip().lower() == "/compact":

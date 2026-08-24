@@ -320,6 +320,30 @@ function handleEvent(ev) {
       }
       break
     }
+    case 'build_kb_ok': {
+      removeThinking()
+      setBusy(false)
+      const issues = ev.health_issues || []
+      const ghostCount = ev.ghost_count || 0
+      let healthLine = '\n\n✓ self-check: no anomalies'
+      if (issues.length || ghostCount) {
+        const lines = issues.map(i => `  - ${i}`)
+        if (ghostCount) lines.push(`  - ${ghostCount} registered file(s) have zero chunks (dedup ghosts, informational)`)
+        healthLine = `\n\n⚠ self-check found anomalies:\n${lines.join('\n')}`
+      }
+      const counts = ev.counts || {}
+      const countLine = ['new', 'changed', 'skip', 'error']
+        .filter(k => counts[k])
+        .map(k => `${k}: ${counts[k]}`)
+        .join('  ')
+      const elapsed = typeof ev.elapsed === 'number' ? `${ev.elapsed.toFixed(1)}s` : '?'
+      if (!ev.total) {
+        addSystem(`build_kb — folder: ${ev.data_dir || 'knowledge'}\nไม่มีไฟล์ให้ build${healthLine}`)
+      } else {
+        addSystem(`build_kb — folder: ${ev.data_dir || 'knowledge'}\nfound: ${ev.total} file(s)  (${countLine})  — ${elapsed}${healthLine}`)
+      }
+      break
+    }
     case 'skill_change':
       // A handoff frame carries `handoff`/`label`; a skill frame carries `skill`.
       // They are mutually exclusive — entering one clears the other.
@@ -677,6 +701,7 @@ function sendMessage() {
     if (cmd === '/compact') { setBusy(true); showThinking(); updateThinkingLabel('กำลังบีบอัด context…') }
     else if (cmd === '/history') { setBusy(true); showThinking(); updateThinkingLabel('กำลังโหลดความจำ…') }
     else if (cmd === '/build_index') { setBusy(true); showThinking(); updateThinkingLabel('กำลังสร้าง RAG index…') }
+    else if (cmd === '/build_kb') { setBusy(true); showThinking(); updateThinkingLabel('กำลังสร้าง knowledge base…') }
     return
   }
 

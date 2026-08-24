@@ -9,6 +9,7 @@
     {"name": "clear",       "desc": "เคลียร์ context — เริ่ม session ใหม่"},
     {"name": "compact",     "desc": "บีบอัด context ใน session ปัจจุบัน"},
     {"name": "history",     "desc": "โหลด conversation history เดิม"},
+    {"name": "build_kb",    "desc": "สร้าง/อัปเดต knowledge base จริง (chunk+embed+index ไฟล์ใหม่) ผ่าน ENDEAVOR_RAG ที่ต่ออยู่"},
     {"name": "exit",        "desc": "ออกจาก skill mode ปัจจุบัน"}
   ]
 }

@@ -5,11 +5,11 @@
 """rag_tool.py — Knowledge base search pipe via a separate local ENDEAVOR_RAG engine
 (MiniLM + ChromaDB + BM25 + RRF), forked from ENDEAVOR_LOCAL_AGENT_MAX's tools/rag_tool.py.
 
-This tool file ships WITHOUT the RAG engine and WITHOUT any index/knowledge base —
-those are a separate project you set up yourself (see _RAG_DIR below and the
-README's RAG section). If the engine isn't present, rag_search returns an
-actionable [error] telling you what to clone/build instead of crashing or
-silently doing nothing.
+This tool file ships WITHOUT any index/knowledge base of its own — that lives
+in the sibling ENDEAVOR_RAG project (see _RAG_DIR below and the README's RAG
+section). If the engine isn't present, rag_search returns an actionable
+[error] telling you what to clone/build instead of crashing or silently
+doing nothing.
 
 Flow: rag_search(query) → raw parent chunks + SOURCES (absolute paths)
       → agent reads full file via existing read_file(path) if needed
@@ -19,18 +19,18 @@ import sys
 import os
 import re
 import datetime
+import importlib
 from langchain_core.tools import tool
 from tools._progress import progress as _progress
 
 # TH's layout is flatter than MAX's (this repo root IS the "project" level,
 # there's no nested ENDEAVOR_LOCAL_AGENT_TH/ subfolder) — one level up from
 # tools/ lands on this repo's own parent directory, where a sibling
-# ENDEAVOR_RAG_TH engine checkout is expected, mirroring the
-# ENDEAVOR_RAG_MAX / ENDEAVOR_RAG_API naming convention used by the other
-# forks (see ENDEAVOR_LOCAL_AGENT_MAX/CLAUDE.md's sync table — this path
-# constant is intentionally fork-specific, never copy it from another fork).
+# ENDEAVOR_RAG engine checkout lives (the public RAG_LITE project,
+# github.com/halochamp/ENDEAVOR_RAG_LITE — this path constant is
+# intentionally fork-specific, never copy it from another fork).
 _RAG_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../ENDEAVOR_RAG_TH")
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../ENDEAVOR_RAG")
 )
 _RAG_ENTRYPOINT = os.path.join(_RAG_DIR, "rag_retrieve.py")
 
@@ -48,16 +48,52 @@ def _missing_engine_message() -> str:
     return (
         "[error] rag_search: no RAG engine found at "
         f"{_RAG_DIR} — this tool only ships the search wrapper, not the "
-        "engine or any knowledge base. Clone/build your own retrieval "
-        f"engine into a sibling folder named 'ENDEAVOR_RAG_TH' (i.e. next "
-        "to this repo, not inside it) with a top-level rag_retrieve.py "
-        "exposing a `rag_retrieve` LangChain tool, then re-run this call."
+        "engine or any knowledge base. Clone github.com/halochamp/"
+        "ENDEAVOR_RAG_LITE into a sibling folder named 'ENDEAVOR_RAG' (i.e. "
+        "next to this repo, not inside it), then re-run this call."
     )
+
+
+_RAG_MODULE_NAMES = ("config", "store", "retriever", "chunker", "embedder",
+                     "file_registry", "llm_client", "ingestor", "rag_retrieve")
+
+
+def _prime_rag_modules() -> None:
+    """Force-load the RAG engine's module graph once, working around a bare
+    module-name collision: ENDEAVOR_RAG ships its own config.py (engine
+    settings) under the same unqualified name this agent's own config.py
+    uses (agent settings). Whichever `import config` runs first wins the
+    process-wide sys.modules cache — and this agent's config.py always runs
+    first (loaded at endeavor_agent.py's own startup, long before this tool
+    ever runs), so a plain `from config import ...` inside the RAG engine's
+    modules would otherwise silently resolve to THIS agent's config.py
+    (missing names -> ImportError, confirmed live: `cannot import name
+    'MLX_API_KEY' from 'config'`).
+
+    Fix: evict this agent's cached config, import every RAG-engine module up
+    front so each one's own `from config import ...` resolves fresh via
+    sys.path (now _RAG_DIR-first) and caches the RAG engine's real config,
+    then restore this agent's own config so nothing else in this process is
+    affected. Runs once — a no-op on every later call once 'ingestor' is
+    already cached (no fresh `import config` will ever fire again for the
+    RAG engine's sake, so the restored agent config stays untouched)."""
+    if "ingestor" in sys.modules:
+        return
+    agent_config = sys.modules.pop("config", None)
+    try:
+        for name in _RAG_MODULE_NAMES:
+            if name not in sys.modules:
+                importlib.import_module(name)
+    finally:
+        if agent_config is not None:
+            sys.modules["config"] = agent_config
 
 
 def _ensure_rag_path() -> None:
     if _RAG_DIR not in sys.path:
         sys.path.insert(0, _RAG_DIR)
+    if _rag_engine_available():
+        _prime_rag_modules()
 
 
 def _read_created(path: str) -> tuple[datetime.date | None, str]:
