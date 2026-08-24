@@ -353,7 +353,7 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 
 | Tool | คำอธิบาย |
 |---|---|
-| `rag_search` | ค้นหาความรู้ในฐานข้อมูลส่วนตัวของคุณเอง (BM25 + vector search) — **ไม่ได้ bundle engine หรือฐานข้อมูลมาให้** ต้อง clone/สร้าง RAG engine เอง (MiniLM + ChromaDB + BM25 + RRF) เป็นโฟลเดอร์พี่น้องชื่อ `ENDEAVOR_RAG_TH` (อยู่นอกรีโปนี้ ระดับเดียวกัน) พร้อม `rag_retrieve.py` ที่ export `rag_retrieve` เป็น LangChain tool — ถ้าไม่พบ tool จะตอบ `[error]` บอกวิธีตั้งค่าแทนที่จะ crash หรือเงียบ |
+| `rag_search` | ค้นหาความรู้ในฐานข้อมูลส่วนตัวของคุณเอง (BM25 + vector search) — **ไม่ได้ bundle engine หรือฐานข้อมูลมาให้** ต้อง clone [`ENDEAVOR_RAG_LITE`](https://github.com/halochamp/ENDEAVOR_RAG_LITE) (MiniLM + ChromaDB + BM25 + RRF) เป็นโฟลเดอร์พี่น้องชื่อ `ENDEAVOR_RAG_LITE` (อยู่นอกรีโปนี้ ระดับเดียวกัน — `git clone` ตรงๆ ได้ชื่อโฟลเดอร์ถูกอยู่แล้ว) — ถ้าไม่พบ engine จะตอบ `[error]` บอกวิธีตั้งค่าแทนที่จะ crash หรือเงียบ |
 
 ### 🔊 Audio
 

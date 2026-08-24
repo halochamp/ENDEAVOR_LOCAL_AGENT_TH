@@ -2,12 +2,13 @@
 # License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-"""rag_tool.py — Knowledge base search pipe via a separate local ENDEAVOR_RAG engine
-(MiniLM + ChromaDB + BM25 + RRF), forked from ENDEAVOR_LOCAL_AGENT_MAX's tools/rag_tool.py.
+"""rag_tool.py — Knowledge base search pipe via a separate local ENDEAVOR_RAG_LITE
+engine (MiniLM + ChromaDB + BM25 + RRF), forked from ENDEAVOR_LOCAL_AGENT_MAX's
+tools/rag_tool.py.
 
 This tool file ships WITHOUT any index/knowledge base of its own — that lives
-in the sibling ENDEAVOR_RAG project (see _RAG_DIR below and the README's RAG
-section). If the engine isn't present, rag_search returns an actionable
+in the sibling ENDEAVOR_RAG_LITE project (see _RAG_DIR below and the README's
+RAG section). If the engine isn't present, rag_search returns an actionable
 [error] telling you what to clone/build instead of crashing or silently
 doing nothing.
 
@@ -26,11 +27,12 @@ from tools._progress import progress as _progress
 # TH's layout is flatter than MAX's (this repo root IS the "project" level,
 # there's no nested ENDEAVOR_LOCAL_AGENT_TH/ subfolder) — one level up from
 # tools/ lands on this repo's own parent directory, where a sibling
-# ENDEAVOR_RAG engine checkout lives (the public RAG_LITE project,
-# github.com/halochamp/ENDEAVOR_RAG_LITE — this path constant is
-# intentionally fork-specific, never copy it from another fork).
+# ENDEAVOR_RAG_LITE engine checkout lives (github.com/halochamp/
+# ENDEAVOR_RAG_LITE — the folder name matches what `git clone` produces by
+# default, so a fresh clone works with no manual rename step; this path
+# constant is intentionally fork-specific, never copy it from another fork).
 _RAG_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../ENDEAVOR_RAG")
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../ENDEAVOR_RAG_LITE")
 )
 _RAG_ENTRYPOINT = os.path.join(_RAG_DIR, "rag_retrieve.py")
 
@@ -49,8 +51,9 @@ def _missing_engine_message() -> str:
         "[error] rag_search: no RAG engine found at "
         f"{_RAG_DIR} — this tool only ships the search wrapper, not the "
         "engine or any knowledge base. Clone github.com/halochamp/"
-        "ENDEAVOR_RAG_LITE into a sibling folder named 'ENDEAVOR_RAG' (i.e. "
-        "next to this repo, not inside it), then re-run this call."
+        "ENDEAVOR_RAG_LITE as a sibling folder (i.e. next to this repo, not "
+        "inside it — a plain `git clone` there already produces the right "
+        "folder name), then re-run this call."
     )
 
 
@@ -60,7 +63,7 @@ _RAG_MODULE_NAMES = ("config", "store", "retriever", "chunker", "embedder",
 
 def _prime_rag_modules() -> None:
     """Force-load the RAG engine's module graph once, working around a bare
-    module-name collision: ENDEAVOR_RAG ships its own config.py (engine
+    module-name collision: ENDEAVOR_RAG_LITE ships its own config.py (engine
     settings) under the same unqualified name this agent's own config.py
     uses (agent settings). Whichever `import config` runs first wins the
     process-wide sys.modules cache — and this agent's config.py always runs
@@ -285,7 +288,7 @@ def rag_search(sentence_th: str, sentence_en: str, keywords_th: str, keywords_en
                source_type: str = "") -> str:
     """Search the user's own local knowledge base via BM25 + vector search.
 
-    Requires a separate ENDEAVOR_RAG engine set up alongside this repo (see
+    Requires a separate ENDEAVOR_RAG_LITE engine set up alongside this repo (see
     README) — if it isn't present, this call returns an actionable [error]
     instead of a KB result; do not retry the same call, just report that to
     the user and fall back to web_search/other tools for the current need.
@@ -354,7 +357,7 @@ def rag_search(sentence_th: str, sentence_en: str, keywords_th: str, keywords_en
     [error] prefix = failure, no results, or the engine isn't set up.
     Do NOT use for general knowledge, math, small talk, coding, or current/web
     information — this only searches whatever local KB the user has built into
-    their own ENDEAVOR_RAG engine, and returns nothing for anything outside it.
+    their own ENDEAVOR_RAG_LITE engine, and returns nothing for anything outside it.
     """
     return _rag_search_impl(
         sentence_th, sentence_en, keywords_th, keywords_en,

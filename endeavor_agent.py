@@ -276,10 +276,10 @@ def _activate_skill(sname: str) -> tuple[str, str]:
 
 
 def _run_build_kb() -> None:
-    """/build_kb — real chunk+embed+BM25 ingestion of the sibling ENDEAVOR_RAG
+    """/build_kb — real chunk+embed+BM25 ingestion of the sibling ENDEAVOR_RAG_LITE
     engine's knowledge base, driven straight from this CLI (no need to open
-    ENDEAVOR_RAG's own main.py separately). Reuses ingestor.sync_knowledge_base()
-    — the same pipeline ENDEAVOR_RAG's own main.py runs.
+    ENDEAVOR_RAG_LITE's own main.py separately). Reuses ingestor.sync_knowledge_base()
+    — the same pipeline ENDEAVOR_RAG_LITE's own main.py runs.
 
     Unlike agent_max_vlm's /build_kb, there is no topics/tags rebuild step
     here — this fork has no rag_index_builder.py / rag_rebuild_index tool, so
