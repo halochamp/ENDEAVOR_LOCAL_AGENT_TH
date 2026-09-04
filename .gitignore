@@ -6,19 +6,13 @@ __pycache__/
 .venv/
 venv/
 
-# Cython build artifacts (.c leaks plaintext source — never commit)
+# Cython build artifacts
 *.c
 build/
 *.so
 
-# system_prompt.so is the one Tier-1 artifact that IS distributed — it's the compiled
-# output of gitignored #developer/system_prompt.py, and without it a fresh clone has
-# neither the source nor the binary, so `from system_prompt import SYSTEM` in react.py
-# fails immediately. Root-anchored so build/ copies and any nested .so stay ignored.
-!/system_prompt.so
-!/system_prompt.cpython-311-darwin.so
 
-# Tier 1 source (compiled to .so, not distributed) + build script
+# Tier 1 developer-only sources + build script
 # NOTE: leading \ is required — a bare "#" starts a comment in .gitignore
 \#developer/
 

@@ -107,14 +107,3 @@ os.makedirs(WORKSPACE, exist_ok=True)
 LOG_DIR         = os.getenv("V2_LOG_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"))
 LOG_MAX_ENTRIES = int(os.getenv("V2_LOG_MAX_ENTRIES", "5000"))
 os.makedirs(LOG_DIR, exist_ok=True)
-
-# ── MCP servers ────────────────────────────────────────────────────────────
-# name -> {"url": str, "headers": dict[str, str]}. Empty by default — add a
-# server here to make it reachable via mcp_list_tools/mcp_call_tool, no code
-# change needed elsewhere (same shape as SKILL_TOOLS in tools/__init__.py).
-# Example (not enabled):
-#   MCP_SERVERS = {"worldmonitor": {"url": "https://worldmonitor.app/mcp",
-#                                    "headers": {"X-WorldMonitor-Key": os.getenv("WORLDMONITOR_API_KEY", "")}}}
-MCP_SERVERS: dict[str, dict] = {}
-MCP_MAX_CHARS = int(os.getenv("V2_MCP_MAX_CHARS", "4000"))
-MCP_TIMEOUT   = int(os.getenv("V2_MCP_TIMEOUT",   "60"))  # seconds per list_tools/call_tool round trip

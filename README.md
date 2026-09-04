@@ -36,7 +36,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 - [หลักการทำงานของ Agent](#หลักการทำงานของ-agent)
 - [เทคโนโลยีที่ใช้](#เทคโนโลยีที่ใช้)
 - [Security](#security)
-- [Tools ที่มีให้ (28 tools)](#tools-ที่มีให้-28-tools)
+- [Tools ที่มีให้ (24 tools)](#tools-ที่มีให้-24-tools)
 - [Skill Modes](#skill-modes)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -182,7 +182,7 @@ user input
 │                                               │
 │   1. วิเคราะห์ query + ประวัติการสนทนา        │
 │   2. งานซับซ้อน? → เรียก create_plan ก่อน     │
-│   3. เลือก tool ที่เหมาะสมจาก 26 tools         │
+│   3. เลือก tool ที่เหมาะสมจาก 24 tools         │
 │   4. รัน tool → ได้ผลลัพธ์ (Observation)       │
 │   5. คิดต่อ: ทำต่อ tool ถัดไป หรือ ตอบเลย      │
 │      ↑_____________________________│         │
@@ -296,7 +296,7 @@ Tool ที่ spawn process จริง (`bash`, `bash_bg`, `python_exec`) ถ
 
 ---
 
-## Tools ที่มีให้ (28 tools)
+## Tools ที่มีให้ (24 tools)
 
 Agent เลือก tool เองตาม docstring ของแต่ละ tool — ไม่ต้องสั่งตรง ๆ
 
@@ -360,14 +360,6 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 | Tool | คำอธิบาย |
 |---|---|
 | `speak` | อ่านข้อความออกเสียงผ่านลำโพงเครื่องนี้ด้วย macOS `say` — เสียงจะเล่นที่เครื่องที่รัน agent process เสมอ แม้เรียกผ่าน Telegram/remote host ก็ตาม |
-
-### 🔌 MCP (Model Context Protocol)
-
-| Tool | คำอธิบาย |
-|---|---|
-| `mcp_add_server` / `mcp_remove_server` | ลงทะเบียน/ถอด MCP server (Streamable HTTP) เข้า/ออกจาก workspace registry ตอนคุยกัน — ไม่ต้องแก้ config.py |
-| `mcp_list_tools` | ดูรายการ tool ที่ MCP server ที่ลงทะเบียนไว้มีให้ใช้ |
-| `mcp_call_tool` | เรียก tool ของ MCP server ที่ลงทะเบียนไว้ |
 
 ### ⏰ Automation (standing triggers)
 

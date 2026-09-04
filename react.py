@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 
 
 # Main agent system prompt — Thai output, tool guidance, complex-routing, synthesize rules
-# System prompt lives in the compiled system_prompt extension.
+# System prompt is the tracked plaintext Python module at the repository root.
 
 _BUILT_PROMPT: str = ""
 _VISION_PUBLICATION_SUSPENDED = ContextVar(
@@ -37,9 +37,8 @@ def suspend_vision_publication():
     finally:
         _VISION_PUBLICATION_SUSPENDED.reset(token)
 
-# The public build still loads the tracked compiled prompt extension.  Keep this
-# small, deterministic overlay in ordinary source so the old OCR/text-only
-# contract is explicitly superseded without modifying that opaque artifact.
+# Keep this small, deterministic overlay in ordinary source so the old
+# OCR/text-only contract is explicitly superseded.
 _DIRECT_VISION_OVERLAY = (
     "\n\n[PUBLIC DIRECT-VISION CONTRACT]\n"
     "- Route explicit image-understanding requests to read_image and explicit screen/application actions to computer.\n"
