@@ -414,8 +414,8 @@ def _is_load_cmd(q: str) -> bool:
 
 def main() -> None:
     if not _server_up():
-        print(f"[!] เชื่อม mlx_lm.server ไม่ได้ที่ {MLX_BASE_URL}")
-        print(f"    เริ่ม server ก่อน: mlx_lm.server --model {MODEL} --port <port>")
+        print(f"[!] เชื่อม mlx_vlm.server ไม่ได้ที่ {MLX_BASE_URL}")
+        print(f"    เริ่ม server ก่อน: python -m mlx_vlm.server --model {MODEL} --host 127.0.0.1 --port <port>")
         return
 
     online = _internet_up()
@@ -449,7 +449,7 @@ def main() -> None:
         return new_skill, new_content
 
     import threading as _threading
-    # Pre-warm mlx_lm.server prefix cache with [system_prompt] — runs in background so the
+    # Pre-warm mlx_vlm.server prompt cache with [system_prompt] — runs in background so the
     # user's real first turn hits a cached system segment instead of a cold ~16k prefill
     # (V2-PF01: confirmed cross-session — fresh session's first turn measured 404 tokens
     # when an identical system prompt was already cached). Disposable thread_id, purged after.

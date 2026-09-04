@@ -10,7 +10,7 @@
 #   3. pip install -r install_library/requirements.txt
 #   4. ตรวจและติดตั้ง Thai font สำหรับกราฟ (Noto Sans Thai ผ่าน Homebrew)
 #   5. playwright install chromium (สำหรับ scrape_table / browser_use)
-#   6. แสดงคำสั่งรันถัดไป (mlx_lm.server + python endeavor_agent.py)
+#   6. แสดงคำสั่งรันถัดไป (mlx_vlm.server + python endeavor_agent.py)
 
 set -euo pipefail
 
@@ -162,7 +162,7 @@ from urllib.parse import urlparse
 import config
 
 url = urlparse(config.MLX_BASE_URL)
-print(config.MODEL, url.hostname or "127.0.0.1", url.port or 8080, sep="\t")
+print(config.MODEL, url.hostname or "127.0.0.1", url.port or 8085, sep="\t")
 PY
 )"
 IFS=$'\t' read -r EFFECTIVE_MODEL EFFECTIVE_HOST EFFECTIVE_PORT <<< "$EFFECTIVE_CONFIG"
@@ -177,7 +177,7 @@ cat <<EOF
 
   2. เปิด MLX server (terminal แยก):
      conda activate ${ENV_NAME}
-     mlx_lm.server --model ${EFFECTIVE_MODEL} --host ${EFFECTIVE_HOST} --port ${EFFECTIVE_PORT}
+     python -m mlx_vlm.server --model ${EFFECTIVE_MODEL} --host ${EFFECTIVE_HOST} --port ${EFFECTIVE_PORT}
 
   3. รัน agent — เลือกแบบที่ต้องการ:
 

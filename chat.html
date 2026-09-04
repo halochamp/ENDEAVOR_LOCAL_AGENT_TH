@@ -929,7 +929,7 @@ function updateHeader() {
   const short = raw.includes('/') ? raw.split('/').pop() : raw;
   const disp  = short.length > 36 ? short.slice(0,33)+'…' : short;
 
-  const srvTxt = S.serverUp ? 'MLX :8080' : 'MLX :8080 ✗';
+  const srvTxt = S.serverUp ? 'MLX :8085' : 'MLX :8085 ✗';
   const netTxt = S.online   ? 'Internet'  : 'Offline';
 
   const pct    = S.ctxMax ? Math.min(S.ctxChars/S.ctxMax, 1) : 0;
@@ -966,8 +966,8 @@ function updateInput() {
 }
 
 // ── File/image attach ────────────────────────────────────────────────────────
-// TH has no Electron main process to hand the model a real filesystem path (unlike
-// AGENT_UI_MAX's native file-picker) — the browser only gives us file bytes, so the
+// The browser has no native file-picker bridge to hand the model a real filesystem
+// path — it only gives us file bytes, so the
 // upload IS the attach mechanism: bytes go to POST /upload, land in workspace/uploads/,
 // and the returned hint text (naming the right tool: read_file / read_image) rides
 // along in the next query so the model reads it from there like any workspace file.

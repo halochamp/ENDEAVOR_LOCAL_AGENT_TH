@@ -21,7 +21,13 @@ from langgraph.graph.message import add_messages
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, RemoveMessage, trim_messages
 from langchain_core.runnables import RunnableConfig
-from react import build_react_agent, ctx_stats, get_system_prompt
+from react import (
+    build_react_agent,
+    ctx_stats,
+    get_system_prompt,
+    prepare_turn_vision_messages,
+    suspend_vision_publication,
+)
 from llm import build_llm
 from config import RECURSION_LIMIT, CONTEXT_MAX_CHARS
 from planner import plan as _plan
@@ -238,7 +244,7 @@ def _get_compact_llm():
         _COMPACT_LLM = build_llm(
             temperature=0.1,
             max_tokens=250,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"enable_thinking": False},
         )
     return _COMPACT_LLM
 
@@ -249,7 +255,7 @@ def _get_synth_llm():
         _SYNTH_LLM = build_llm(
             temperature=0.1,
             max_tokens=2048,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"enable_thinking": False},
         )
     return _SYNTH_LLM
 
@@ -312,7 +318,7 @@ def _summarize_for_compact(msgs: list) -> str:
         llm = _get_compact_llm()
         # Reuse the main agent's system prompt (not a dedicated "summarizer" persona) so this
         # call shares the cached [base_prompt] prefix instead of evicting it from the shared
-        # mlx_lm.server LRU pool — keeps the segment warm right before the post-compact turn
+        # mlx_vlm.server prompt cache — keeps the segment warm right before the post-compact turn
         # needs it (V2-PF03: a distinct system message here caused full ~19.6k cache-miss reprocess).
         resp = llm.invoke([
             SystemMessage(content=get_system_prompt()),
@@ -414,7 +420,9 @@ def force_compact(app, config: dict) -> dict:
     return {"cut": cut_idx, "before": chars_before, "after": chars_after}
 
 
+_STARTUP_WARM_THREAD_ID = "__cache_warm__"
 _REWARM_THREAD_ID = "__cache_rewarm__"
+_WARM_THREAD_IDS = {_STARTUP_WARM_THREAD_ID, _REWARM_THREAD_ID}
 
 
 def rewarm_after_compact(app, db_conn, seed_msgs: list) -> None:
@@ -466,6 +474,47 @@ def _last_human_content(messages: list) -> str:
 
 
 def react_node(state: V2State, config: RunnableConfig) -> dict:
+    """Run one outer turn with independent read-image/computer lifecycles."""
+    thread_id = (config.get("configurable") or {}).get("thread_id")
+    if thread_id in _WARM_THREAD_IDS:
+        # Cache utility turns share this node with real traffic. They need the
+        # normal model prompt, but must not enter or clear the module-local
+        # read_image/computer lifecycle (or publish a user's transient pixels).
+        trimmed = trim_messages(
+            state["messages"],
+            max_tokens=CONTEXT_MAX_CHARS,
+            token_counter=lambda msgs: sum(len(str(m.content)) for m in msgs),
+            strategy="last",
+            allow_partial=False,
+            include_system=True,
+        )
+        with suspend_vision_publication():
+            out = _REACT.invoke(
+                {"messages": trimmed},
+                config={**config, "recursion_limit": RECURSION_LIMIT},
+            )
+        return {"messages": out["messages"][len(trimmed):]}
+
+    from tools._call_guard import reset as _reset_call_guard
+    from tools.computer_use import end_computer_turn, reset_computer_guards
+    from tools.read_image import begin_image_turn, end_image_turn, reset_read_guards
+
+    stale_images = begin_image_turn()
+    if stale_images:
+        log.warning("[react_node] cleared %s stale read_image publication(s)", stale_images)
+    try:
+        reset_read_guards()
+        reset_computer_guards()
+        _reset_call_guard()
+        return _react_node_impl(state, config)
+    finally:
+        try:
+            end_image_turn()
+        finally:
+            end_computer_turn()
+
+
+def _react_node_impl(state: V2State, config: RunnableConfig) -> dict:
     """main agent — เห็น full cross-turn history, ตัดสินใจเองว่าจะเรียก tool ไหน
 
     Context management: trim messages เกิน CONTEXT_MAX_CHARS ก่อนส่งให้ agent
@@ -474,15 +523,6 @@ def react_node(state: V2State, config: RunnableConfig) -> dict:
     Retry logic: ถ้า agent ทำ tool ครบแต่ไม่ synthesize (final='') →
     inject synthesis prompt แล้ว call LLM 1 ครั้ง (ไม่ใช่ full react loop ใหม่)
     """
-    # Docstring-split first-call tracker (bash/read_file/tool_loop/python_exec,
-    # KNOW-LITE-DOCSTRING-SPLIT) — once-per-turn reset.
-    from tools._call_guard import reset as _reset_call_guard
-    _reset_call_guard()
-    # computer_use's per-turn action cap/repeat-guard is the same class of
-    # state and resets on the same once-per-REAL-turn schedule.
-    from tools.computer_use import reset_computer_guards
-    reset_computer_guards()
-
     trimmed = trim_messages(
         state["messages"],
         max_tokens=CONTEXT_MAX_CHARS,
@@ -579,7 +619,9 @@ def react_node(state: V2State, config: RunnableConfig) -> dict:
     if not _last_ai_content(new_msgs):
         log.warning("[react_node] final empty — retry synthesis once")
         current_query = _last_human_content(state["messages"])
-        retry_msgs = out["messages"] + [HumanMessage(content=_SYNTH_RETRY_PROMPT.format(query=current_query))]
+        retry_msgs = prepare_turn_vision_messages(
+            out["messages"] + [HumanMessage(content=_SYNTH_RETRY_PROMPT.format(query=current_query))]
+        )
         resp = _get_synth_llm().invoke(retry_msgs)
         synth = (resp.content or "").strip()
         if synth:

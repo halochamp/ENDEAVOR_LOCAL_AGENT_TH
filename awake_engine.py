@@ -48,10 +48,9 @@ _TIME_GRACE_MINUTES = 15
 _VOLATILE_LINE = re.compile(r"\b\d{1,2}:\d{2}\b")  # clock text changes every minute — not a real change
 
 # Fork-adaptive screen-fire hint: fires the "can act" branch whenever this fork
-# ships tools/computer_use.py. TH has no computer_use.py, so a fired screen
-# watcher always tells the model it can only notify, never click — the safety
-# boundary a "can act" branch would need (destructive-action block, per-turn
-# action cap) simply doesn't apply here because there is nothing to act with.
+# ships tools/computer_use.py. The graph applies the destructive-action block and
+# per-turn action cap to background-fired turns; a fork without the tool remains
+# notify-only.
 if (Path(__file__).resolve().parent / "tools" / "computer_use.py").exists():
     _SCREEN_ACT_HINT = ("(fork นี้มี computer tool — action ง่ายๆ ทีละขั้นทำได้ เช่น คลิกปุ่มที่มีข้อความชัดเจน "
                         "แล้วรายงานทุกครั้ง; งานหลายขั้น/หลาย dialog ให้แจ้ง user แทน)")

@@ -159,7 +159,7 @@ def _get_summarize_llm(temperature: float):
             _LLM_CACHE[temperature] = build_llm(
                 temperature=temperature,
                 max_tokens=SUMMARY_MAX_TOKENS,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                extra_body={"enable_thinking": False},
             )
         return _LLM_CACHE[temperature]
 
@@ -173,7 +173,7 @@ def _get_batch_summarize_llm(temperature: float):
             _BATCH_LLM_CACHE[temperature] = build_llm(
                 temperature=temperature,
                 max_tokens=SUMMARY_BATCH_MAX_TOKENS,
-                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                extra_body={"enable_thinking": False},
             )
         return _BATCH_LLM_CACHE[temperature]
 

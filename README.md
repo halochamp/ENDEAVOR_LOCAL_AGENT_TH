@@ -53,7 +53,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 
 **ทางลัด — ไม่อยากยุ่งกับ terminal เลย:** ดับเบิลคลิก `agent_start.command` ที่ root ของโปรเจกต์ — เปิดครั้งแรกจะติดตั้งให้อัตโนมัติทั้งหมด (conda env + AGENT_UI dependencies) แล้วเปิด desktop app ให้เลย โดยไม่ต้องเปิด MLX server เองแยกต่างหาก (AGENT_UI จัดการให้เองในตัว) ครั้งต่อๆ ไปดับเบิลคลิกซ้ำแค่เปิดแอปตรงๆ ไม่ติดตั้งซ้ำ
 
-มีปัญหา/อยากเริ่มใหม่สะอาดๆ → ดับเบิลคลิก `agent_stop.command` — kill mlx_lm.server, agent_server.py, หน้าต่าง AGENT_UI, และ CLI ที่ค้างอยู่ทั้งหมด (kill process เท่านั้น ไม่แตะ workspace/ข้อมูล/config) แล้วค่อยเปิด `agent_start.command` ใหม่
+มีปัญหา/อยากเริ่มใหม่สะอาดๆ → ดับเบิลคลิก `agent_stop.command` — kill mlx_vlm.server, agent_server.py, หน้าต่าง AGENT_UI, และ CLI ที่ค้างอยู่ทั้งหมด (kill process เท่านั้น ไม่แตะ workspace/ข้อมูล/config) แล้วค่อยเปิด `agent_start.command` ใหม่
 
 หรือทำเองทีละขั้นผ่าน terminal:
 
@@ -63,7 +63,7 @@ bash install_library/install.sh
 
 # ขั้นที่ 2: เปิด MLX server (terminal แยก — เปิดทิ้งไว้ตลอด)
 conda activate mlx
-mlx_lm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --port 8080
+python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
 
 # ขั้นที่ 3: รัน agent — เลือกแบบที่ต้องการ (terminal ใหม่)
 
@@ -80,8 +80,8 @@ conda activate mlx && python agent_server.py
 ถ้า run ไม่ได้เพราะ port ถูกใช้อยู่ (เช่น เปิด server ค้างจากรอบก่อน) ให้ kill ตัวเก่าก่อน — ดับเบิลคลิก `agent_stop.command` (เคลียร์ให้ครบทุกอย่างในทีเดียว) หรือ kill เองทีละตัว:
 
 ```bash
-# kill MLX server (port 8080)
-lsof -ti:8080 | xargs kill -9
+# kill MLX server (port 8085)
+lsof -ti:8085 | xargs kill -9
 
 # kill agent_server.py (port 8765)
 lsof -ti:8765 | xargs kill -9
@@ -144,7 +144,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 - แชทแบบ streaming token-by-token, รองรับ markdown, command autocomplete พิมพ์ `/` แล้วเลือกจาก dropdown
 - เมื่อเปิด skill mode (เช่น `/pdf_to_text`) ป้ายชื่อผู้ตอบในแชทจะเปลี่ยนเป็น `Agent | pdf_to_text` ให้เห็นชัดว่ากำลังอยู่ใน mode ไหน
 - **หยุดกลางคัน**: ปุ่ม ■ หยุด ระหว่าง agent กำลังทำงาน — ยกเลิก turn ที่รันอยู่ได้ทันที ไม่ต้องรอจบ
-- **แนบไฟล์/รูปภาพ**: ปุ่ม 📎 แนบไฟล์เข้ากับคำถามได้ — ไฟล์ถูกอัปโหลดเข้า `workspace/uploads/` แล้ว agent อ่านเองด้วย `read_file`/`read_image` ตามชนิดไฟล์ (รูปภาพใช้ OCR อ่านข้อความ/ตาราง/QR เท่านั้น ไม่ใช่ vision model ทั่วไป)
+- **แนบไฟล์/รูปภาพ**: ปุ่ม 📎 แนบไฟล์เข้ากับคำถามได้ — ไฟล์ถูกอัปโหลดเข้า `workspace/uploads/` แล้ว agent อ่านเองด้วย `read_file`/`read_image` ตามชนิดไฟล์ (รูปภาพส่งเข้า VLM โดยตรงก่อน; OCR อ่านข้อความ/ตาราง/QR เป็น sensor เสริมเมื่อเรียกใช้)
 
 ### 3. AGENT_UI — Electron Desktop App
 
@@ -155,7 +155,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
   npm install     # โหลด Electron + dependencies (~150MB, ครั้งเดียว)
   npm start
   ```
-- ต่างจาก 2 แบบข้างบนตรงที่**ไม่ต้องเปิด MLX server เองก่อน** — แอปจะ spawn `mlx_lm.server` และ `agent_server.py` ให้อัตโนมัติตอนเปิด (เห็น log ความคืบหน้าบนหน้าจอ loading), คอย monitor และ restart ให้เองถ้า MLX server ค้าง/ตาย
+- ต่างจาก 2 แบบข้างบนตรงที่**ไม่ต้องเปิด MLX server เองก่อน** — แอปจะ spawn `mlx_vlm.server` และ `agent_server.py` ให้อัตโนมัติตอนเปิด (เห็น log ความคืบหน้าบนหน้าจอ loading), คอย monitor และ restart ให้เองถ้า MLX server ค้าง/ตาย
 - ปิดแอป = ปิด MLX server + agent_server.py ให้อัตโนมัติด้วย (ไม่ต้องไป kill port เอง)
 - ใช้ conda env `mlx` เดียวกับที่ตั้งค่าไว้ตอน Setup ด้านล่าง (auto-detect ผ่าน `conda info`, override ได้ด้วย `MLX_CONDA_ENV`/`MLX_PYTHON`)
 - **RAM < 48GB:** อ่าน env `V2_MODEL`/`MLX_BASE_URL` เหมือนกับ `config.py` เป๊ะ (ต้องตั้งทั้งคู่พร้อมกัน ไม่งั้นยังโหลด 35B ตัวเต็มเหมือนเดิม) — เครื่อง RAM ไม่พอแนะนำ **Qwen3-14B** เป็นขั้นต่ำ เช่น
@@ -165,7 +165,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
   ```
   (ตั้งก่อนเปิด `agent_start.command`/`npm start` ในเทอร์มินัลเดียวกัน หรือ export ถาวรไว้ใน `~/.zshrc`)
 
-ทั้ง 3 แบบเชื่อมต่อ MLX server ตัวเดียวกัน (`localhost:8080`) — เลือกใช้ตัวไหนก็ได้ ไม่ต้องรันพร้อมกัน (AGENT_UI เปิดพร้อม CLI/Web UI อื่นได้ ถ้า MLX server ตัวเดิมรันอยู่แล้วมันจะ adopt ไม่ restart ทับ)
+ทั้ง 3 แบบเชื่อมต่อ MLX server ตัวเดียวกัน (`localhost:8085`) — เลือกใช้ตัวไหนก็ได้ ไม่ต้องรันพร้อมกัน (AGENT_UI เปิดพร้อม CLI/Web UI อื่นได้ ถ้า MLX server ตัวเดิมรันอยู่แล้วมันจะ adopt ไม่ restart ทับ)
 
 ---
 
@@ -212,7 +212,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | **`react.py`** | สร้าง ReAct agent + system prompt + คำนวณ context stats |
 | **`planner.py`** | LLM call เดียวจัดหมวด query เป็น simple/complex → ถ้า complex คืน step list ให้ `create_plan` ก่อนเริ่มทำงานจริง |
 | **`graph.py`** | ผูก agent เข้ากับ LangGraph state machine, จัดการ retry เมื่อ synthesis ล้มเหลว, deterministic intercept สำหรับ search/research intent |
-| **`llm.py`** | สร้าง `ChatOpenAI` client ชี้ไปที่ `mlx_lm.server` (OpenAI-compatible API) |
+| **`llm.py`** | สร้าง `ChatOpenAI` client ชี้ไปที่ `mlx_vlm.server` (OpenAI-compatible API) |
 | **`runtime_common.py`** | infra ร่วมระหว่าง CLI กับ Web UI — memory store, liveness check, skill detection (single source of truth ตาม Dual-Path Prohibition) |
 | **`awake_engine.py`** | daemon thread คอยเช็ค standing trigger ที่ตั้งไว้ผ่าน `awake` tool (file/every/times/once) — fire แล้วส่ง query เข้า agent เองโดยไม่ต้องมีคนพิมพ์ |
 
@@ -241,7 +241,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | **LLM Runtime** | [MLX](https://github.com/ml-explore/mlx) | รัน Qwen3.6-35B แบบ quantized (4-bit) บน Apple Silicon GPU ผ่าน Metal |
 | **Model** | `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | reasoning + tool calling — สลับเป็นโมเดลเล็กกว่าได้ผ่าน `.env` |
 | **Agent Framework** | [LangGraph](https://github.com/langchain-ai/langgraph) `create_react_agent` | ReAct loop, state graph, checkpointing |
-| **LLM Client** | LangChain Core + `langchain-openai` | คุยกับ `mlx_lm.server` ผ่าน OpenAI-compatible API |
+| **LLM Client** | LangChain Core + `langchain-openai` | คุยกับ `mlx_vlm.server` ผ่าน OpenAI-compatible API |
 | **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | WebSocket (real-time streaming) + REST endpoints |
 | **Web UI** | `chat.html` (vanilla JS) + marked.js | VS Code-style chat UI พร้อม activity log, file viewer, streaming response |
 | **CLI** | `prompt_toolkit` + `rich` | interactive terminal, autocomplete, markdown rendering |
@@ -251,7 +251,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | **Data Processing** | `pandas`, `numpy` | วิเคราะห์ข้อมูล CSV/Excel |
 | **Visualization** | `matplotlib` + Pillow | สร้างกราฟ พร้อมรองรับฟอนต์ไทย (Noto Sans Thai / Thonburi) |
 | **Document Parsing** | `markitdown[pdf,docx,xlsx,xls]` | แปลง PDF/Word/Excel → markdown ให้ agent อ่านได้ |
-| **OCR** | Apple Vision Framework (`pyobjc`) | อ่านข้อความจากภาพ — แม่นยำสูงสำหรับภาษาไทย, native macOS |
+| **Vision + OCR assist** | mlx-vlm + Apple Vision Framework (`pyobjc`) | ให้ VLM เห็น pixels โดยตรง; เรียก OCR/table/QR ช่วยอ่านข้อความเมื่อต้องการ — แม่นยำสูงสำหรับภาษาไทย |
 | **Persistence** | SQLite (`langgraph.checkpoint.sqlite`) | เก็บ conversation history แบบ persistent |
 | **Config** | `python-dotenv` | โหลด `.env` อัตโนมัติ — ปรับ config ได้โดยไม่แก้ code |
 | **Sandboxing** | macOS `sandbox-exec` | จำกัด `bash` tool ให้เขียนไฟล์ได้เฉพาะใน workspace |
@@ -264,7 +264,7 @@ Agent ตัวนี้ออกแบบมาให้ "เขียนได
 
 ### ข้อมูลอยู่ในเครื่องคุณเท่านั้น
 
-โมเดล LLM รันบนเครื่องผ่าน `mlx_lm.server` (MLX, Apple Silicon GPU) — บทสนทนา, ไฟล์, และ context ทั้งหมดที่ส่งเข้า/ออกจากโมเดล **ไม่ถูกส่งออกไปนอกเครื่อง** ไม่มี API call ไป cloud LLM provider ใด ๆ (OpenAI, Anthropic ฯลฯ) ในการทำงานปกติ
+โมเดล LLM รันบนเครื่องผ่าน `mlx_vlm.server` (MLX, Apple Silicon GPU) — บทสนทนา, ไฟล์, และ context ทั้งหมดที่ส่งเข้า/ออกจากโมเดล **ไม่ถูกส่งออกไปนอกเครื่อง** ไม่มี API call ไป cloud LLM provider ใด ๆ (OpenAI, Anthropic ฯลฯ) ในการทำงานปกติ
 
 ข้อยกเว้นเดียวคือเมื่อ agent **เลือกเรียกใช้** เครื่องมือที่ต้องคุยกับอินเทอร์เน็ตตามคำสั่งของคุณเอง เช่น `web_search`, `browse_url`, `browser_use` — กรณีนี้เฉพาะ "คำค้น/URL" ที่จำเป็นเท่านั้นจะถูกส่งไปยังบริการนั้น ๆ (เช่น DuckDuckGo, เว็บปลายทาง) ไม่ใช่บทสนทนาทั้งหมด
 
@@ -335,13 +335,13 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 
 | Tool | คำอธิบาย |
 |---|---|
-| `read_image` | อ่านข้อความจากภาพด้วย Apple Vision OCR — แม่นยำสำหรับภาษาไทยและอังกฤษ รองรับทั้งไฟล์ local และ URL |
+| `read_image` | progressive direct vision สำหรับไฟล์ local, URL และ `screen`: การเรียกครั้งแรกส่งภาพต้นฉบับทั้งภาพให้ main VLM โดยไม่ทำ OCR อัตโนมัติ; หลังจากเห็นภาพแล้วจึงเรียก `detail="text"` (OCR/table/QR), `detail="chart"`/`"slide"` หรือ `find`/`region+zoom` ได้ โดยไม่ส่งคำถาม semantic เข้า tool |
 
 ### 🖱️ Computer Use
 
 | Tool | คำอธิบาย |
 |---|---|
-| `computer` | คลิก/พิมพ์/scroll บนหน้าจอจริงของเครื่อง ทีละ action พร้อม guard — แต่ละ action คืนผลเป็น OCR text ของสิ่งที่เปลี่ยนไป (ไม่ใช่ vision model เห็นภาพ, main model เป็น text-only) จำกัด action ต่อ turn (เข้มขึ้นตอนไม่มีคนเฝ้าหน้าจอผ่าน `awake`'s `screen` trigger) และปฏิเสธ action ที่ดูเหมือนลบ/ถอนการติดตั้ง/ format เสมอเว้นแต่ user สั่งชัดเจน |
+| `computer` | direct vision + guarded action บนหน้าจอจริงของเครื่อง ทีละ action — ส่ง screenshot ล่าสุดให้ main VLM พร้อม `[OBS]` Accessibility/OCR ช่วยอ้างอิง; เป็น tool/state owner แยกจาก `read_image`, มี lifecycle/guards/snapshot ของตัวเอง และยังจำกัด action ต่อ turn (เข้มขึ้นตอนไม่มีคนเฝ้าหน้าจอผ่าน `awake`'s `screen`) พร้อมปฏิเสธ action ที่ดูเหมือนลบ/ถอนการติดตั้ง/format เว้นแต่ user สั่งชัดเจน |
 
 ### 🧠 Memory
 
@@ -373,7 +373,7 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 
 | Tool | คำอธิบาย |
 |---|---|
-| `awake` | ตั้ง trigger ให้ agent ทำงานเองโดยไม่ต้องมีคนพิมพ์ถาม — `file` (ไฟล์เปลี่ยน), `every` (ทุก N นาที), `times`/`run_at` (เวลาที่กำหนด), `once` (ครั้งเดียวหลัง delay), `screen` (เฝ้าหน้าจอผ่าน OCR — เห็นการเปลี่ยนแปลงและแจ้งได้ พร้อมกดปุ่ม/action ง่ายๆ ต่อเองผ่าน `computer` tool ได้ด้วย ภายใต้ limit ที่เข้มกว่าปกติตอนไม่มีคนเฝ้าหน้าจอ) — ทำงานอยู่เบื้องหลังตราบใดที่ agent process ยังรันอยู่ |
+| `awake` | ตั้ง trigger ให้ agent ทำงานเองโดยไม่ต้องมีคนพิมพ์ถาม — `file` (ไฟล์เปลี่ยน), `every` (ทุก N นาที), `times`/`run_at` (เวลาที่กำหนด), `once` (ครั้งเดียวหลัง delay), `screen` (เฝ้าจอด้วย OCR/visual signals — เห็นการเปลี่ยนแปลงและแจ้งได้ พร้อมใช้ screenshot direct vision และกดปุ่ม/action ง่ายๆ ต่อเองผ่าน `computer` ภายใต้ limit ที่เข้มกว่า) — ทำงานอยู่เบื้องหลังตราบใดที่ agent process ยังรันอยู่ |
 
 ### 🗺️ Planning & Loops
 
@@ -408,8 +408,8 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 - macOS Apple Silicon (M1/M2/M3/M4/M5)
 - RAM ≥ 48 GB (สำหรับ 35B model)
 - Python 3.11 via conda (`mlx` env)
-- `mlx-lm` installed
-- (optional) `computer` tool works without any extra setup (OCR-only), but System Settings → Privacy & Security → **Accessibility** access for the process running the agent gives it richer element data — the tool tells you in its own output (`ax=permission_required`) if this is off, no crash either way
+- `mlx-vlm` installed (และติดตั้ง `mlx-lm` เป็น dependency ที่ server ใช้ร่วมกัน)
+- (optional) `computer` direct screenshot vision works without extra setup; System Settings → Privacy & Security → **Accessibility** access for the process running the agent adds richer element data — the tool tells you in its own output (`ax=permission_required`) if this is off, no crash either way
 
 > **หมายเหตุเรื่องโมเดล:** harness นี้ออกแบบและ tune มาเพื่อ **Qwen3.6-35B-A3B (MoE)** ซึ่งเป็น production model ที่ใช้อยู่ — ค่า default ทั้งหมด (prompt, thinking budget, repetition penalty, tool-calling behavior) คาดหวังความสามารถระดับนี้
 >
@@ -434,7 +434,7 @@ bash install_library/install.sh
 
 # 4. เปิด MLX server (terminal แยก)
 conda activate mlx
-mlx_lm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --port 8080
+python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
 
 # 5. รัน agent — เลือกแบบที่ต้องการ
 conda activate mlx

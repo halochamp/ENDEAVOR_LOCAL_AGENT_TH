@@ -2,31 +2,16 @@
 # License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-"""Structured, text-only screen observations for the ``computer`` tool,
-forked byte-identical from ENDEAVOR_LOCAL_AGENT_MAX's tools/_screen_state.py.
-
-The main model never receives pixels.  This module turns OCR and optional
-macOS Accessibility (AX) records into a compact, versioned element list that the
-model can reference on its next tool call.  It contains no capture, input, LLM,
-or LangChain code, so the geometry/fingerprinting rules stay deterministic and
-cheap to unit-test.
-"""
+"""Compact semantic screen state used alongside ENDEAVOR_LOCAL_AGENT_TH's pixel input."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
 import json
 import re
-from typing import Any
 
-
-_VOLATILE_TEXT = re.compile(r"^(?:\d{1,2}:\d{2}|\d+\s*(?:s|m|h)\s+ago)$", re.IGNORECASE)
-_ACTIONABLE_ROLES = {
-    "AXButton", "AXCheckBox", "AXComboBox", "AXLink", "AXMenuButton",
-    "AXMenuItem", "AXPopUpButton", "AXRadioButton", "AXSearchField",
-    "AXSecureTextField", "AXSlider", "AXTextArea", "AXTextField",
-}
-
+_VOLATILE = re.compile(r"^(?:\d{1,2}:\d{2}|\d+\s*(?:s|m|h)\s+ago)$", re.I)
+_ACTIONABLE = {"AXButton", "AXCheckBox", "AXComboBox", "AXLink", "AXMenuButton", "AXMenuItem", "AXPopUpButton", "AXRadioButton", "AXSearchField", "AXSecureTextField", "AXSlider", "AXTextArea", "AXTextField"}
 
 @dataclass
 class ScreenElement:
@@ -40,12 +25,10 @@ class ScreenElement:
     enabled: bool | None = None
     focused: bool | None = None
     actions: tuple[str, ...] = ()
-    confidence: float = 1.0
-
+    value_digest: str = ""
     @property
     def actionable(self) -> bool:
-        return self.role in _ACTIONABLE_ROLES or bool(self.actions)
-
+        return self.role in _ACTIONABLE or bool(self.actions)
 
 @dataclass
 class ScreenSnapshot:
@@ -58,198 +41,100 @@ class ScreenSnapshot:
     capture_size: tuple[int, int]
     screen_size: tuple[float, float]
     accessibility_status: str = "unavailable"
-    description: str = ""
-    fingerprint: str = field(init=False)
-
-    def __post_init__(self) -> None:
-        self.fingerprint = snapshot_fingerprint(self)
-
-    def get(self, element_id: str) -> ScreenElement | None:
-        needle = element_id.strip().casefold()
-        return next((e for e in self.elements if e.element_id.casefold() == needle), None)
-
-
-def _clean_text(value: Any) -> str:
-    return " ".join(str(value or "").split()).strip()
-
-
-def _region(point: tuple[float, float], screen_size: tuple[float, float]) -> str:
-    width, height = screen_size
-    if width <= 0 or height <= 0:
-        return "center"
-    x, y = point[0] / width, point[1] / height
-    row = "top" if y < 1 / 3 else ("bottom" if y > 2 / 3 else "")
-    col = "left" if x < 1 / 3 else ("right" if x > 2 / 3 else "")
-    return f"{row}-{col}" if row and col else (row or col or "center")
-
-
-def _inside_window(point: tuple[float, float], bounds: tuple[float, float, float, float] | None) -> bool:
-    if not bounds:
-        return True
-    x, y, w, h = bounds
-    # A little margin keeps sheet shadows/window chrome and menu-adjacent labels.
-    margin = 8.0
-    return x - margin <= point[0] <= x + w + margin and y - margin <= point[1] <= y + h + margin
-
-
-def _same_element(a: ScreenElement, b: ScreenElement) -> bool:
-    if not a.text or not b.text or a.text.casefold() != b.text.casefold():
-        return False
-    dx, dy = a.point[0] - b.point[0], a.point[1] - b.point[1]
-    return dx * dx + dy * dy <= 30.0 * 30.0
-
-
-def build_snapshot(
-    observation_id: str,
-    *,
-    app: str,
-    ocr_boxes: list[dict],
-    ax_state: dict | None,
-    image_path: str,
-    capture_size: tuple[int, int],
-    screen_size: tuple[float, float],
-    description: str = "",
-) -> ScreenSnapshot:
-    """Fuse AX records with OCR boxes and assign stable IDs for this snapshot.
-
-    AX is preferred because it supplies roles, state and icon labels. OCR fills
-    visible-text gaps. When AX reports a focused-window bound, whole-desktop OCR
-    outside that window is dropped to prevent host IDE/chat text from polluting
-    the agent's view.
-    """
-    ax_state = ax_state if isinstance(ax_state, dict) else {}
-    window = _clean_text(ax_state.get("window"))
-    status = _clean_text(ax_state.get("status")) or "unavailable"
-    raw_window_bounds = ax_state.get("window_bounds")
     window_bounds: tuple[float, float, float, float] | None = None
-    if isinstance(raw_window_bounds, (list, tuple)) and len(raw_window_bounds) == 4:
-        try:
-            window_bounds = tuple(float(v) for v in raw_window_bounds)  # type: ignore[assignment]
-        except (TypeError, ValueError):
-            window_bounds = None
+    cursor_capture: tuple[int, int] | None = None
+    fingerprint: str = field(init=False)
+    visual_fingerprint: str = field(init=False, default="")
+    _visual_signature: bytes = field(init=False, default=b"", repr=False)
+    def __post_init__(self) -> None:
+        payload = [
+            (e.source, e.role, e.text.casefold(), e.region, e.enabled, e.focused, e.value_digest)
+            for e in self.elements if not _VOLATILE.fullmatch(e.text.strip())
+        ]
+        self.fingerprint = hashlib.sha256(json.dumps((self.app.casefold(), self.window.casefold(), payload), ensure_ascii=False).encode()).hexdigest()[:20]
+        self._visual_signature = _visual_signature(self.image_path)
+        if self._visual_signature:
+            self.visual_fingerprint = hashlib.sha256(self._visual_signature).hexdigest()[:20]
+    def visual_delta(self, other: "ScreenSnapshot") -> float:
+        """Fraction of downsampled/quantized cells that differ; no pixels are exposed."""
+        if not self._visual_signature or len(self._visual_signature) != len(other._visual_signature):
+            return 0.0
+        changed = sum(a != b for a, b in zip(self._visual_signature, other._visual_signature))
+        return changed / len(self._visual_signature)
+    def get(self, element_id: str) -> ScreenElement | None:
+        return next((e for e in self.elements if e.element_id.casefold() == element_id.strip().casefold()), None)
 
+def _visual_signature(image_path: str) -> bytes:
+    """Compact visual state: 64x36 grayscale, 4-bit quantized, kept only in memory."""
+    if not image_path:
+        return b""
+    try:
+        import cv2
+        frame = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if frame is None:
+            return b""
+        small = cv2.resize(frame, (64, 36), interpolation=cv2.INTER_AREA)
+        return bytes((small // 16).astype("uint8").reshape(-1).tolist())
+    except Exception:
+        return b""
+
+
+def _region(x: float, y: float, size: tuple[float, float]) -> str:
+    w, h = size; col = "left" if x < w / 3 else "right" if x > w * 2 / 3 else ""; row = "top" if y < h / 3 else "bottom" if y > h * 2 / 3 else ""
+    return f"{row}-{col}" if row and col else row or col or "center"
+
+def build_snapshot(observation_id: str, *, app: str, ocr_boxes: list[dict], ax_state: dict | None, image_path: str, capture_size: tuple[int, int], screen_size: tuple[float, float]) -> ScreenSnapshot:
+    ax_state = ax_state if isinstance(ax_state, dict) else {}; raw_bounds = ax_state.get("window_bounds"); window_bounds = tuple(raw_bounds) if isinstance(raw_bounds, list) and len(raw_bounds) == 4 else None
     elements: list[ScreenElement] = []
     for raw in ax_state.get("elements", []) if isinstance(ax_state.get("elements"), list) else []:
         try:
-            bounds = tuple(float(v) for v in raw.get("bounds", []))
-            if len(bounds) != 4 or bounds[2] <= 0 or bounds[3] <= 0:
-                continue
-            point = (bounds[0] + bounds[2] / 2, bounds[1] + bounds[3] / 2)
-            text = _clean_text(raw.get("name") or raw.get("value"))
-            role = _clean_text(raw.get("role")) or "AXUnknown"
-            actions = tuple(_clean_text(v) for v in raw.get("actions", []) if _clean_text(v))
-            # Keep actionable unnamed controls (their role/location is still useful)
-            # and named semantic/static elements. Drop invisible structural groups.
-            if not text and role not in _ACTIONABLE_ROLES and not actions:
-                continue
-            elements.append(ScreenElement(
-                element_id="",
-                text=text or f"<{role}>",
-                role=role,
-                source="ax",
-                point=point,
-                bounds=bounds,  # type: ignore[arg-type]
-                region=_region(point, screen_size),
-                enabled=raw.get("enabled") if isinstance(raw.get("enabled"), bool) else None,
-                focused=raw.get("focused") if isinstance(raw.get("focused"), bool) else None,
-                actions=actions,
-                confidence=1.0,
-            ))
-        except (TypeError, ValueError, KeyError):
-            continue
-
-    screen_width, screen_height = screen_size
+            x, y, w, h = (float(v) for v in raw["bounds"])
+            if w <= 0 or h <= 0: continue
+            role = str(raw.get("role") or "AXUnknown"); actions = tuple(str(v) for v in raw.get("actions", []) if v)
+            raw_value = raw.get("value")
+            raw_name = raw.get("name")
+            # Never let AXSecureTextField value content become observation text,
+            # even if Accessibility returns something more informative than bullets.
+            display_value = "" if role == "AXSecureTextField" else raw_value
+            text = " ".join(str(raw_name or display_value or "").split())
+            if not text and role not in _ACTIONABLE and not actions: continue
+            value_digest = ""
+            if role != "AXSecureTextField" and raw_value not in (None, ""):
+                value_digest = hashlib.sha256(str(raw_value).encode("utf-8", errors="replace")).hexdigest()[:16]
+            elements.append(ScreenElement("", text or f"<{role}>", role, "ax", (x+w/2,y+h/2), (x,y,w,h), _region(x+w/2,y+h/2,screen_size), raw.get("enabled") if isinstance(raw.get("enabled"),bool) else None, raw.get("focused") if isinstance(raw.get("focused"),bool) else None, actions, value_digest))
+        except (KeyError, TypeError, ValueError): continue
     for box in ocr_boxes:
         try:
-            cx = (float(box["x"]) + float(box["w"]) / 2) * screen_width
-            cy = (1.0 - (float(box["y"]) + float(box["h"]) / 2)) * screen_height
-            point = (cx, cy)
-            if not _inside_window(point, window_bounds):
-                continue
-            text = _clean_text(box.get("text"))
-            if not text:
-                continue
-            w, h = float(box["w"]) * screen_width, float(box["h"]) * screen_height
-            candidate = ScreenElement(
-                element_id="",
-                text=text,
-                role="OCRText",
-                source="ocr",
-                point=point,
-                bounds=(cx - w / 2, cy - h / 2, w, h),
-                region=_region(point, screen_size),
-                confidence=0.98,
-            )
-            if not any(_same_element(candidate, existing) for existing in elements):
-                elements.append(candidate)
-        except (TypeError, ValueError, KeyError):
-            continue
-
-    # Actionable/focused AX nodes first, then other AX, then OCR in visual order.
-    elements.sort(key=lambda e: (
-        0 if e.focused else 1,
-        0 if e.actionable else 1,
-        0 if e.source == "ax" else 1,
-        round(e.point[1], 2), round(e.point[0], 2), e.text.casefold(),
-    ))
-    for index, element in enumerate(elements, 1):
-        element.element_id = f"e{index}"
-
+            text = " ".join(str(box.get("text") or "").split())
+            if not text: continue
+            x = (float(box["x"])+float(box["w"])/2)*screen_size[0]; y = (1-(float(box["y"])+float(box["h"])/2))*screen_size[1]; w=float(box["w"])*screen_size[0]; h=float(box["h"])*screen_size[1]
+            if window_bounds:
+                wx,wy,ww,wh=(float(v) for v in window_bounds)
+                if not (wx-8 <= x <= wx+ww+8 and wy-8 <= y <= wy+wh+8): continue
+            if any(e.text.casefold()==text.casefold() and (e.point[0]-x)**2+(e.point[1]-y)**2 <= 900 for e in elements): continue
+            elements.append(ScreenElement("", text, "OCRText", "ocr", (x,y), (x-w/2,y-h/2,w,h), _region(x,y,screen_size)))
+        except (KeyError, TypeError, ValueError): continue
+    elements.sort(key=lambda e: (not e.focused, not e.actionable, e.source != "ax", e.point[1], e.point[0], e.text.casefold()))
+    for i,e in enumerate(elements,1): e.element_id=f"e{i}"
     return ScreenSnapshot(
-        observation_id=observation_id,
-        app=app,
-        window=window,
-        elements=elements,
-        ocr_boxes=list(ocr_boxes),
-        image_path=image_path,
-        capture_size=capture_size,
-        screen_size=screen_size,
-        accessibility_status=status,
-        description=description,
+        observation_id,
+        app,
+        str(ax_state.get("window") or ""),
+        elements,
+        list(ocr_boxes),
+        image_path,
+        capture_size,
+        screen_size,
+        str(ax_state.get("status") or "unavailable"),
+        tuple(float(v) for v in window_bounds) if window_bounds else None,
     )
 
-
-def snapshot_fingerprint(snapshot: ScreenSnapshot) -> str:
-    semantic = []
-    for e in snapshot.elements:
-        text = _clean_text(e.text).casefold()
-        if _VOLATILE_TEXT.fullmatch(text):
-            continue
-        semantic.append((
-            e.source, e.role, text, e.region, e.enabled, e.focused,
-            tuple(action.casefold() for action in e.actions),
-        ))
-    payload = json.dumps(
-        {"app": snapshot.app.casefold(), "window": snapshot.window.casefold(), "elements": semantic},
-        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
-
-
-def format_snapshot(snapshot: ScreenSnapshot, max_chars: int = 900) -> str:
-    header = f'[OBS {snapshot.observation_id} app={snapshot.app or "unknown"!r}'
-    if snapshot.window:
-        header += f' window={snapshot.window!r}'
-    header += f' ax={snapshot.accessibility_status}]'
-    lines = [header]
-    for e in snapshot.elements:
-        state = []
-        if e.enabled is not None:
-            state.append(f"enabled={str(e.enabled).lower()}")
-        if e.focused:
-            state.append("focused=true")
-        if e.actions:
-            state.append("actions=" + ",".join(action.removeprefix("AX") for action in e.actions[:3]))
-        suffix = (" " + " ".join(state)) if state else ""
-        line = (
-            f'{e.element_id} role={e.role.removeprefix("AX")} text={e.text!r} '
-            f'region={e.region} source={e.source}{suffix}'
-        )
-        if sum(len(v) + 1 for v in lines) + len(line) > max_chars:
-            remaining = len(snapshot.elements) - (len(lines) - 1)
-            lines.append(f"… {remaining} more elements omitted; use inspect on a visible element or scroll")
-            break
+def format_snapshot(s: ScreenSnapshot, max_chars: int = 760) -> str:
+    cursor = f" cursor={s.cursor_capture[0]},{s.cursor_capture[1]}" if s.cursor_capture is not None else ""
+    lines=[f"[OBS {s.observation_id} app={s.app!r}"+(f" window={s.window!r}" if s.window else "")+f" ax={s.accessibility_status} size={s.capture_size[0]}x{s.capture_size[1]} coord=capture_px{cursor}]"]
+    for e in s.elements:
+        state=(["focused=true"] if e.focused else [])+([f"enabled={str(e.enabled).lower()}"] if e.enabled is not None else [])
+        line=f"{e.element_id} role={e.role.removeprefix('AX')} text={e.text!r} region={e.region} source={e.source}"+(" "+" ".join(state) if state else "")
+        if sum(map(len,lines))+len(lines)+len(line)>max_chars: lines.append(f"… {len(s.elements)-len(lines)+1} more elements omitted; inspect or scroll"); break
         lines.append(line)
-    if len(lines) == 1:
-        lines.append("(no semantic/OCR elements found)")
-    return "\n".join(lines)
+    return "\n".join(lines if len(lines)>1 else lines+["(no semantic/OCR elements found)"])

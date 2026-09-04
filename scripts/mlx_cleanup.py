@@ -2,15 +2,15 @@
 # License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-"""mlx_cleanup.py — ตรวจ + ฆ่า mlx_lm.server ที่ไม่ต้องการ
+"""mlx_cleanup.py — ตรวจ + ฆ่า mlx_vlm.server ที่ไม่ต้องการ
 
-ปัญหา: mlx_lm.server โหลด weights ลง Unified Memory ของ Metal
+ปัญหา: mlx_vlm.server โหลด weights ลง Unified Memory ของ Metal
 ถ้ารัน 2 server พร้อมกัน + แต่ละ server โหลดหลาย model → RAM ระเบิดง่าย ๆ
 (48GB เครื่องของผมก็พังมาแล้ว)
 
 วิธีใช้:
   python scripts/mlx_cleanup.py                  # list อย่างเดียว (ปลอดภัย, default)
-  python scripts/mlx_cleanup.py --keep 8080      # ฆ่าทุก server ยกเว้น :8080
+  python scripts/mlx_cleanup.py --keep 8085      # ฆ่าทุก server ยกเว้น :8085
   python scripts/mlx_cleanup.py --keep-config    # ฆ่าทุก server ยกเว้นตัวที่ตรง config.MLX_BASE_URL
   python scripts/mlx_cleanup.py --kill 8888      # ฆ่า server บน :8888 อย่างเดียว
   python scripts/mlx_cleanup.py --kill-all       # ฆ่าทุก server (ใช้ตอนจะ restart ใหม่)
@@ -28,7 +28,7 @@ import sys
 
 
 def _list_servers() -> list[dict]:
-    """list mlx_lm.server processes ที่กำลังรัน
+    """list mlx_vlm.server processes ที่กำลังรัน
 
     คืน: [{"pid": int, "model": str, "port": int, "rss_mb": float, "cmdline": str}, ...]
     """
@@ -39,7 +39,7 @@ def _list_servers() -> list[dict]:
 
     servers = []
     for line in out.splitlines()[1:]:
-        if "mlx_lm.server" not in line:
+        if "mlx_vlm.server" not in line:
             continue
         parts = line.strip().split(None, 2)
         if len(parts) < 3:
@@ -78,10 +78,10 @@ def _get_metal_memory_mb() -> float | None:
 
 def _print_servers(servers: list[dict]) -> None:
     if not servers:
-        print("ไม่พบ mlx_lm.server กำลังรัน")
+        print("ไม่พบ mlx_vlm.server กำลังรัน")
         return
     metal_mb = _get_metal_memory_mb()
-    print(f"พบ mlx_lm.server {len(servers)} ตัว:")
+    print(f"พบ mlx_vlm.server {len(servers)} ตัว:")
     print(f"  {'PID':>7}  {'PORT':>5}  {'RSS_MB':>9}  MODEL")
     for s in servers:
         port = s["port"] if s["port"] is not None else "?"
@@ -112,7 +112,7 @@ def main() -> int:
     g.add_argument("--keep-config", action="store_true",
                    help="ฆ่าทุก server ยกเว้นตัวที่ตรง config.MLX_BASE_URL")
     g.add_argument("--kill", type=int, metavar="PORT", help="ฆ่า server บน port นี้")
-    g.add_argument("--kill-all", action="store_true", help="ฆ่าทุก mlx_lm.server")
+    g.add_argument("--kill-all", action="store_true", help="ฆ่าทุก mlx_vlm.server")
     args = p.parse_args()
 
     servers = _list_servers()

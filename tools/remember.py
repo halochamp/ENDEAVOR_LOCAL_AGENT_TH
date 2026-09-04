@@ -66,7 +66,7 @@ def _llm_chat(prompt: str, max_tokens: int = 800) -> str:
             "max_tokens": max_tokens,
             "temperature": 0,
             "stream": False,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "enable_thinking": False,
         },
         timeout=_LLM_TIMEOUT,
     )

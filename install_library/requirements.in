@@ -5,7 +5,7 @@
 # openai==2.16.0 and langchain-openai 1.1.7 is the compatible client release.
 
 # LLM runtime
-mlx-lm>=0.31.3
+mlx-vlm==0.6.8
 
 # Agent framework
 langchain-core>=1.4.0

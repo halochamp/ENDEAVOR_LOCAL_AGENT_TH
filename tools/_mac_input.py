@@ -2,8 +2,7 @@
 # License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-"""Deterministic macOS input primitives for the computer tool, forked
-byte-identical from ENDEAVOR_LOCAL_AGENT_MAX's tools/_mac_input.py.
+"""Deterministic macOS input primitives for the ENDEAVOR_LOCAL_AGENT_TH computer tool.
 
 This module deliberately contains no LangChain tool or agent-loop logic.  The
 public operations accept/display coordinates in *points* with a top-left
@@ -17,6 +16,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 try:  # Import guard: CI and non-macOS development machines need the pure math.
@@ -31,6 +31,18 @@ try:
     from AppKit import NSWorkspace as _NSWorkspace  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover
     _NSWorkspace = None
+try:
+    from AppKit import (  # type: ignore[import-not-found]
+        NSPasteboard as _NSPasteboard,
+        NSPasteboardItem as _NSPasteboardItem,
+        NSPasteboardTypeString as _NSPasteboardTypeString,
+    )
+    from Foundation import NSData as _NSData  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    _NSPasteboard = None
+    _NSPasteboardItem = None
+    _NSPasteboardTypeString = None
+    _NSData = None
 
 
 _KEYCODES = {
@@ -134,6 +146,7 @@ def capture(path: str) -> None:
     target = Path(path)
     result = subprocess.run(
         ["screencapture", "-x", "-m", str(target)], capture_output=True, timeout=5,
+        stdin=subprocess.DEVNULL,
     )
     if result.returncode or not target.exists():
         raise RuntimeError("screencapture failed")
@@ -142,7 +155,8 @@ def capture(path: str) -> None:
 def image_dimensions(path: str) -> tuple[int, int]:
     """Return a captured PNG's native pixel dimensions using macOS ``sips``."""
     result = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", path],
-                            capture_output=True, text=True, timeout=5)
+                            capture_output=True, text=True, timeout=5,
+                            stdin=subprocess.DEVNULL)
     values = [int(value) for value in re.findall(r"pixel(?:Width|Height):\s*(\d+)", result.stdout)]
     if result.returncode or len(values) != 2:
         raise RuntimeError("could not read capture dimensions")
@@ -195,6 +209,45 @@ def failsafe_abort(radius_points: float = 2.0) -> bool:
     return point.x <= radius_points and point.y <= radius_points
 
 
+def pointer_position() -> tuple[float, float]:
+    """Return the current mouse pointer position in top-left display points."""
+    q = _require_quartz()
+    point = q.CGEventGetLocation(q.CGEventCreate(None))
+    return float(point.x), float(point.y)
+
+
+_POINTER_MOVE_DURATION = 0.18
+_POINTER_MOVE_STEPS = 10
+
+
+def move_pointer(
+    x: float,
+    y: float,
+    *,
+    duration: float = _POINTER_MOVE_DURATION,
+    steps: int = _POINTER_MOVE_STEPS,
+) -> None:
+    """Move the shared macOS system cursor visibly instead of teleporting it."""
+    if steps < 1:
+        raise ValueError("pointer move steps must be a positive integer")
+    if duration < 0:
+        raise ValueError("pointer move duration cannot be negative")
+    q = _require_quartz()
+    start_x, start_y = pointer_position()
+    pause = duration / steps if duration else 0.0
+    for step in range(1, steps + 1):
+        t = step / steps
+        eased = t * t * (3.0 - 2.0 * t)
+        point = (
+            start_x + (x - start_x) * eased,
+            start_y + (y - start_y) * eased,
+        )
+        event = q.CGEventCreateMouseEvent(None, q.kCGEventMouseMoved, point, q.kCGMouseButtonLeft)
+        q.CGEventPost(q.kCGHIDEventTap, event)
+        if pause and step < steps:
+            time.sleep(pause)
+
+
 def click(x: float, y: float, button: str = "left", count: int = 1, modifiers: str = "") -> None:
     """Move and click at top-left display-point coordinates using CGEvent.
     `modifiers` (e.g. "shift", "cmd", "shift+cmd") are held down for the whole
@@ -211,10 +264,7 @@ def click(x: float, y: float, button: str = "left", count: int = 1, modifiers: s
     q_button = q.kCGMouseButtonLeft if button == "left" else q.kCGMouseButtonRight
     down = q.kCGEventLeftMouseDown if button == "left" else q.kCGEventRightMouseDown
     up = q.kCGEventLeftMouseUp if button == "left" else q.kCGEventRightMouseUp
-    move_event = q.CGEventCreateMouseEvent(None, q.kCGEventMouseMoved, point, q_button)
-    if flags:
-        q.CGEventSetFlags(move_event, flags)
-    q.CGEventPost(q.kCGHIDEventTap, move_event)
+    move_pointer(x, y)
     for click_state in range(1, count + 1):
         down_event = q.CGEventCreateMouseEvent(None, down, point, q_button)
         up_event = q.CGEventCreateMouseEvent(None, up, point, q_button)
@@ -233,9 +283,7 @@ def hover(x: float, y: float) -> None:
     """Move the pointer to (x, y) in top-left display points without clicking —
     reveals hover-only UI (tooltips, per-row action buttons in a list, video
     scrubbers) that a click would otherwise activate or bypass."""
-    q = _require_quartz()
-    moved = q.CGEventCreateMouseEvent(None, q.kCGEventMouseMoved, (x, y), q.kCGMouseButtonLeft)
-    q.CGEventPost(q.kCGHIDEventTap, moved)
+    move_pointer(x, y)
 
 
 def drag(x1: float, y1: float, x2: float, y2: float, steps: int = 10, modifiers: str = "") -> None:
@@ -249,6 +297,7 @@ def drag(x1: float, y1: float, x2: float, y2: float, steps: int = 10, modifiers:
     q = _require_quartz()
     flags = parse_modifier_flags(modifiers) if modifiers else 0
     q_button = q.kCGMouseButtonLeft
+    move_pointer(x1, y1)
     down = q.CGEventCreateMouseEvent(None, q.kCGEventLeftMouseDown, (x1, y1), q_button)
     if flags:
         q.CGEventSetFlags(down, flags)
@@ -260,20 +309,105 @@ def drag(x1: float, y1: float, x2: float, y2: float, steps: int = 10, modifiers:
         if flags:
             q.CGEventSetFlags(moved, flags)
         q.CGEventPost(q.kCGHIDEventTap, moved)
+        time.sleep(0.012)
     up = q.CGEventCreateMouseEvent(None, q.kCGEventLeftMouseUp, (x2, y2), q_button)
     if flags:
         q.CGEventSetFlags(up, flags)
     q.CGEventPost(q.kCGHIDEventTap, up)
 
 
-def type_text(text: str) -> None:
-    """Type arbitrary Unicode in one event, independent of the active keyboard layout."""
-    if not text:
+def _snapshot_pasteboard(pasteboard) -> list[list[tuple[str, bytes]]]:
+    """Materialize every pasteboard item/type before temporary overwrite."""
+    snapshot: list[list[tuple[str, bytes]]] = []
+    for item in pasteboard.pasteboardItems() or []:
+        saved_item: list[tuple[str, bytes]] = []
+        for paste_type in item.types() or []:
+            data = item.dataForType_(paste_type)
+            if data is None:
+                raise RuntimeError("clipboard contains a pasteboard type that cannot be safely snapshotted")
+            saved_item.append((str(paste_type), bytes(data)))
+        snapshot.append(saved_item)
+    return snapshot
+
+
+def _restore_pasteboard(pasteboard, snapshot: list[list[tuple[str, bytes]]]) -> None:
+    """Restore a pasteboard snapshot without logging clipboard contents."""
+    if _NSPasteboardItem is None or _NSData is None:
+        raise RuntimeError("AppKit pasteboard support is unavailable")
+    pasteboard.clearContents()
+    if not snapshot:
         return
+    items = []
+    for saved_item in snapshot:
+        item = _NSPasteboardItem.alloc().init()
+        for paste_type, payload in saved_item:
+            data = _NSData.dataWithBytes_length_(payload, len(payload))
+            if not item.setData_forType_(data, paste_type):
+                raise RuntimeError("failed to reconstruct clipboard pasteboard item")
+        items.append(item)
+    if not pasteboard.writeObjects_(items):
+        raise RuntimeError("failed to restore clipboard after typing")
+
+
+def _paste_text_transactionally(text: str) -> str:
+    """Paste text with physical cmd+v while preserving the user's clipboard."""
+    if _NSPasteboard is None or _NSPasteboardTypeString is None:
+        raise RuntimeError("AppKit pasteboard support is unavailable")
+    pasteboard = _NSPasteboard.generalPasteboard()
+    snapshot = _snapshot_pasteboard(pasteboard)
+    pasteboard.clearContents()
+    if not pasteboard.setString_forType_(text, _NSPasteboardTypeString):
+        _restore_pasteboard(pasteboard, snapshot)
+        raise RuntimeError("failed to stage clipboard text for typing")
+    staged_change_count = int(pasteboard.changeCount())
+    restored = False
+    try:
+        key("cmd+v")
+        time.sleep(0.10)
+    finally:
+        if int(pasteboard.changeCount()) == staged_change_count:
+            _restore_pasteboard(pasteboard, snapshot)
+            restored = True
+    return "clipboard_restored" if restored else "clipboard_changed_externally"
+
+
+def _type_text_unicode_events(text: str) -> None:
+    """Inject literal Unicode without touching the clipboard."""
     q = _require_quartz()
-    event = q.CGEventCreateKeyboardEvent(None, 0, True)
-    q.CGEventKeyboardSetUnicodeString(event, len(text), text)
-    q.CGEventPost(q.kCGHIDEventTap, event)
+    for character in text:
+        utf16_units = len(character.encode("utf-16-le")) // 2
+        for is_down in (True, False):
+            event = q.CGEventCreateKeyboardEvent(None, 0, is_down)
+            q.CGEventKeyboardSetUnicodeString(event, utf16_units, character)
+            q.CGEventPost(q.kCGHIDEventTap, event)
+
+
+def _type_text_accessibility(text: str) -> str:
+    """Try clipboard-free insertion through the focused Accessibility text control."""
+    try:
+        from . import _accessibility
+    except ImportError:  # pragma: no cover - direct script import fallback
+        import _accessibility  # type: ignore[no-redef]
+    result = _accessibility.insert_focused_text(text)
+    return str(result.get("status") or "helper_error")
+
+
+def type_text(text: str) -> str:
+    """Type Unicode while preserving the user's clipboard when possible."""
+    if not text:
+        return "no_text"
+    try:
+        return _paste_text_transactionally(text)
+    except RuntimeError as exc:
+        if "cannot be safely snapshotted" not in str(exc):
+            raise
+        ax_status = _type_text_accessibility(text)
+        if ax_status == "ok":
+            return "accessibility_fallback"
+        if ax_status == "secure_field":
+            raise RuntimeError("refusing to type into a secure text field")
+        _type_text_unicode_events(text)
+        return "unicode_fallback"
 
 
 def key(combo: str) -> None:
@@ -301,8 +435,7 @@ def scroll(direction: str, amount: int = 3, point: tuple[float, float] | None = 
         raise ValueError("scroll amount must be a positive integer")
     q = _require_quartz()
     if point is not None:
-        moved = q.CGEventCreateMouseEvent(None, q.kCGEventMouseMoved, point, q.kCGMouseButtonLeft)
-        q.CGEventPost(q.kCGHIDEventTap, moved)
+        move_pointer(*point)
     if direction in ("up", "down"):
         delta = amount if direction == "up" else -amount
         event = q.CGEventCreateScrollWheelEvent(None, q.kCGScrollEventUnitLine, 1, delta)
@@ -340,6 +473,7 @@ def _resolve_app_path(name: str) -> str | None:
         result = subprocess.run(
             ["mdfind", f'kMDItemKind == "Application" && kMDItemDisplayName == "*{escaped}*"cd'],
             capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
@@ -371,12 +505,44 @@ def open_app(name: str) -> None:
     LaunchServices directly (see _resolve_app_path)."""
     if not name.strip():
         raise ValueError("application name is empty")
-    result = subprocess.run(["open", "-a", name], capture_output=True, text=True, timeout=10)
+    result = subprocess.run(["open", "-a", name], capture_output=True, text=True, timeout=10,
+                            stdin=subprocess.DEVNULL)
     if not result.returncode:
         return
     resolved = _resolve_app_path(name)
     if resolved is None:
         raise RuntimeError(result.stderr.strip() or f"could not open {name}")
-    fallback = subprocess.run(["open", resolved], capture_output=True, text=True, timeout=10)
+    fallback = subprocess.run(["open", resolved], capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL)
     if fallback.returncode:
         raise RuntimeError(fallback.stderr.strip() or f"could not open {resolved}")
+
+
+def open_url(url: str, app: str = "") -> None:
+    """Open an HTTP(S) URL, optionally in a named native macOS application.
+
+    Uses argv-only ``open`` calls (never a shell).  Local files, custom URL
+    schemes, and credentials embedded in a URL are rejected because this
+    primitive is exposed directly to a model-facing computer-control tool.
+    """
+    value = url.strip()
+    parsed = urlsplit(value)
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("open_url requires a valid http(s) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("open_url refuses URLs containing credentials")
+    application = app.strip()
+    command = ["open", "-a", application, value] if application else ["open", value]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=10,
+                            stdin=subprocess.DEVNULL)
+    if not result.returncode:
+        return
+    if not application:
+        raise RuntimeError(result.stderr.strip() or f"could not open {value}")
+    resolved = _resolve_app_path(application)
+    if resolved is None:
+        raise RuntimeError(result.stderr.strip() or f"could not open {application}")
+    fallback = subprocess.run(["open", "-a", resolved, value], capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL)
+    if fallback.returncode:
+        raise RuntimeError(fallback.stderr.strip() or f"could not open {value} in {resolved}")

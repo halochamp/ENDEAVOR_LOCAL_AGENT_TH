@@ -286,9 +286,10 @@ def awake(
         ✅ awake(action="once", delay_minutes=20, task="ตรวจสถานะงานแล้วรายงาน")
     action="watch_screen" — task=<สิ่งที่ต้องทำเมื่อจอเปลี่ยน> (required). OCR-diff on the whole screen;
       only ONE active screen watcher allowed at a time (screencapture+OCR every check is not free). This
-      fork has no computer tool — the fired turn can only NOTIFY (answer text + macOS notification), it
-      cannot click/type on its own. Write task as the GOAL (e.g. "แจ้งเตือนเมื่อ...") not a click-by-click
-      script; the fired turn's own trigger message states this scope explicitly.
+      fork's fired turn may use the separate computer tool for a small, guarded action when the task
+      explicitly requires it; graph.py enforces the stricter background action cap and destructive guard.
+      Write task as the GOAL (e.g. "แจ้งเตือนเมื่อ...") rather than a click-by-click script; the fired
+      turn's own trigger message states this scope explicitly.
     action="list" — no args. Shows active/paused watcher ids, kind, target/interval/times, task. Check this
       BEFORE stop so you have a real id, and before registering a new one (max 5 total, paused count too).
     action="stop" — awake_id=<id from list> or awake_id="all". Unregisters.

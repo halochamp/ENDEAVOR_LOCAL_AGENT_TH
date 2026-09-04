@@ -1,6 +1,6 @@
 #!/bin/bash
 # ENDEAVOR_LOCAL_AGENT_TH — double-click cleanup: kill everything this repo
-# might have running (mlx_lm.server, agent_server.py, AGENT_UI's Electron
+# might have running (mlx_vlm.server, agent_server.py, AGENT_UI's Electron
 # window, a stuck CLI) so agent_start.command has a clean slate to start
 # from. Kills processes only — never touches workspace/, memory, or config.
 
@@ -22,11 +22,11 @@ echo "=== ENDEAVOR_LOCAL_AGENT_TH — เคลียร์โปรแกรม
 echo
 
 # Mirrors config.py's MLX_BASE_URL override (README's RAM<48GB guidance) so
-# this kills whatever port the user actually configured, not just 8080.
-_DEFAULT_MLX_URL="http://localhost:8080/v1"
+# this kills whatever port the user actually configured, not just 8085.
+_DEFAULT_MLX_URL="http://localhost:8085/v1"
 _MLX_URL="${MLX_BASE_URL:-$_DEFAULT_MLX_URL}"
 MLX_PORT="$(printf '%s' "$_MLX_URL" | sed -nE 's#^https?://[^:/]+:([0-9]+).*#\1#p')"
-[ -z "$MLX_PORT" ] && MLX_PORT=8080
+[ -z "$MLX_PORT" ] && MLX_PORT=8085
 AGENT_PORT="${AGENT_SERVER_PORT:-8765}"
 
 _kill_port() {
@@ -40,7 +40,7 @@ _kill_port() {
   fi
 }
 
-_kill_port "$MLX_PORT" "mlx_lm.server"
+_kill_port "$MLX_PORT" "mlx_vlm.server"
 _kill_port "$AGENT_PORT" "agent_server.py"
 
 # Anything matched below is scoped by cwd == this repo (or AGENT_UI/) —

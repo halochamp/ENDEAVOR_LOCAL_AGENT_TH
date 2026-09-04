@@ -239,7 +239,7 @@ def _append_final_summary(path: str, topic: str, all_mini: list[dict], all_summa
         llm = build_llm(
             temperature=0.1,
             max_tokens=SUMMARY_BATCH_MAX_TOKENS,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"enable_thinking": False},
         )
         llm_input = "\n\n".join(all_summaries)[:100_000]
         prompt = (
@@ -440,7 +440,7 @@ def research_orchestrator(topic: str, n: int = 30, resume: bool = False, keyword
                 llm = build_llm(
                     temperature=0.1,
                     max_tokens=SUMMARY_BATCH_MAX_TOKENS,
-                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                    extra_body={"enable_thinking": False},
                 )
                 llm_input = summary_block[:100_000]
                 compress_prompt = (

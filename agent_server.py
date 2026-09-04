@@ -934,12 +934,12 @@ def _write_upload_file(abs_path: str, data: bytes) -> None:
 
 def _attach_hint(rel_path: str) -> str:
     """Text hint injected into the query so the model knows an attached file exists
-    and which tool reads it — mirrors AGENT_UI_MAX/renderer.js's _fileHint(), but the
-    wording matches TH's actual tool capabilities (OCR-only read_image, no VLM)."""
+    and which tool reads it — mirrors the Electron upload hint, with
+    direct-vision read_image and optional OCR/detail sensors."""
     ext = os.path.splitext(rel_path)[1].lower()
     if ext in _KNOWN_IMG_EXTS:
         return (f"[ไฟล์แนบ (รูปภาพ): {rel_path}]\n"
-                f"ใช้ tool: read_image (OCR ข้อความ/ตาราง/QR ในรูป — ไม่สามารถอธิบายเนื้อหาภาพทั่วไปที่ไม่มีตัวอักษร)")
+                f"ใช้ tool: read_image (ส่งภาพต้นฉบับให้ VLM โดยตรง; ถ้าต้องการอ่านข้อความ/ตาราง/QR ค่อยใช้ detail=text)")
     if ext in _AUDIO_EXT:
         return f"[ไฟล์แนบ (เสียง): {rel_path}]\nใช้ tool: read_file (จะถอดเสียงเป็นข้อความอัตโนมัติ)"
     if ext in _VIDEO_EXT:
@@ -951,9 +951,9 @@ def _attach_hint(rel_path: str) -> str:
 async def post_upload(request: Request):
     """Save a browser-uploaded file into workspace/uploads/ and return a text hint
     the UI injects into the next query — TH has no Electron main process to hand the
-    model a real filesystem path (unlike AGENT_UI_MAX's native file-picker), so the
+    model a real filesystem path (unlike a native file-picker bridge), so the
     upload IS the attach mechanism here: bytes cross the wire once, land in workspace,
-    then read_file/read_image (already sandboxed to workspace) do the actual reading.
+    then read_file/read_image (already sandboxed to the workspace boundary) do the actual reading.
 
     Takes raw Request rather than `file: UploadFile = File(...)` on purpose: FastAPI
     resolves File() params (i.e. parses the full multipart body into a spooled temp

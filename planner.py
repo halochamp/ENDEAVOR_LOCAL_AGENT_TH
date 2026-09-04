@@ -141,7 +141,7 @@ def _get_planner_llm():
         _planner_llm = build_llm(
             temperature=0.0,
             max_tokens=768,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            extra_body={"enable_thinking": False},
         )
     return _planner_llm
 

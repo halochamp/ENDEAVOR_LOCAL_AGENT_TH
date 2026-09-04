@@ -66,7 +66,7 @@ shortcuts. If only the optional Chromium download fails, re-run
 
 ```bash
 conda activate mlx
-mlx_lm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --port 8080
+python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
 ```
 
 This is a **long-running foreground process**. Do not run it and then immediately try
@@ -75,7 +75,7 @@ it in the background (e.g. `tmux` or `run_in_background`) and verify it's up bef
 proceeding:
 
 ```bash
-curl -s http://localhost:8080/v1/models | head -c 200
+curl -s http://localhost:8085/v1/models | head -c 200
 ```
 
 Wait for a valid JSON response (model load can take 30s–2min depending on disk speed).
@@ -113,7 +113,7 @@ reads the token itself via `/ui-token`, so the user doesn't need to do anything 
 |---|---|---|
 | `[error] ไม่พบ conda` | Miniforge not installed | install Miniforge, restart shell |
 | install.sh exits at `[1/6]` | not Apple Silicon / not macOS | this project requires M1+ Mac |
-| agent says model offline | `mlx_lm.server` not running or wrong port | check step 3, confirm port 8080 |
+| agent says model offline | `mlx_vlm.server` not running or wrong port | check step 3, confirm port 8085 |
 | out of memory / swap thrashing | RAM < 48GB for 35B model | use a smaller model — see README "ใช้โมเดลอื่น" section, set `V2_MODEL` + `MLX_BASE_URL` |
 | `playwright install chromium` fails | network/proxy issue | retry; required only for `browse_url`/`scrape_table`/`browser_use` tools |
 | Thai text broken on plot (squares / floating vowels) | pyobjc not installed correctly | run `python -c "import Quartz, CoreText"` in the mlx env — if it fails, re-run `pip install pyobjc-framework-Quartz pyobjc-framework-CoreText` |
@@ -156,10 +156,10 @@ where outputs land. See README.md "Security" section for the full read/write mod
 
 **Switching models** — if the user's Mac doesn't have enough RAM for the default
 35B model, see README.md "ใช้โมเดลอื่น". `config.py` only honors `V2_MODEL` if
-`MLX_BASE_URL` is ALSO changed from the default `http://localhost:8080/v1` — this is
-intentional (prevents `mlx_lm.server` loading the wrong model silently). So set
+`MLX_BASE_URL` is ALSO changed from the default `http://localhost:8085/v1` — this is
+intentional (prevents `mlx_vlm.server` loading the wrong model silently). So set
 **both** `V2_MODEL` and `MLX_BASE_URL` (e.g. a different port) in `.env`, then start
-`mlx_lm.server --model <new model> --port <new port>`. Minimum recommended:
+`python -m mlx_vlm.server --model <new model> --host 127.0.0.1 --port <new port>`. Minimum recommended:
 Qwen3-14B. **Never silently swap models for the user without telling them** — model
 choice affects tool-calling reliability.
 
@@ -167,7 +167,7 @@ choice affects tool-calling reliability.
 wants a clean restart:
 
 ```bash
-lsof -ti:8080 | xargs kill -9   # MLX server
+lsof -ti:8085 | xargs kill -9   # MLX server
 lsof -ti:8765 | xargs kill -9   # agent_server.py (if running Web UI)
 ```
 
@@ -193,9 +193,9 @@ instead of re-reading the whole README:
 | User asks | Answer |
 |---|---|
 | "ใช้งานยังไง" / how do I start | Run step 3 (MLX server) + step 4 (CLI or Web UI) above |
-| "model offline" / agent ขึ้น offline | Step 3 server not running or wrong port — check `curl http://localhost:8080/v1/models` |
-| "เปลี่ยนโมเดล" / change model | Edit **both** `V2_MODEL` + `MLX_BASE_URL` (different port) in `.env` — changing only `V2_MODEL` is ignored. Restart `mlx_lm.server` with new `--model --port`. Min: Qwen3-14B |
-| "port ถูกใช้อยู่" / port in use | `lsof -ti:8080 \| xargs kill -9` (MLX) or `:8765` (agent_server) |
+| "model offline" / agent ขึ้น offline | Step 3 server not running or wrong port — check `curl http://localhost:8085/v1/models` |
+| "เปลี่ยนโมเดล" / change model | Edit **both** `V2_MODEL` + `MLX_BASE_URL` (different port) in `.env` — changing only `V2_MODEL` is ignored. Restart `mlx_vlm.server` with new `--model --host 127.0.0.1 --port`. Min: Qwen3-14B |
+| "port ถูกใช้อยู่" / port in use | `lsof -ti:8085 \| xargs kill -9` (MLX) or `:8765` (agent_server) |
 | "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
 | "ลืม conversation เก่า" / load old chat | `/history` in CLI, or just reopen the Web UI (loads from `logs/history.db`) |
 | "ปลอดภัยไหม" / is my data safe | Yes — model runs 100% locally via MLX, no cloud LLM calls. See README "Security" |

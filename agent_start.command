@@ -4,7 +4,7 @@
 #
 # Does everything needed to reach a working desktop app from a totally fresh
 # clone: one-time Python/conda setup if missing, then the AGENT_UI (Electron)
-# app, which auto-starts mlx_lm.server + agent_server.py itself and shuts
+# app, which auto-starts mlx_vlm.server + agent_server.py itself and shuts
 # them down again when the window closes.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,7 +92,7 @@ if [ ! -d node_modules ]; then
   echo
 fi
 
-echo "[start] กำลังเปิด ENDEAVOR Agent — mlx_lm.server + agent server จะเปิดให้อัตโนมัติ..."
+echo "[start] กำลังเปิด ENDEAVOR Agent — mlx_vlm.server + agent server จะเปิดให้อัตโนมัติ..."
 echo
 npm start
 

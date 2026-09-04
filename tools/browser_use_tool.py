@@ -393,10 +393,9 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
                 api_key=API_KEY,
                 model=MODEL,
                 temperature=0.1,
-                # mlx_lm.server silently ignores response_format=json_schema (confirmed via direct probe:
-                # returns 200 with markdown-fenced, schema-non-conforming content) — browser_use's default
-                # relies on that being grammar-enforced server-side and does zero repair, so every action
-                # fails to parse. Putting the schema in-prompt instead is the only lever that works here.
+                # Keep browser-use on its existing prompt-schema path: its parser does no repair,
+                # so this integration must not rely on response_format grammar enforcement from
+                # the local model server. The schema is supplied in the system prompt instead.
                 dont_force_structured_output=True,
                 add_schema_to_system_prompt=True,
             )
@@ -417,7 +416,7 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
             agent = BUAgent(
                 task=_compose_task(url, task, reusing=bool(live)),
                 llm=llm,
-                use_vision=False,  # MODEL is text-only — mlx_lm.server 404s on image content parts
+                use_vision=False,  # Browser-use remains text-only by this tool's product contract
                 use_judge=False,  # post-task self-critique LLM call — not needed, and its extra latency was blowing the timeout after the real result was already computed
                 register_new_step_callback=_on_step,
                 browser_session=session,

@@ -150,7 +150,7 @@ Detection Logic: "ต่อ"/"resume" → อ่าน checkpoint → ทำต�
 - plot              : วาดกราฟด้วย matplotlib บันทึกลง workspace
 
 — ภาพ —
-- read_image        : OCR อ่านข้อความในภาพ, ไฟล์, URL, หรือ screenshot
+- read_image        : ดูภาพโดยตรงผ่าน VLM (ไฟล์, URL, หรือ screenshot); OCR/table/QR เป็น sensor เสริมแบบเรียกใช้ภายหลัง
 
 — หน่วยความจำและแผน —
 - remember          : บันทึกข้อมูลสำคัญเก็บไว้ใช้ข้าม session
@@ -237,7 +237,10 @@ STEP 1 — ถ่ายภาพจากกล้อง:
   if ret: cv2.imwrite(path, frame); print(path)
   else: print("[error] camera capture failed")
   ```
-STEP 2 — read_image(source=<path จาก STEP 1>, question=<คำถาม user>)
+STEP 2 — read_image(source=<path จาก STEP 1>)
+  แนบภาพต้นฉบับทั้งภาพให้ main VLM เห็นก่อน — ไม่ทำ OCR/classifier/table/QR อัตโนมัติ
+  ถ้าต้องการอ่านข้อความ/ตาราง/QR ค่อยเรียก read_image(source=<path เดิม>, detail="text")
+  ถ้าต้องการโครงสร้างกราฟ/สไลด์หรือจุดเล็ก ให้เรียก detail="chart"/"slide" หรือ find/region+zoom หลังจากเห็นภาพต้นฉบับแล้ว
 ```
 
 ---
@@ -266,8 +269,9 @@ STEP 1 — ถ่ายภาพจากกล้อง:
   if ret: cv2.imwrite(path, frame); print(path)
   else: print("[error] camera capture failed")
   ```
-STEP 2 — read_image(source=<path>, question=<คำถาม user หรือ "อธิบายสิ่งที่เห็นทั้งหมด">)
-STEP 3 — อธิบายสิ่งที่เห็นในภาพ บอก path ที่บันทึก
+STEP 2 — read_image(source=<path>)
+STEP 3 — ถ้าต้องการหลักฐานข้อความเฉพาะจุด ค่อยเรียก read_image(source=<path>, detail="text") หรือ find/region+zoom
+STEP 4 — อธิบายสิ่งที่เห็นจากภาพโดยตรง และใช้ OCR เป็นเพียงหลักฐานช่วย บอก path ที่บันทึก
 
 ## Notes
 - warm-up 30 frames ให้ auto-exposure ปรับตัวก่อน capture
@@ -277,7 +281,7 @@ STEP 3 — อธิบายสิ่งที่เห็นในภาพ �
 python_exec, read_image
 
 ## Output format
-อธิบายภาพภาษาไทย — ละเอียด ถ้ามีข้อความในภาพ → ระบุจาก [OCR] ด้วย
+อธิบายภาพภาษาไทยจาก pixels เป็นหลัก — ละเอียด; ถ้ามีข้อความให้ตรวจจากภาพ และระบุ [OCR ASSIST] เมื่อใช้ OCR ช่วย
 ```
 
 ### ตัวอย่าง 2 — skill ซับซ้อน (stock — File Collect + R1-R4)

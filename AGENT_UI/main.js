@@ -51,12 +51,12 @@ const AGENT_PORT = 8765
 // Mirrors config.py's own override rule exactly (README's RAM<48GB guidance
 // tells users to set both together) — MODEL only overrides when BOTH
 // MLX_BASE_URL and V2_MODEL are set, otherwise always the production model.
-// A hardcoded 35B/port-8080 here would silently ignore that documented path
+// A hardcoded 35B/port-8085 here would silently ignore that documented path
 // and try to load a model too big for the RAM this override exists for.
-const _DEFAULT_MLX_URL = 'http://localhost:8080/v1'
+const _DEFAULT_MLX_URL = 'http://localhost:8085/v1'
 const _MLX_BASE_URL = process.env.MLX_BASE_URL || _DEFAULT_MLX_URL
 const _V2_MODEL = process.env.V2_MODEL || ''
-const MLX_PORT = Number(new URL(_MLX_BASE_URL).port) || 8080
+const MLX_PORT = Number(new URL(_MLX_BASE_URL).port) || 8085
 const PROD_MODEL = (_V2_MODEL && _MLX_BASE_URL !== _DEFAULT_MLX_URL)
   ? _V2_MODEL
   : 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
@@ -84,7 +84,7 @@ function killPort(port) {
 }
 
 // A previous launch that crashed or was force-quit can leave its main Electron
-// process running. That stale instance still manages agent_server.py/mlx_lm.server on
+// process running. That stale instance still manages agent_server.py/mlx_vlm.server on
 // the same ports, racing the new instance into a crash-restart loop (each kills
 // the other's agent_server).
 //
@@ -186,14 +186,12 @@ function sendStatus(msg, phase = 'info') {
 
 // ── Server management ──────────────────────────────────────────────────────────
 
-// MAX supervises mlx_lm.server (+ sibling vision/proxy servers) through
-// honcho + a Procfile; TH has neither — it's a single-model text agent
-// normally started by hand (`bash run.sh`, see README). Spawn mlx_lm.server
-// directly instead: PYTHON already resolves to the conda env's absolute
-// python binary (_findCondaEnvDir above), so no `conda run` / PATH shim is
-// needed the way honcho's Procfile required.
+// The public app owns one mlx_vlm.server for both text and direct-vision
+// requests. Spawn it directly: PYTHON already resolves to the conda env's
+// absolute python binary (_findCondaEnvDir above), so no `conda run` or PATH
+// shim is needed.
 function startMlxServer() {
-  mlxProcess = spawn(PYTHON, ['-m', 'mlx_lm.server', '--model', PROD_MODEL, '--port', String(MLX_PORT)], {
+  mlxProcess = spawn(PYTHON, ['-m', 'mlx_vlm.server', '--model', PROD_MODEL, '--host', '127.0.0.1', '--port', String(MLX_PORT)], {
     cwd: PROJECT_DIR,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: process.env,
@@ -324,7 +322,7 @@ async function startup() {
     sendStatus('Clearing stale ports...', 'info')
     await killPort(MLX_PORT)
     await sleep(600)
-    sendStatus('Starting mlx_lm.server...', 'info')
+    sendStatus('Starting mlx_vlm.server...', 'info')
     startMlxServer()
     sendStatus('Waiting for MLX server (this may take 1-3 min)...', 'info')
     const ready = await waitForMLX()
@@ -444,7 +442,7 @@ ipcMain.on('set-compact', (_e, compact) => {
 })
 
 // Top-level /exit from the renderer → confirm in a native dialog, then quit.
-// before-quit (above) tears down the agent server + mlx_lm.server processes.
+// before-quit (above) tears down the agent server + mlx_vlm.server processes.
 let _exitConfirming = false
 ipcMain.on('request-exit', async () => {
   if (_exitConfirming) return

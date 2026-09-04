@@ -4,7 +4,7 @@
 
 """config.py — ENDEAVOR_AGENT_V2 configuration
 
-default: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit @ :8080 (MoE, bench 6/6, 7.7× faster than 27B)
+default: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit @ :8085 via mlx_vlm.server (MoE, bench 6/6, 7.7× faster than 27B)
 dev:     export V2_MODEL="mlx-community/Qwen3-1.7B-4bit" MLX_BASE_URL="http://localhost:8888/v1"
 สลับด้วย env var — ไม่ต้องแก้ code
 """
@@ -20,12 +20,12 @@ except ImportError:
     pass
 
 # ── Model + backend ───────────────────────────────────────────────────────
-_PROD_URL   = "http://localhost:8080/v1"
+_PROD_URL   = "http://localhost:8085/v1"
 _PROD_MODEL = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
 
 MLX_BASE_URL = os.getenv("MLX_BASE_URL", _PROD_URL)
 # MODEL ใช้ production model เสมอ ยกเว้นตอน dev ที่เปลี่ยน MLX_BASE_URL ด้วย
-# (ป้องกัน mlx_lm.server โหลด model ผิดเมื่อ V2_MODEL ถูก override โดยไม่เปลี่ยน URL)
+# (ป้องกัน mlx_vlm.server โหลด model ผิดเมื่อ V2_MODEL ถูก override โดยไม่เปลี่ยน URL)
 _model_env = os.getenv("V2_MODEL")
 MODEL = _model_env if (_model_env and MLX_BASE_URL != _PROD_URL) else _PROD_MODEL
 if MLX_BASE_URL != _PROD_URL and not _model_env:
@@ -35,16 +35,16 @@ if MLX_BASE_URL != _PROD_URL and not _model_env:
         f"requesting production model '{_PROD_MODEL}' from this non-default server.",
         file=sys.stderr,
     )
-API_KEY      = os.getenv("MLX_API_KEY",  "x")  # mlx_lm.server ไม่เช็ค แต่ ChatOpenAI ต้องมี non-empty
+API_KEY      = os.getenv("MLX_API_KEY",  "x")  # mlx_vlm.server ใช้ --api-key ได้ แต่ ChatOpenAI ต้องมี non-empty
 
 # ── Generation ────────────────────────────────────────────────────────────
 TEMPERATURE     = float(os.getenv("V2_TEMPERATURE",     "0.1"))
 MAX_TOKENS      = int(os.getenv("V2_MAX_TOKENS",        "4096"))  # 8192→4096: caps thinking+response at ~230s (was 449s); thinking tokens count toward this limit
-# NOTE: thinking_budget is a no-op — mlx_lm 0.31.3 does not implement it.
+# mlx_vlm.server accepts thinking_budget as a top-level request field.
 THINKING_BUDGET = int(os.getenv("V2_THINKING_BUDGET",   "2048"))
 # Penalises repeated tokens over a 20-token window — breaks thinking loops at root cause.
 # 1.1: raised from 1.05 — disrupts repetitive thinking loops faster without corrupting tool JSON.
-# 0.0 = disabled (mlx_lm default). Lower to 1.02 if JSON breaks.
+# 0.0 = disabled (server default). Lower to 1.02 if JSON breaks.
 REPETITION_PENALTY = float(os.getenv("V2_REPETITION_PENALTY", "1.1"))
 
 # Single-node design: 1 loop ครอบ create_plan + N steps × ~3 tool calls + synthesis

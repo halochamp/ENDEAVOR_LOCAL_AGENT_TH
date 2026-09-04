@@ -1,28 +1,25 @@
-# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
-# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
-# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+# ENDEAVOR_LOCAL_AGENT_TH — public project source
+# Licensed under the repository's public project terms. Keep local-only runtime behavior.
 
-"""Single-step, guarded native-computer actions, forked from
-ENDEAVOR_LOCAL_AGENT_MAX's tools/computer_use.py (byte-identical logic —
-only this header changed).
+"""Direct-vision computer interaction tool.
 
-TH's main model is TEXT-ONLY and — unlike a fork with its own small VLM
-(config.py has no VL_BASE_URL/VL_MODEL here) — the code below still tries the
-optional one-line [vision] gist described below, but that lookup always fails
-closed (caught, returns "") on this fork, so every result is plain
-"[ok] {action}\\n{OCR text}" with no [vision] line, ever. The only feedback
-channel back to the model is text: Apple Vision OCR (exact, but misses
-icons/charts). Never a raw pixel channel.
+This is the public project's fork of the current direct-vision interaction
+lifecycle. Computer observation/action state is intentionally independent from
+read_image state; the model boundary composes their published image data.
 """
+
 from __future__ import annotations
 
+import base64
+import difflib
 import re
 import tempfile
-import threading
 import json
 import time
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 try:
     from langchain_core.tools import tool
@@ -45,10 +42,10 @@ _ACTION_MAX = 15
 # normal (human-supervised) turn.
 _ACTION_MAX_OVERRIDE = [None]
 _DESTRUCTIVE_GUARD = [False]
-# Two tiers, not one — live-reproduced 2026-07-21 (audit F1): the single broad
-# list below wrongly caught "Format" (TextEdit/Pages menu-bar item — pure
-# text-formatting, not disk-erase) and "Trash" (Finder sidebar item — opening
-# it to LOOK is not emptying it) the moment the destructive guard became the
+# Two tiers, not one — ported from reference 2026-07-21 (live-reproduced there as
+# audit F1): a single broad list wrongly catches "Format" (a menu-bar text-
+# formatting item, not disk-erase) and "Trash" (Finder sidebar item — opening
+# it to LOOK is not emptying it) the moment the destructive guard becomes the
 # DEFAULT for ordinary human-supervised turns. Those words are genuinely
 # destructive only in narrow contexts (Disk Utility's "Format..." button,
 # "Empty Trash") that plain substring matching can't distinguish from the
@@ -103,21 +100,41 @@ _VOLATILE_LINE = re.compile(r"\b\d{1,2}:\d{2}\b")
 _ACTION_LOG = Path(__file__).resolve().parents[1] / "logs" / "computer_actions.jsonl"
 # Screen-facing text is OCR-dense/low-signal-per-char (menu bars, file trees) —
 # capped well under CLAUDE.md's Tool Output Contract ceiling since this tool
-# fires far more often per task than a single read_image/web call. Raised
-# from MAX_VLM's donor value of 500 to 900: in MAX_VLM the model also SEES the
-# screenshot pixel, so a terse OCR sample was enough context. In MAX the model
-# is text-only — this OCR text (plus the one-line [vision] gist) is its ONLY
-# view of the screen, so it needs more room to actually see what's there.
-_SUMMARY_MAX_CHARS = 900
+# fires far more often per task than a single document/web sensor call.
+_SUMMARY_MAX_CHARS = 500
 _PASSWORD_MARKERS = ("password", "รหัสผ่าน")
-# Versioned semantic observation retained for the duration of one real agent
-# turn.  The screenshot is kept only so action="inspect" can ask read_image a
-# targeted follow-up about the exact pixels the model already reasoned from.
 _OBSERVATION_SEQ = [0]
 _LATEST_OBSERVATION: list[ScreenSnapshot | None] = [None]
-_POST_ACTION_TIMEOUT = 1.2
-_POST_ACTION_POLL = 0.12
+# Computer owns its own direct-vision context and lifecycle. It does not import or
+# mutate another image tool's queues, guards, or snapshots; graph.py is the only
+# model-boundary composition layer.
+_COMPUTER_PENDING_IMAGES: list[str] = []
+_COMPUTER_ACTIVE_IMAGES: list[str] = []
+_COMPUTER_VLM_MAX_SIDE = 1024
 _ACTION_LOCK = threading.Lock()
+
+
+def _clear_computer_vision_state(*, remove_snapshot: bool) -> None:
+    _COMPUTER_PENDING_IMAGES.clear()
+    _COMPUTER_ACTIVE_IMAGES.clear()
+    if remove_snapshot:
+        previous = _LATEST_OBSERVATION[0]
+        if previous:
+            Path(previous.image_path).unlink(missing_ok=True)
+        _LATEST_OBSERVATION[0] = None
+
+
+def active_computer_turn_images() -> list[str]:
+    """Return only computer's newest direct-vision frame for the current outer turn."""
+    if _COMPUTER_PENDING_IMAGES:
+        _COMPUTER_ACTIVE_IMAGES[:] = _COMPUTER_PENDING_IMAGES[-1:]
+        _COMPUTER_PENDING_IMAGES.clear()
+    return list(_COMPUTER_ACTIVE_IMAGES)
+
+
+def end_computer_turn() -> None:
+    """Release computer-only transient pixels/screenshot at the outer-turn boundary."""
+    _clear_computer_vision_state(remove_snapshot=True)
 
 
 def reset_computer_guards() -> None:
@@ -128,8 +145,7 @@ def reset_computer_guards() -> None:
     _LAST_CLICK_TARGET[0] = ""
     _ACTION_MAX_OVERRIDE[0] = None
     _DESTRUCTIVE_GUARD[0] = False
-    _discard_snapshot(_LATEST_OBSERVATION[0])
-    _LATEST_OBSERVATION[0] = None
+    _clear_computer_vision_state(remove_snapshot=True)
 
 
 def set_computer_turn_scope(action_max: int | None = None, block_destructive: bool = False) -> None:
@@ -142,24 +158,64 @@ def set_computer_turn_scope(action_max: int | None = None, block_destructive: bo
     _DESTRUCTIVE_GUARD[0] = block_destructive
 
 
-def _discard_snapshot(snapshot: ScreenSnapshot | None) -> None:
-    if snapshot and snapshot.image_path:
-        try:
-            Path(snapshot.image_path).unlink(missing_ok=True)
-        except Exception:
-            pass
-
-
 def _next_observation_id() -> str:
     _OBSERVATION_SEQ[0] += 1
     return f"obs_{_OBSERVATION_SEQ[0]}"
 
 
-def _publish_snapshot(snapshot: ScreenSnapshot) -> ScreenSnapshot:
+def _overlay_cursor(snapshot: ScreenSnapshot) -> str:
+    """Create a cursor-annotated presentation copy without mutating retained state pixels."""
+    overlay_path = ""
+    try:
+        import cv2
+        point_x, point_y = _backend.pointer_position()
+        capture_w, capture_h = snapshot.capture_size
+        screen_w, screen_h = snapshot.screen_size
+        if screen_w <= 0 or screen_h <= 0:
+            return ""
+        x = max(0, min(capture_w - 1, round(point_x * capture_w / screen_w)))
+        y = max(0, min(capture_h - 1, round(point_y * capture_h / screen_h)))
+        frame = cv2.imread(snapshot.image_path)
+        if frame is None:
+            return ""
+        center = (x, y)
+        radius = max(8, round(min(capture_w, capture_h) * 0.012))
+        cv2.circle(frame, center, radius + 2, (0, 0, 0), 4)
+        cv2.circle(frame, center, radius, (255, 255, 255), 2)
+        cv2.line(frame, (x - radius - 5, y), (x + radius + 5, y), (255, 255, 255), 2)
+        cv2.line(frame, (x, y - radius - 5), (x, y + radius + 5), (255, 255, 255), 2)
+        label = f"{x},{y}"
+        label_x = max(4, min(capture_w - 90, x + radius + 8))
+        label_y = max(18, min(capture_h - 6, y - radius - 6))
+        cv2.putText(frame, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.putText(frame, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            overlay_path = handle.name
+        if not cv2.imwrite(overlay_path, frame):
+            Path(overlay_path).unlink(missing_ok=True)
+            return ""
+        snapshot.cursor_capture = (x, y)
+        return overlay_path
+    except Exception:
+        if overlay_path:
+            Path(overlay_path).unlink(missing_ok=True)
+        snapshot.cursor_capture = None
+        return ""
+
+
+def _publish(snapshot: ScreenSnapshot) -> ScreenSnapshot:
     previous = _LATEST_OBSERVATION[0]
-    if previous is not snapshot:
-        _discard_snapshot(previous)
+    if previous is not None and previous is not snapshot:
+        Path(previous.image_path).unlink(missing_ok=True)
     _LATEST_OBSERVATION[0] = snapshot
+    overlay_path = _overlay_cursor(snapshot)
+    if overlay_path:
+        try:
+            _queue_latest_capture(overlay_path)
+        finally:
+            Path(overlay_path).unlink(missing_ok=True)
+    else:
+        _queue_latest_capture(snapshot.image_path)
     return snapshot
 
 
@@ -203,7 +259,7 @@ def _error(message: str) -> str:
     return f"[error] {message}"
 
 
-# Reuses read_image's region vocabulary (region=<...> for zoom) for consistency.
+# Uses the same directional-region vocabulary as the rest of the UI tooling.
 # Boxes are normalized [0,1], origin BOTTOM-LEFT (Vision convention) — "top"
 # means high y, not low.
 def _in_region(box: dict, region: str) -> bool:
@@ -230,25 +286,36 @@ def _in_region(box: dict, region: str) -> bool:
     return True  # unrecognized region string — no filtering, caller sees the plain ambiguity error
 
 
-def _region_name(box: dict) -> str:
-    """Name the ninth of the screen `box` sits in, same thirds convention as
-    _in_region. Text-only model has no other way to tell two ambiguous matches
-    apart — the ambiguity error (below) names each match's region so the model
-    can pick near= without ever having seen the screen."""
-    cx = float(box["x"]) + float(box["w"]) / 2
-    cy = float(box["y"]) + float(box["h"]) / 2  # Vision: high y = top
-    row = "top" if cy > 2 / 3 else ("bottom" if cy < 1 / 3 else "")
-    col = "left" if cx < 1 / 3 else ("right" if cx > 2 / 3 else "")
-    if row and col:
-        return f"{row}-{col}"
-    return row or col or "center"
+def _fuzzy_suggestions(boxes: list[dict], needle: str, limit: int = 3) -> str:
+    """Ranked near-miss candidates for a not-found target — suggestion text
+    only, never used to resolve a click point. OCR/label text can differ from
+    the model's guess by a typo or minor normalization (e.g. smart quotes,
+    truncated ellipsis); difflib.get_close_matches surfaces the likely intent
+    without ever silently substituting it, so a typo'd target can never
+    resolve past the destructive-action guard below (that guard only sees
+    the model's own `target` string, not a fuzzy match)."""
+    if not needle:
+        return ""
+    # One canonical (first-seen) spelling per casefold value — two on-screen
+    # labels differing only by case (e.g. a button "Remove" and, elsewhere,
+    # OCR/a tooltip rendering "REMOVE") are the same suggestion to a model
+    # choosing what to click next, and must not consume two of `limit` slots.
+    by_casefold: dict[str, str] = {}
+    for b in boxes:
+        text = str(b.get("text", "")).strip()
+        if text:
+            by_casefold.setdefault(text.casefold(), text)
+    close = difflib.get_close_matches(needle, list(by_casefold), n=limit, cutoff=0.6)
+    return ", ".join(f"'{by_casefold[c]}'" for c in close)
 
 
 def _find_target(boxes: list[dict], target: str, near: str = "") -> tuple[dict | None, str | None]:
     needle = target.strip().casefold()
     matches = [box for box in boxes if needle and needle in str(box.get("text", "")).casefold()]
     if not matches:
-        return None, _error(f"text not found: {target}")
+        suggestion = _fuzzy_suggestions(boxes, needle)
+        hint = f" — did you mean: {suggestion}?" if suggestion else ""
+        return None, _error(f"text not found: {target}{hint}")
     if len(matches) > 1:
         # Prefer a higher-precision match before falling back to raw substring
         # disambiguation — e.g. a "Save" button vs. a sentence that merely
@@ -276,15 +343,48 @@ def _find_target(boxes: list[dict], target: str, near: str = "") -> tuple[dict |
         if narrowed:
             matches = narrowed
     if len(matches) > 1:
-        # Text-only model cannot see the screen, so each match's label alone
-        # ("Save", "Save") gives it nothing to disambiguate with — name each
-        # match's region too, so it can pick near= without ever seeing pixels.
-        labels = ", ".join(
-            f"{box.get('text', '')!r} ({_region_name(box)})" for box in matches[:3]
-        )
+        labels = ", ".join(str(box.get("text", "")) for box in matches[:3])
         hint = "" if near else ' — add near="top/bottom/left/right/center/top-left/top-right/bottom-left/bottom-right"'
         return None, _error(f"'{target}' matches {len(matches)} locations: {labels}{hint}")
     return matches[0], None
+
+
+def _encode_computer_data_url(path: str) -> str:
+    """Encode a computer-owned screenshot for direct vision."""
+    import cv2
+    frame = cv2.imread(path)
+    if frame is None:
+        raise ValueError(f"cannot read computer screenshot: {path}")
+    h, w = frame.shape[:2]
+    scale = _COMPUTER_VLM_MAX_SIDE / max(h, w)
+    if scale < 1.0:
+        frame = cv2.resize(
+            frame,
+            (round(w * scale), round(h * scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+    png_ok, png = cv2.imencode(".png", frame)
+    if not png_ok:
+        raise ValueError("computer screenshot PNG encode failed")
+    jpg_ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    chosen, mime = (
+        (jpg, "image/jpeg")
+        if jpg_ok and len(jpg) * 4 <= len(png) * 3
+        else (png, "image/png")
+    )
+    return f"data:{mime};base64,{base64.b64encode(chosen.tobytes()).decode()}"
+
+
+def _queue_latest_capture(path: str) -> None:
+    """Publish computer's newest frame into its own one-image direct-vision context."""
+    try:
+        encoded = _encode_computer_data_url(path)
+        _COMPUTER_PENDING_IMAGES.clear()
+        _COMPUTER_ACTIVE_IMAGES.clear()
+        _COMPUTER_PENDING_IMAGES.append(encoded)
+    except Exception:
+        # OCR/action correctness must not fail merely because optional VLM encoding fails.
+        pass
 
 
 def _log_action(action: str, target: str = "", point: tuple[float, float] | None = None) -> None:
@@ -300,80 +400,11 @@ def _log_action(action: str, target: str = "", point: tuple[float, float] | None
         pass
 
 
-# Singleton guard for the background :8082 boot — repeated actions while the
-# server is still warming must not each spawn another _ensure_vlm_server call.
-_VLM_BOOT: dict = {"thread": None}
-
-
-def _kick_vlm_server() -> None:
-    """Port of read_image's :8082 startup (same `_ensure_vlm_server()` — spawn
-    mlx_vlm.server if nothing serves VL_MODEL, poll up to 90s), but on a daemon
-    thread: read_image rightly BLOCKS on it because vision IS that call's
-    product, whereas here the action already succeeded and [vision] is
-    garnish — a click result must not stall for a server boot. Actions during
-    the warm-up return OCR-only; [vision] appears from the first action after
-    the server becomes ready."""
-    boot = _VLM_BOOT["thread"]
-    if boot is not None and boot.is_alive():
-        return
-
-    def _boot() -> None:
-        try:
-            from .read_image import _ensure_vlm_server
-            _ensure_vlm_server()
-        except Exception:
-            pass  # best-effort — a failed boot just means [vision] stays absent
-
-    thread = threading.Thread(target=_boot, daemon=True, name="computer-vlm-boot")
-    _VLM_BOOT["thread"] = thread
-    thread.start()
-
-
-def _describe_screen(path: str) -> str:
-    """Best-effort one-line visual gist of the captured screen from the small
-    VLM (read_image.py's server on VL_BASE_URL/VL_MODEL) — the only substitute
-    a text-only main model gets for actually seeing the screenshot. Always
-    best-effort: any failure (server not ready, network error, empty
-    response) returns "" so the action result never fails merely because the
-    describer failed — OCR text alone is still a usable result on its own.
-
-    Server not up yet → kick the ported read_image boot in the background
-    (_kick_vlm_server) and return "" for THIS action instead of blocking up
-    to 90s inline the way read_image legitimately does.
-
-    The HTTP call itself is read_image's `_call_vlm_request` — NOT a duplicate
-    requests.post here — so this inherits the already-debugged path wholesale:
-    de-loop sampling (temperature/frequency_penalty/presence_penalty, the small
-    VLM repeats itself without them), error→string mapping, timeout, and each
-    fork's transport specifics (the API fork's version carries Bearer/tunnel
-    auth internally), with zero per-fork adaptation needed in this file."""
-    try:
-        from .read_image import _call_vlm_request, _encode_vlm, _vlm_serving
-        from config import VL_BASE_URL, VL_MODEL
-
-        if _vlm_serving(VL_BASE_URL, VL_MODEL) is not True:
-            _kick_vlm_server()
-            return ""
-        _progress("encoding image…")
-        image_part = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_encode_vlm(path)}"}}
-        _progress("VLM: บรรยายหน้าจอ…")
-        content = _call_vlm_request(image_part, (
-            "Describe this screen in at most 2 short sentences. Focus on the "
-            "frontmost window/app, any dialog or alert, and the primary "
-            "actionable buttons."
-        ), max_tokens=120)
-        if content.startswith("[error]"):
-            return ""  # best-effort channel — an error gist is worse than none
-        return content
-    except Exception:
-        return ""
-
-
 def _target_point(target: str, near: str) -> tuple[tuple[float, float] | None, str | None]:
     """Locate `target` via a fresh OCR pass and return its center in display points.
     Shared by click/scroll(target=)/drag so every text-targeted action resolves
     coordinates the same way — OCR box -> capture pixels -> display points."""
-    boxes, _, capture_width, capture_height, screen_width, screen_height, _desc = _observe()
+    boxes, _, capture_width, capture_height, screen_width, screen_height = _observe()
     box, problem = _find_target(boxes, target, near)
     if problem:
         return None, problem
@@ -385,19 +416,13 @@ def _target_point(target: str, near: str) -> tuple[tuple[float, float] | None, s
     return point, None
 
 
-def _capture_snapshot(describe: bool = False, notify: bool = True) -> ScreenSnapshot:
-    """Capture one full-resolution screen state without publishing it.
-
-    The caller owns the returned temporary screenshot until it either calls
-    ``_publish_snapshot`` or ``_discard_snapshot``. AX is optional and never
-    allowed to break the OCR path.
+def _capture_snapshot(notify: bool = True) -> ScreenSnapshot:
+    """Capture one retained, full-resolution state and queue it for the VLM.
 
     `notify=False` skips the per-call progress() emits — used by
     _post_action_snapshot's tight poll loop, where repeating "screenshot…/
     OCR…" every ~120ms is pure noise and, on Telegram, real edit_text() calls
-    that can trip flood control (_cosmetic_edit swallows the error, but the
-    status message just goes stale instead of updating).
-    """
+    that can trip flood control."""
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
         path = handle.name
     try:
@@ -407,312 +432,449 @@ def _capture_snapshot(describe: bool = False, notify: bool = True) -> ScreenSnap
         if notify:
             _progress("Apple Vision OCR…")
         boxes = _ocr_layout(path)
-        capture_size = _backend.image_dimensions(path)
-        screen_size = _backend.primary_display_size_points()
-        app = _backend.frontmost_app_name()
+        capture_width, capture_height = _backend.image_dimensions(path)
+        screen_width, screen_height = _backend.primary_display_size_points()
         try:
             from ._accessibility import read_frontmost
             ax_state = read_frontmost()
         except Exception:
             ax_state = {"status": "unavailable", "elements": []}
-        description = _describe_screen(path) if describe else ""
         return build_snapshot(
-            _next_observation_id(),
-            app=app,
-            ocr_boxes=boxes,
-            ax_state=ax_state,
-            image_path=path,
-            capture_size=capture_size,
-            screen_size=screen_size,
-            description=description,
+            _next_observation_id(), app=_backend.frontmost_app_name(), ocr_boxes=boxes,
+            ax_state=ax_state, image_path=path, capture_size=(capture_width, capture_height),
+            screen_size=(screen_width, screen_height),
         )
     except Exception:
         Path(path).unlink(missing_ok=True)
         raise
 
 
-def _observe(describe: bool = False) -> tuple[list[dict], str, int, int, float, float, str]:
-    """Capture + OCR the current screen. `describe=True` also asks the small
-    VLM for a one-line gist FROM THE SAME capture file before it is deleted —
-    only the post-action observe and action="see" pay for this; the cheap
-    repeat-guard pre-check (screen-unchanged detection) never does."""
-    snapshot = _capture_snapshot(describe=describe)
+def _observe() -> tuple[list[dict], str, int, int, float, float]:
+    """Compatibility helper for OCR-backed target lookup; does not retain files."""
+    snapshot = _capture_snapshot()
     try:
         text = "\n".join(str(box.get("text", "")) for box in snapshot.ocr_boxes if box.get("text"))
+        _queue_latest_capture(snapshot.image_path)
         return (
-            snapshot.ocr_boxes,
-            text or "[no OCR text found]",
+            snapshot.ocr_boxes, text or "[no OCR text found]",
             snapshot.capture_size[0], snapshot.capture_size[1],
             snapshot.screen_size[0], snapshot.screen_size[1],
-            snapshot.description,
         )
     finally:
-        _discard_snapshot(snapshot)
+        Path(snapshot.image_path).unlink(missing_ok=True)
 
 
-def _format_result(prefix: str, snapshot: ScreenSnapshot, effect: str = "") -> str:
-    status = f"{prefix} effect={effect}" if effect else prefix
-    out = f"{status}\n{format_snapshot(snapshot, max_chars=760)}"
-    if snapshot.description:
-        out += f"\n[vision] {snapshot.description}"
-    # Preserve the machine-readable first line. _sample_coverage is right for a
-    # raw OCR document, but wrapping the whole result replaces [ok]/[no_effect]
-    # with its own document header and destroys the computer tool's status
-    # contract. The semantic formatter already prioritizes actionable elements;
-    # a final hard tail cap only bounds an unusually long VLM description.
-    if len(out) > _SUMMARY_MAX_CHARS:
-        out = out[:_SUMMARY_MAX_CHARS - 42].rstrip() + "\n… observation output truncated"
-    return out
+_POST_ACTION_TIMEOUT = 1.2
+_POST_ACTION_POLL = 0.12
+_VISUAL_CHANGE_MIN_FRACTION = 0.003
+# Extra bounded wait applied ONLY when the caller passed expect= or an
+# open_app/open_url app= — both name an async condition (a page finishing
+# load, an app becoming frontmost) that routinely takes longer than the
+# ordinary 1.2s settle window every other action pays. Every action still
+# pays the base 1.2s; this only postpones giving up when there's a specific,
+# still-unsatisfied thing to wait for, never used to cut the loop short early
+# (see the break condition below — expect/app satisfied is an ADDITIONAL
+# requirement to stop, not an alternative to changed+stable, so an early
+# expect match still can't return a mid-animation frame).
+_POST_ACTION_EXTENDED_TIMEOUT = 4.0
 
 
-def _snapshot_text(snapshot: ScreenSnapshot) -> str:
-    return "\n".join(str(box.get("text", "")) for box in snapshot.ocr_boxes if box.get("text")) or "[no OCR text found]"
+def _screen_change_signals(before: ScreenSnapshot, current: ScreenSnapshot) -> tuple[bool, bool]:
+    """Return independent semantic and pixel-change signals for one screen transition."""
+    semantic_changed = current.fingerprint != before.fingerprint
+    visual_changed = current.visual_delta(before) >= _VISUAL_CHANGE_MIN_FRACTION
+    return semantic_changed, visual_changed
 
 
-def _target_point_in_snapshot(snapshot: ScreenSnapshot, target: str, near: str) -> tuple[tuple[float, float] | None, str | None]:
-    box, problem = _find_target(snapshot.ocr_boxes, target, near)
-    if problem:
-        return None, problem
-    capture_width, capture_height = snapshot.capture_size
-    screen_width, screen_height = snapshot.screen_size
-    capture_x = (float(box["x"]) + float(box["w"]) / 2) * capture_width
-    capture_y = (1 - (float(box["y"]) + float(box["h"]) / 2)) * capture_height
-    return _backend.capture_px_to_points(
-        capture_x, capture_y, capture_width, capture_height, screen_width, screen_height,
-    ), None
+def _app_matches(requested_app: str, actual_app: str) -> bool:
+    # `open -a` can return 0 without the target ever becoming frontmost, and
+    # a localized/short app name can legitimately differ from the requested
+    # string in either direction (target="Visual Studio Code" vs. real name
+    # "Code"; target="Chrome" vs. "Google Chrome") — checked both directions.
+    t, a = requested_app.strip().casefold(), actual_app.casefold()
+    return t in a or a in t
 
 
-def _expectation_met(snapshot: ScreenSnapshot, expect: str) -> bool:
-    spec = expect.strip()
-    if not spec:
-        return False
-    kind, sep, value = spec.partition(":")
-    if not sep:
-        kind, value = "text", spec
-    needle = value.strip().casefold()
-    if not needle:
-        return False
-    if kind.casefold() == "app":
-        return needle in snapshot.app.casefold()
-    if kind.casefold() == "window":
-        return needle in snapshot.window.casefold()
-    return any(needle in element.text.casefold() for element in snapshot.elements)
+def _post_action_snapshot(
+    before: ScreenSnapshot, *, expect: str = "", requested_app: str = "",
+) -> tuple[ScreenSnapshot, str]:
+    """Poll screen state until it changes and stabilizes, or the timeout expires.
 
+    Ported from reference 2026-07-21: a single post-action capture (the previous
+    behavior here) risked photographing a slow transition — app launch, a
+    save-sheet's slide-in animation, a page still loading — mid-animation.
+    On reference that's recoverable (OCR text is a second channel independent of
+    the frame), but on this fork the screenshot IS the model's only view of
+    the result, so a half-finished frame is a worse silent-failure class here,
+    not a milder one.
 
-def _element_problem(observation_id: str, element_id: str, current: ScreenSnapshot) -> tuple[ScreenElement | None, str | None]:
-    latest = _LATEST_OBSERVATION[0]
-    if latest is None:
-        return None, _error("no retained observation — call see first")
-    if not observation_id:
-        return None, _error("element_id requires observation_id from the latest [OBS ...] result")
-    if observation_id != latest.observation_id:
-        return None, _error(
-            f"stale observation_id: expected {latest.observation_id}, got {observation_id} — call see and choose a current element"
-        )
-    element = latest.get(element_id)
-    if element is None:
-        return None, _error(f"element not found in {observation_id}: {element_id}")
-    if current.app != latest.app or current.fingerprint != latest.fingerprint:
-        _publish_snapshot(current)
-        return None, _error(
-            f"screen changed since {observation_id}; latest is {current.observation_id}\n"
-            + format_snapshot(current, max_chars=650)
-        )
-    return element, None
-
-
-def _crop_element(snapshot: ScreenSnapshot, element: ScreenElement) -> str:
-    """Crop an element plus context from the retained full-resolution capture."""
-    import cv2
-
-    frame = cv2.imread(snapshot.image_path)
-    if frame is None:
-        raise ValueError("retained screenshot is unreadable")
-    capture_width, capture_height = snapshot.capture_size
-    screen_width, screen_height = snapshot.screen_size
-    x, y, w, h = element.bounds
-    scale_x = capture_width / screen_width
-    scale_y = capture_height / screen_height
-    pad_x = max(w * 0.75, screen_width * 0.04)
-    pad_y = max(h * 1.25, screen_height * 0.04)
-    x0 = max(0, round((x - pad_x) * scale_x))
-    y0 = max(0, round((y - pad_y) * scale_y))
-    x1 = min(capture_width, round((x + w + pad_x) * scale_x))
-    y1 = min(capture_height, round((y + h + pad_y) * scale_y))
-    if x1 <= x0 or y1 <= y0:
-        raise ValueError("element crop is empty")
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
-        crop_path = handle.name
-    if not cv2.imwrite(crop_path, frame[y0:y1, x0:x1]):
-        Path(crop_path).unlink(missing_ok=True)
-        raise ValueError("could not write element crop")
-    return crop_path
-
-
-def _inspect_observation(observation_id: str, element_id: str, question: str) -> str:
-    latest = _LATEST_OBSERVATION[0]
-    if latest is None:
-        return _error("no retained observation — call see first")
-    if observation_id != latest.observation_id:
-        return _error(f"stale observation_id: expected {latest.observation_id}, got {observation_id}")
-    element = latest.get(element_id) if element_id else None
-    if element_id and element is None:
-        return _error(f"element not found in {observation_id}: {element_id}")
-    source_path = latest.image_path
-    crop_path = ""
-    try:
-        if element is not None:
-            crop_path = _crop_element(latest, element)
-            source_path = crop_path
-        from .read_image import read_image
-        reader = getattr(read_image, "func", read_image)
-        _progress("encoding image…")
-        prompt = question.strip() or (
-            f"อธิบาย element {element_id} นี้อย่างเจาะจง: เป็นอะไร มีข้อความหรือสถานะอะไร และกดได้หรือไม่"
-            if element is not None else "อธิบายหน้าจอนี้โดยเน้น dialog และสิ่งที่กดได้"
-        )
-        result = reader(source_path, question=prompt)
-        target = f" element={element_id}" if element_id else ""
-        return f"[ok] inspect observation={observation_id}{target}\n{result}"
-    except Exception as exc:
-        return _error(f"inspect failed: {exc}")
-    finally:
-        if crop_path:
-            Path(crop_path).unlink(missing_ok=True)
-
-
-def _post_action_snapshot(before: ScreenSnapshot) -> tuple[ScreenSnapshot, str]:
-    """Poll semantic state until it changes and stabilizes, or the timeout expires."""
+    expect=/requested_app= extend (never shorten) how long this waits: a
+    still-unsatisfied expect or app-frontmost check keeps polling up to
+    _POST_ACTION_EXTENDED_TIMEOUT instead of giving up at 1.2s — real-usage
+    reports showed `open_url`/`key(enter)` flagged app_not_frontmost/
+    expectation_not_met while the very screenshot returned alongside the
+    warning showed the action had, in fact, already succeeded a moment later."""
     _progress("กำลังตรวจสอบผลลัพธ์บนหน้าจอ…")
+    waiting_on_condition = bool(expect) or bool(requested_app)
     deadline = time.monotonic() + max(0.0, _POST_ACTION_TIMEOUT)
+    extended_deadline = (
+        time.monotonic() + max(_POST_ACTION_TIMEOUT, _POST_ACTION_EXTENDED_TIMEOUT)
+        if waiting_on_condition else deadline
+    )
     chosen: ScreenSnapshot | None = None
-    previous_fingerprint = ""
-    changed = False
+    previous_state: tuple[str, str] | None = None
+    semantic_changed = False
+    visual_changed = False
     stable_hits = 0
     while True:
-        current = _capture_snapshot(describe=False, notify=False)
-        changed = changed or current.fingerprint != before.fingerprint
-        stable_hits = stable_hits + 1 if previous_fingerprint and current.fingerprint == previous_fingerprint else 1
-        previous_fingerprint = current.fingerprint
-        if chosen is not None:
-            _discard_snapshot(chosen)
+        current = _capture_snapshot(notify=False)
+        semantic_now, visual_now = _screen_change_signals(before, current)
+        semantic_changed = semantic_changed or semantic_now
+        visual_changed = visual_changed or visual_now
+        current_state = (current.fingerprint, current.visual_fingerprint)
+        stable_hits = stable_hits + 1 if previous_state is not None and current_state == previous_state else 1
+        previous_state = current_state
+        if chosen is not None and chosen is not current:
+            Path(chosen.image_path).unlink(missing_ok=True)
         chosen = current
-        if (changed and stable_hits >= 2) or time.monotonic() >= deadline:
+        now = time.monotonic()
+        condition_pending = (
+            (bool(expect) and not _expected(current, expect))
+            or (bool(requested_app) and not _app_matches(requested_app, current.app))
+        )
+        changed = semantic_changed or visual_changed
+        if changed and stable_hits >= 2 and not condition_pending:
+            break
+        if now >= deadline and not condition_pending:
+            break
+        if now >= extended_deadline:
             break
         time.sleep(max(0.0, _POST_ACTION_POLL))
     assert chosen is not None
+    return _publish(chosen), ("changed" if changed else "no_visible_change")
+
+
+def _result(prefix: str, snapshot: ScreenSnapshot, effect: str = "") -> str:
+    head = f"{prefix} effect={effect}" if effect else prefix
+    out = f"{head}\n{format_snapshot(snapshot, max_chars=720)}"
+    return out if len(out) <= _SUMMARY_MAX_CHARS else out[:_SUMMARY_MAX_CHARS - 34].rstrip() + "\n… observation truncated"
+
+
+_COORD_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*$")
+_COORD_ACTIONS = {"click", "double_click", "triple_click", "right_click", "hover", "scroll"}
+_COORD_CLICK_ACTIONS = {"click", "double_click", "triple_click", "right_click"}
+_COORD_AIM_TOLERANCE_PX = 18.0
+
+
+def _coord_point_from_snapshot(snapshot: ScreenSnapshot, coord: str) -> tuple[tuple[float, float] | None, str | None]:
+    """Resolve coord=x,y from capture pixels into display points for one observation."""
+    match = _COORD_RE.fullmatch(coord or "")
+    if not match:
+        return None, _error('coord must be "x,y" in capture pixels, e.g. coord="640,420"')
+    x, y = float(match.group(1)), float(match.group(2))
+    width, height = snapshot.capture_size
+    if not (0 <= x < width and 0 <= y < height):
+        return None, _error(f"coord {x:g},{y:g} is outside observation size {width}x{height}")
+    return _backend.capture_px_to_points(x, y, *snapshot.capture_size, *snapshot.screen_size), None
+
+
+def _coord_geometry_matches(expected: ScreenSnapshot, current: ScreenSnapshot) -> bool:
+    """Keep coordinate actions tied only to the newest screenshot geometry.
+
+    Vision is the authority for what is at the pixel. AX/OCR/fingerprints are advisory and
+    must not veto an ordinary coordinate action. Refuse only when screenshot/display geometry
+    changed, because then capture-pixel coordinates no longer map to the same physical screen.
+    """
+    if expected.capture_size != current.capture_size:
+        return False
+    return all(abs(a - b) <= 0.5 for a, b in zip(expected.screen_size, current.screen_size))
+
+
+def _coord_cursor_is_aimed(snapshot: ScreenSnapshot, coord: str, *, tolerance_px: float = _COORD_AIM_TOLERANCE_PX) -> bool:
+    """Require the cursor visible in the latest screenshot to already be near coord."""
+    match = _COORD_RE.fullmatch(coord or "")
+    if not match or snapshot.cursor_capture is None:
+        return False
+    x, y = float(match.group(1)), float(match.group(2))
+    cursor_x, cursor_y = snapshot.cursor_capture
+    return (cursor_x - x) ** 2 + (cursor_y - y) ** 2 <= tolerance_px ** 2
+
+
+def _point_from_snapshot(snapshot: ScreenSnapshot, target: str, near: str) -> tuple[tuple[float, float] | None, str | None]:
+    """Resolve visible target text only inside the current frontmost window."""
+    if snapshot.window_bounds is None:
+        return None, _error(
+            "target text cannot be safely localized without frontmost-window bounds — "
+            "use element_id from [OBS] or coord with the latest observation_id"
+        )
+    wx, wy, ww, wh = snapshot.window_bounds
+    screen_w, screen_h = snapshot.screen_size
+    boxes: list[dict] = []
+    for candidate in snapshot.ocr_boxes:
+        try:
+            center_x = (float(candidate["x"]) + float(candidate["w"]) / 2) * screen_w
+            center_y = (1 - (float(candidate["y"]) + float(candidate["h"]) / 2)) * screen_h
+        except (KeyError, TypeError, ValueError):
+            continue
+        if wx - 8 <= center_x <= wx + ww + 8 and wy - 8 <= center_y <= wy + wh + 8:
+            boxes.append(candidate)
+    box, problem = _find_target(boxes, target, near)
+    if problem:
+        return None, problem
+    x = (float(box["x"]) + float(box["w"]) / 2) * snapshot.capture_size[0]
+    y = (1 - (float(box["y"]) + float(box["h"]) / 2)) * snapshot.capture_size[1]
+    return _backend.capture_px_to_points(x, y, *snapshot.capture_size, *snapshot.screen_size), None
+
+
+def _inspect(observation_id: str, element_id: str, question: str) -> str:
+    latest = _LATEST_OBSERVATION[0]
+    if latest is None or latest.observation_id != observation_id:
+        return _error("inspect requires the latest observation_id from [OBS]")
+    path = latest.image_path
+    crop = ""
     try:
-        chosen.description = _describe_screen(chosen.image_path)
-    except Exception:
-        chosen.description = ""
-    return _publish_snapshot(chosen), ("changed" if changed else "no_visible_change")
+        element = latest.get(element_id) if element_id else None
+        if element_id and element is None:
+            return _error(f"element not found in {observation_id}: {element_id}")
+        if element:
+            import cv2
+            frame = cv2.imread(path)
+            if frame is None: return _error("retained screenshot is unreadable")
+            sx, sy = latest.capture_size[0] / latest.screen_size[0], latest.capture_size[1] / latest.screen_size[1]
+            x, y, w, h = element.bounds; pad = max(w, h, 80.0)
+            x0, y0 = max(0, round((x-pad)*sx)), max(0, round((y-pad)*sy)); x1, y1 = min(frame.shape[1], round((x+w+pad)*sx)), min(frame.shape[0], round((y+h+pad)*sy))
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle: crop = handle.name
+            if x1 <= x0 or y1 <= y0 or not cv2.imwrite(crop, frame[y0:y1, x0:x1]): return _error("could not make inspect crop")
+            path = crop
+        # `inspect` supersedes computer's full observation with its sharper crop.
+        # No inner LLM: the next ReAct step sees this computer-
+        # owned crop directly and performs the interpretation itself.
+        _progress("encoding computer detail…")
+        _queue_latest_capture(path)
+        focus = question.strip()
+        result = (
+            f"[ok] inspect observation={observation_id}"
+            + (f" element={element_id}" if element_id else "")
+            + "\n[computer detail image attached for direct vision]"
+        )
+        if focus:
+            result += f"\ninspection focus: {focus}"
+        return result
+    except Exception as exc:
+        return _error(f"inspect failed: {exc}")
+    finally:
+        if crop: Path(crop).unlink(missing_ok=True)
 
 
-# Split per ENDMEMEX KNOW-LITE-DOCSTRING-SPLIT (2026-07-26, user request): _SYNTAX_MANUAL now
-# carries the detailed action-vocabulary/WORKFLOW content that used to sit in the always-visible
-# docstring (see git history pre-34c8a99) — injected into the tool's own return value on the
-# first call each turn (tools/_call_guard.py), so it costs context only in turns that actually
-# use `computer`, never the always-sent schema.
+_EXPECT_KINDS = {"app", "window", "text", "focus"}
+
+
+def _expect_uses_recognized_kind(expect: str) -> bool:
+    kind, sep, _ = expect.partition(":")
+    return bool(sep) and kind.strip().casefold() in _EXPECT_KINDS
+
+
+def _normalize_visible_text(value: str) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _expect_text_visible(snapshot: ScreenSnapshot, needle: str) -> bool | None:
+    """Check text using evidence from the frontmost window only.
+
+    Accessibility elements come from the focused window root and are safe to
+    use directly. OCR is only trustworthy when Accessibility supplied focused
+    window bounds; otherwise whole-screen OCR could match a background window,
+    so report unknown instead of a false positive/negative.
+    """
+    normalized = _normalize_visible_text(needle)
+    if not normalized:
+        return False
+    if any(
+        e.source == "ax" and normalized in _normalize_visible_text(e.text)
+        for e in snapshot.elements
+    ):
+        return True
+    if snapshot.window_bounds is None:
+        return None
+    wx, wy, ww, wh = snapshot.window_bounds
+    for box in snapshot.ocr_boxes:
+        try:
+            text = _normalize_visible_text(box.get("text") or "")
+            if not text:
+                continue
+            x = (float(box["x"]) + float(box["w"]) / 2) * snapshot.screen_size[0]
+            y = (1 - (float(box["y"]) + float(box["h"]) / 2)) * snapshot.screen_size[1]
+            if wx - 8 <= x <= wx + ww + 8 and wy - 8 <= y <= wy + wh + 8:
+                if normalized in text:
+                    return True
+        except (KeyError, TypeError, ValueError):
+            continue
+    return False
+
+
+def _expected(snapshot: ScreenSnapshot, expect: str) -> bool | None:
+    # Only "app:"/"window:"/"text:"/"focus:" are recognized kind prefixes —
+    # treating ANY prefix before the first colon as a kind (the previous
+    # behavior) silently broke every URL- or time-shaped expect string:
+    # expect="https://youtube.com" read kind="https", needle="//youtube.com"
+    # (never matches); expect="3:45" read kind="3", needle="45". "text:" is
+    # kept as an explicit synonym for the plain whole-screen search below
+    # (same lookup, just an explicit kind) since it's an established
+    # convention elsewhere in this tool's lineage; any other prefix is
+    # treated as literal, whole-string text instead.
+    #
+    # Return is tri-state: True/False are a real verdict, None means "not
+    # checkable right now" (currently only focus: under unavailable
+    # Accessibility) — never silently collapsed to False, which would read
+    # as a confirmed miss instead of "couldn't check".
+    kind, sep, value = expect.partition(":")
+    kind_norm = kind.strip().casefold()
+    if sep and kind_norm in _EXPECT_KINDS:
+        needle = value.strip().casefold()
+        if kind_norm == "focus":
+            if snapshot.accessibility_status != "ok":
+                return None
+            if not needle:
+                return any(e.focused for e in snapshot.elements)
+            return any(e.focused and needle in e.text.casefold() for e in snapshot.elements)
+        if not needle: return False
+        if kind_norm == "app": return needle in snapshot.app.casefold()
+        if kind_norm == "window": return needle in snapshot.window.casefold()
+        return _expect_text_visible(snapshot, needle)
+    needle = expect.strip().casefold()
+    if not needle: return False
+    return _expect_text_visible(snapshot, needle)
+
+
+_EDITABLE_AX_ROLES = {"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}
+
+
+def _focused_editable(snapshot: ScreenSnapshot) -> ScreenElement | None:
+    if snapshot.accessibility_status != "ok":
+        return None
+    return next(
+        (
+            e for e in snapshot.elements
+            if e.source == "ax" and e.focused and e.role in _EDITABLE_AX_ROLES
+        ),
+        None,
+    )
+
+
+def _type_input_verification(before: ScreenSnapshot, after: ScreenSnapshot) -> str:
+    """Verify typing without retaining or exposing editable-field contents."""
+    before_edit = _focused_editable(before)
+    after_edit = _focused_editable(after)
+    if before_edit is None or after_edit is None:
+        return "input_unverified"
+    if before_edit.role != after_edit.role:
+        return "input_unverified"
+    distance_sq = (
+        (before_edit.point[0] - after_edit.point[0]) ** 2
+        + (before_edit.point[1] - after_edit.point[1]) ** 2
+    )
+    if distance_sq > 120.0 ** 2:
+        return "input_unverified"
+    if (
+        before_edit.value_digest != after_edit.value_digest
+        and (before_edit.value_digest or after_edit.value_digest)
+    ):
+        return "input_verified"
+    return "input_unverified+focus_verified"
+
+
+# Keep the bound-tool schema small. _computer_impl below is the extracted real logic
+# from the @tool-decorated function — no clean single return point existed, so the thin
+# @tool wrapper below calls this instead of wrapping every scattered `return`).
+# Execution training belongs in this first-call manual, not graph.py.  The
+# always-visible @tool docstring below retains only routing/schema facts needed
+# to form the first call; after that call, this playbook enters the same ReAct
+# turn and teaches the model how to finish and recover without permanently
+# bloating every bound-tool schema.
 _SYNTAX_MANUAL = (
-    "\n\n[computer usage notes]\n"
-    "WORKFLOW:\n"
-    "1. Start with action=\"see\" when state is unknown. It takes no action and returns [OBS obs_N] "
-    "with current eN elements. The view covers only visible content; scroll to reveal more.\n"
-    "2. For click/double_click/triple_click/right_click/hover, scroll, or drag, prefer element_id=\"eN\" "
-    "plus the latest observation_id=\"obs_N\". Fallback: target=\"visible text\"; add near=\"top|bottom|"
-    "left|right|center|top-left|top-right|bottom-left|bottom-right\" only to disambiguate. coord is "
-    "disabled. modifiers=\"shift\"|\"cmd\"|\"shift+cmd\"|\"option\"|\"ctrl\" (any subset, \"+\"-joined) held "
-    "during click/double_click/triple_click/right_click/drag — e.g. shift-click or cmd-click to "
-    "multi-select in a list/Finder, or option-drag to copy a file instead of moving it. triple_click "
-    "selects a whole line/paragraph in most text views. hover moves the pointer without clicking — "
-    "use it to reveal a tooltip or per-row action button, then see/inspect to read what appeared (OCR "
-    "picks up newly-visible text same as anything else on screen). For an unclear/icon-only element, "
-    "use action=\"inspect\" with the latest observation_id, optional element_id, and question; it reads "
-    "the retained screenshot/crop.\n"
-    "3. Other actions: type uses text; key uses text=\"cmd+s|enter|escape|tab|cmd+m (minimize)|cmd+w "
-    "(close window)|cmd+ctrl+f (toggle fullscreen, app-dependent)|...\"; scroll uses direction="
-    "\"up|down|left|right\" and amount (optional target/element_id chooses the pane; left/right for a "
-    "wide spreadsheet/Finder column view/timeline); open_app uses target=\"TextEdit|Finder|...\" and "
-    "also raises an already-running app — effect=app_not_frontmost means it did not, retry open_app "
-    "before typing/clicking; drag uses source target/element_id and destination visible text in text. "
-    "No dedicated maximize/resize action — macOS has no universal maximize hotkey; drag a window's edge "
-    "via element/target only works if that edge happens to be a labeled, OCR/AX-visible element. "
-    "Reading real on-screen text: OCR/[OBS] is a summary and can misread or truncate — for exact, "
-    "full-length text (a document, a long error message) prefer key text=\"cmd+a\" (or select the "
-    "specific text) then text=\"cmd+c\", then bash(pbpaste) to read back the real content with no OCR "
-    "error and no length cap. The same pair in reverse (bash(pbcopy) then key text=\"cmd+v\") is also "
-    "the fastest, IME-safe way to type long or Thai text instead of action=\"type\". A save/open dialog's "
-    "path field is reached with key text=\"cmd+shift+g\" (Go to Folder) rather than clicking through "
-    "Finder columns.\n"
-    "4. Verify every mutation from its new [OBS]. Optional expect=\"text:X|window:X|app:X\" returns "
-    "verified or expectation_not_met; otherwise effect is changed or no_visible_change. A `type` whose "
-    "typed text does not show up in the now-focused field (AX-confirmed) instead of the intended one "
-    "returns effect=type_unconfirmed — treat this the same as no_visible_change, not [ok].\n"
-    "Auto-refused: raw coordinates, password-like typing/secure fields, cmd+q/cmd+shift+q, stale "
-    "observations, concurrent actions, failsafe mouse corner, and >15 actions (background-fired turns "
-    "get a lower, fork-set ceiling and always refuse a delete/remove-looking target — see "
-    "effect=app_not_frontmost note above for the retry pattern that applies there too). Prefer open_app "
-    "over cmd+tab.\n"
-    "\"กดปุ่ม popup/dialog ให้หน่อย\": action=\"see\" first if unsure it's still on screen → pick the button by "
-    "its exact visible text (target=\"Allow\"/\"OK\"/\"Don't Save\"/\"Cancel\", or element_id+observation_id from "
-    "the latest [OBS]) → click. Never guess a button exists from the task description alone; if [OBS] shows "
-    "no matching text, say so instead of clicking the nearest thing.\n"
-    "❌ target=\"Yes\" when [OBS] only shows \"OK\"/\"Cancel\" — clicks the wrong control\n"
-    "✅ read the actual [OBS] text first, click the button that is really there\n"
-    "[OBS ... ax=X] header: ax=ok means Accessibility data is live; ax=permission_required means macOS "
-    "Accessibility access is OFF for this process — OCR-based actions still work, but focused-field "
-    "read-back, secure-field detection, and icon-only element roles are degraded. Tell the user once "
-    "(System Settings → Privacy & Security → Accessibility) instead of repeating it every turn."
+    "\n\n[computer usage notes — screenshot → aim → look → click → look]\n"
+    "VISION-FIRST LOOP — 1) If state is unknown, see. 2) Treat the newest screenshot as the source of truth. 3) Visually choose "
+    "the needed pixel. For coordinate clicks, first hover(coord=\"x,y\", observation_id=<latest>) to move the cursor there. "
+    "4) Read the NEW screenshot and confirm visually that the cursor is on the intended control. 5) Only then click the same coord "
+    "using that new observation_id. 6) Read the post-click screenshot and judge whether it worked. AX/OCR/eN are helpers, not "
+    "coordinate-action gates. Never chain coordinates from an old screenshot.\n"
+    "MOUSE — click focuses/selects/presses; double_click opens a file/item; triple_click selects a text block; right_click "
+    "opens a context menu; hover reveals hidden controls/tooltips; drag uses target=<source text>, text=<drop-target text>; "
+    "scroll uses direction=up/down/left/right, amount=<positive lines>, and target/element_id when a specific pane must scroll. "
+    "The returned image shows the live cursor plus capture-pixel coordinates. For coordinate clicks, move first with "
+    "hover(coord=\"x,y\", observation_id=<latest>), inspect the returned screenshot, then click the SAME coord with that new "
+    "observation_id. The tool mechanically refuses a coordinate click unless the cursor visible in the latest screenshot is already "
+    "near that point. No AX element, OCR label, semantic anchor, or Dock tooltip is required to approve an ordinary coordinate "
+    "click. If text matches several places, retry with near=top/bottom/left/right/center/corners. After a menu, right-click, hover, "
+    "drag, or scroll, inspect the newly revealed state before acting.\n"
+    "KEYBOARD — type(text=...) inserts literal Unicode into the currently focused editable field only. Type results distinguish "
+    "input_verified from input_unverified+focus_verified/input_unverified without exposing secure-field values. key(text=...) sends "
+    "ONE key/combo: enter, tab, shift+tab, escape, space, arrows, cmd+a/c/v/s/f/l, shift+arrow. To replace field text: click "
+    "field → verify focus → key(cmd+a) → type(new text) → verify. To submit: key(enter), NEVER type('return') and NEVER "
+    "type(text='', modifiers='return'). Put modifiers inside key text (cmd+s), not the modifiers argument; modifiers is for "
+    "click/drag selection. Tab moves focus, shift+tab moves back, escape safely closes a menu/dialog. Switch apps with "
+    "open_app, not cmd+tab. Never type passwords, OTPs, payment data, or credentials.\n"
+    "COMMON APP PATTERNS — form: click field → type → tab/click next → type → click Submit → verify result. Menu/dialog: "
+    "click menu/button → read new OBS → click item/choice → verify dismissal/result. Editor: click text → cmd+a only when the "
+    "whole field/document should be replaced → type → cmd+s → verify content/title. Finder/list: double_click opens; "
+    "right_click then inspect exposes actions; modifier-click selects multiple items. Multi-pane apps: scroll the named pane, "
+    "not wherever the pointer happened to remain.\n"
+    "RECOVERY EXAMPLES — click Play → no_visible_change → see/inspect → dismiss safe popup or choose the current Play → "
+    "click once → verify progress. Type lands in the wrong place → stop typing → see → click the intended editable field → "
+    "cmd+a only there → type again → verify visible text. Drag changes nothing → see → select the current source and visible "
+    "drop target → retry once; otherwise report the boundary instead of guessing.\n"
+    "APP/WEB — open_app(target=\"TextEdit\") launches/raises an app. open_url(target=<full http(s) URL>, "
+    "app=\"Google Chrome\") opens a site directly in the requested real browser; prefer this over open_app→cmd+l→type. "
+    "Use it when the user names Chrome/Safari; generic web automation may use browser_use.\n"
+    "YOUTUBE DJ RECIPE — 1) open_url(target=\"https://www.youtube.com/results?search_query=<song/artist/genre/playlist/mix>\", "
+    "app=\"Google Chrome\"); spaces are allowed. 2) Read the new screen; click the requested result, or a clearly labeled "
+    "mix/playlist when no song was named. 3) Verify player/title/progress before saying it plays. 4) With player focused: "
+    "key(space)=play/pause, key(shift+n)=next, key(m)=mute, key(right/left)=seek, key(up/down)=volume; verify each. "
+    "Prefer a mix/playlist for continuous DJ playback; do not loop indefinitely.\n"
+    "POPUPS/ADS — inspect first; click an unambiguous Skip/ข้าม or Play once and verify. Never bypass CAPTCHA, sign-in, "
+    "age/subscription/region gates, or ads deceptively; stop for manual intervention.\n"
+    "EXPECT — pass expect=<plain text> (optionally expect=\"text:<plain text>\", equivalent) to check it appears "
+    "inside the frontmost window after the action; background-window OCR is never accepted as verification. Use "
+    "expect=\"app:<name>\"/\"window:<text>\" for the frontmost app/window, or "
+    "expect=\"focus:<label>\" to check that the element whose visible text contains <label> is now focused (e.g. after "
+    "clicking a field) — expect=\"focus:\" alone checks that ANYTHING is focused. Only \"app:\", \"window:\", \"text:\", "
+    "and \"focus:\" are recognized prefixes — a colon anywhere else (a URL like https://youtube.com, a timestamp like "
+    "3:45) is part of the plain text, not a prefix, so pass those as-is; a state description with NO colon (e.g. "
+    "\"Search field focused\") is also searched as literal on-screen text and will never match — use focus:<label> "
+    "instead for that. A failed unrecognized-form expect returns a 'hint:' line naming the right prefix; read and use "
+    "it on the next call rather than repeating the same expect= verbatim. When expect= (or open_app/open_url's app=) "
+    "hasn't been satisfied yet, the tool keeps polling a few extra seconds before giving up — slower than the default "
+    "settle, never faster. The result's effect combines independent signals, e.g. changed+verified or "
+    "changed+expectation_not_met: a '+expectation_not_met'/'+app_not_frontmost' suffix means only that specific check "
+    "missed, not that the screen failed to change; '+expect_unknown' means the requested focus/text check lacked "
+    "trustworthy Accessibility/window evidence — neither is a failed action. Look at the attached image/[OBS] to judge what "
+    "actually happened rather than treating any [warning] as a failed action.\n"
+    "KNOWN LIMIT — in Chrome/Chromium, focus: is reliable for the browser's own controls (address bar, buttons) but "
+    "not for a field INSIDE a loaded web page (a page's search box, a form input): Chrome only builds its web-content "
+    "accessibility tree once it detects a persistent assistive-technology client, which this tool is not, so "
+    "page-content elements may be invisible to Accessibility even though ax=ok. For those, verify with "
+    "expect=\"text:<value>\" instead of focus:."
 )
 
 
-@tool
-def computer(action: str, target: str = "", text: str = "", coord: str = "", direction: str = "", amount: int = 3, near: str = "", element_id: str = "", observation_id: str = "", question: str = "", expect: str = "", modifiers: str = "") -> str:
-    """Control a native Mac app one guarded action at a time. The main model is text-only:
-    trust the returned [OBS] Accessibility/OCR elements and optional [vision] gist; never infer pixels.
+def _validate_web_url(url: str) -> None:
+    parsed = urlsplit(url.strip())
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("open_url requires a valid http(s) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("open_url refuses URLs containing credentials")
 
-    Start with action="see" when state is unknown — returns [OBS obs_N] with current eN elements
-    to act on (scroll to reveal more). Prefer element_id="eN" + observation_id="obs_N" over target
-    text for click/double_click/triple_click/right_click/hover/scroll/drag. coord is disabled.
-    Verify every mutation from the new [OBS] the action returns.
 
-    Silent-failure recovery: click → no_visible_change → detect failure from effect/[OBS] → see or
-    inspect → retry a different current element/target. Never repeat the unchanged action or claim
-    success. A delete/remove-looking click/drag target or permanently-remove hotkey is refused
-    UNLESS the user's own current message explicitly asked for deletion/removal.
-
-    Detailed per-action parameter guidance (key combos, drag, scroll, modifiers, disambiguation,
-    popup handling, [OBS] ax= status) is not yet written — see this tool's own result for now.
-    """
-    from tools._call_guard import first_call_this_turn
-    first = first_call_this_turn("computer")
+def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "", direction: str = "", amount: int = 3, near: str = "", element_id: str = "", observation_id: str = "", question: str = "", expect: str = "", modifiers: str = "", app: str = "") -> str:
     if not _ACTION_LOCK.acquire(blocking=False):
         return _error("another computer action is already running — retry after it finishes")
     try:
-        result = _computer_impl(
-            action=action, target=target, text=text, coord=coord, direction=direction,
-            amount=amount, near=near, element_id=element_id,
-            observation_id=observation_id, question=question, expect=expect, modifiers=modifiers,
-        )
-    finally:
-        _ACTION_LOCK.release()
-    if first and _SYNTAX_MANUAL:
-        result += _SYNTAX_MANUAL
-    return result
-
-
-def _computer_impl(*, action: str, target: str, text: str, coord: str, direction: str,
-                   amount: int, near: str, element_id: str, observation_id: str,
-                   question: str, expect: str, modifiers: str = "") -> str:
-    before: ScreenSnapshot | None = None
-    try:
         action = action.strip().lower()
         _phase(f"🖥 ควบคุมหน้าจอ: {action}" + (f" ({target or text or element_id})"[:60] if (target or text or element_id) else ""))
-        allowed = {"see", "inspect", "click", "double_click", "triple_click", "right_click", "type", "key", "scroll", "open_app", "drag", "hover"}
-        if action not in allowed:
+        if action not in {"see", "inspect", "click", "double_click", "triple_click", "right_click", "type", "key", "scroll", "open_app", "open_url", "drag", "hover"}:
             return _error(f"unknown action: {action}")
         if action == "inspect":
-            return _inspect_observation(observation_id, element_id, question)
+            return _inspect(observation_id, element_id, question)
         if _backend.failsafe_abort():
             return _error("failsafe abort — user took the mouse")
         _effective_max = _ACTION_MAX_OVERRIDE[0] or _ACTION_MAX
@@ -721,58 +883,76 @@ def _computer_impl(*, action: str, target: str, text: str, coord: str, direction
         if action == "see":
             _ACTION_ATTEMPTS[0] += 1
             _LAST_SIGNATURE[0] = "see"
-            snapshot = _publish_snapshot(_capture_snapshot(describe=True))
-            _LAST_SCREEN_TEXT[0] = _snapshot_text(snapshot)
-            _LAST_FRONTMOST_APP[0] = snapshot.app
-            return _format_result("[ok] see", snapshot)
-
-        if coord:
-            return _error("raw coord is disabled; use element_id from [OBS] or visible target text")
-
-        # One pre-action snapshot is shared by stale-state validation, target
-        # resolution, repeat detection, secure-field checks and effect comparison.
-        before = _capture_snapshot(describe=False)
+            snapshot = _publish(_capture_snapshot())
+            _LAST_SCREEN_TEXT[0] = "\n".join(str(b.get("text", "")) for b in snapshot.ocr_boxes); _LAST_FRONTMOST_APP[0] = snapshot.app
+            return _result("[ok] see", snapshot)
+        before = _capture_snapshot()
         if action in _CONTEXT_DEPENDENT_ACTIONS and _LAST_FRONTMOST_APP[0] and before.app != _LAST_FRONTMOST_APP[0]:
-            _publish_snapshot(before)
-            before = None
-            latest = _LATEST_OBSERVATION[0]
-            return _error(
-                f"frontmost app changed since last action (expected '{_LAST_FRONTMOST_APP[0]}', "
-                f"now '{latest.app if latest else ''}') — inspect the latest observation before acting\n"
-                + (format_snapshot(latest, max_chars=620) if latest else "")
-            )
-
-        # near/modifiers included (audit F2): without them, a click that hit an
-        # ambiguity error recommending "retry with near=" was itself refused as
-        # a "repeated action" on retry (identical action/target/text otherwise),
-        # and a plain click followed by the SAME click again with modifiers=
-        # (e.g. cmd-click to extend a selection) was wrongly treated as a no-op
-        # repeat of the first click.
+            _publish(before)
+            return _error(f"frontmost app changed since last action — latest is {before.observation_id}; inspect it before acting")
+        # near/modifiers included (ported from reference audit F2): without them, a
+        # click that hit an ambiguity error recommending "retry with near="
+        # was itself refused as a "repeated action" on retry (identical
+        # action/target/text otherwise), and a plain click followed by the
+        # SAME click again with modifiers= (e.g. cmd-click to extend a
+        # selection) was wrongly treated as a no-op repeat of the first click.
         signature = "|".join((
             action, target.strip().casefold(), text.strip().casefold(), direction,
-            str(amount), element_id.strip().casefold(), observation_id.strip().casefold(),
+            str(amount), coord.strip().casefold(), element_id, observation_id,
             near.strip().casefold(), modifiers.strip().casefold(),
+            app.strip().casefold(),
         ))
-        if signature == _LAST_SIGNATURE[0] and before.fingerprint == (
-            _LATEST_OBSERVATION[0].fingerprint if _LATEST_OBSERVATION[0] else ""
+        if (
+            signature == _LAST_SIGNATURE[0]
+            and _LATEST_OBSERVATION[0]
+            and before.fingerprint == _LATEST_OBSERVATION[0].fingerprint
+            and before.visual_fingerprint == _LATEST_OBSERVATION[0].visual_fingerprint
         ):
-            return _error("repeated action, screen unchanged — change approach")
-
-        chosen_element: ScreenElement | None = None
-        if element_id:
-            chosen_element, problem = _element_problem(observation_id, element_id, before)
+            Path(before.image_path).unlink(missing_ok=True); return _error("repeated action, screen unchanged — change approach")
+        chosen: ScreenElement | None = None
+        coord_point: tuple[float, float] | None = None
+        if coord:
+            if action not in _COORD_ACTIONS:
+                Path(before.image_path).unlink(missing_ok=True)
+                return _error(f"coord is supported only for {', '.join(sorted(_COORD_ACTIONS))}")
+            if element_id:
+                Path(before.image_path).unlink(missing_ok=True)
+                return _error("use either coord or element_id, not both")
+            latest = _LATEST_OBSERVATION[0]
+            if latest is None or not observation_id or observation_id != latest.observation_id:
+                Path(before.image_path).unlink(missing_ok=True)
+                return _error("coord requires the latest observation_id from see/previous action")
+            if not _coord_geometry_matches(latest, before):
+                _publish(before)
+                return _error(
+                    f"screen geometry changed since {observation_id}; latest is {before.observation_id}; "
+                    "look at the new screenshot before using coordinates"
+                )
+            coord_point, problem = _coord_point_from_snapshot(latest, coord)
             if problem:
-                if _LATEST_OBSERVATION[0] is before:
-                    before = None
+                Path(before.image_path).unlink(missing_ok=True)
                 return problem
-
-        secure_focused = any(
-            element.focused and element.role == "AXSecureTextField" for element in before.elements
-        )
+            assert coord_point is not None
+            if action in _COORD_CLICK_ACTIONS and not _coord_cursor_is_aimed(latest, coord):
+                Path(before.image_path).unlink(missing_ok=True)
+                return _error(
+                    f"aim before coordinate click: hover(coord=\"{coord}\", observation_id=\"{observation_id}\"), "
+                    "look at the returned screenshot to confirm the cursor is on the intended control, then click the same "
+                    "coord using that new observation_id"
+                )
+        if element_id:
+            latest = _LATEST_OBSERVATION[0]
+            if latest is None or observation_id != latest.observation_id:
+                Path(before.image_path).unlink(missing_ok=True); return _error("element_id requires the latest observation_id; call see")
+            if before.fingerprint != latest.fingerprint or before.app != latest.app:
+                _publish(before); return _error(f"screen changed since {observation_id}; latest is {before.observation_id}")
+            chosen = latest.get(element_id)
+            if chosen is None:
+                Path(before.image_path).unlink(missing_ok=True); return _error(f"element not found: {element_id}")
         if action == "type" and (
             any(marker in text.casefold() for marker in _PASSWORD_MARKERS)
             or any(marker in _LAST_CLICK_TARGET[0].casefold() for marker in _PASSWORD_MARKERS)
-            or secure_focused
+            or any(e.focused and e.role == "AXSecureTextField" for e in before.elements)
         ):
             return _error("refusing to type into what looks like a password field — enter credentials manually")
         if action == "key" and _normalize_combo(text) in _FORBIDDEN_KEY_COMBOS:
@@ -786,7 +966,7 @@ def _computer_impl(*, action: str, target: str, text: str, coord: str, direction
             # match target/element text by substring since that IS a visible
             # label — the marker list itself is tiered by supervision context
             # (see _DESTRUCTIVE_MARKERS_SUPERVISED/_UNSUPERVISED above): an
-            # awake-fired turn always set action_max, an ordinary turn's
+            # awake-fired turn always sets action_max, an ordinary turn's
             # default guard never does, so that existing distinction alone
             # picks the right tier without a new per-turn flag.
             _markers = _DESTRUCTIVE_MARKERS_UNSUPERVISED if _ACTION_MAX_OVERRIDE[0] is not None else _DESTRUCTIVE_MARKERS_SUPERVISED
@@ -794,7 +974,7 @@ def _computer_impl(*, action: str, target: str, text: str, coord: str, direction
                 _normalize_combo(text) in _DESTRUCTIVE_KEY_COMBOS if action == "key" else
                 any(
                     marker in str(c).casefold()
-                    for c in (target, chosen_element.text if chosen_element is not None else None,
+                    for c in (target, chosen.text if chosen is not None else None,
                               text if action == "drag" else None)
                     if c for marker in _markers
                 )
@@ -818,19 +998,18 @@ def _computer_impl(*, action: str, target: str, text: str, coord: str, direction
                     "turn, where it is never allowed) — computer access terminated for this turn; report "
                     "this to the user and ask for explicit confirmation instead of proceeding"
                 )
-
         _ACTION_ATTEMPTS[0] += 1
         _LAST_SIGNATURE[0] = signature
         _progress(f"กำลัง {action}: {(target or text or element_id)[:40]}…" if (target or text or element_id) else f"กำลัง {action}…")
-
+        type_delivery = ""
         if action in {"click", "double_click", "triple_click", "right_click"}:
-            if chosen_element is not None:
-                point, label = chosen_element.point, chosen_element.text
-            else:
-                point, problem = _target_point_in_snapshot(before, target, near)
-                if problem:
-                    return problem
-                label = target
+            point, problem = (
+                (coord_point, None) if coord_point is not None else
+                ((chosen.point, None) if chosen else _point_from_snapshot(before, target, near))
+            )
+            if problem:
+                return problem
+            assert point is not None
             x, y = point
             try:
                 _backend.click(
@@ -841,108 +1020,185 @@ def _computer_impl(*, action: str, target: str, text: str, coord: str, direction
                 )
             except ValueError as exc:
                 return _error(str(exc))
+            label = chosen.text if chosen else target or coord
             _log_action(action, label, (x, y))
             _LAST_CLICK_TARGET[0] = label
         elif action == "hover":
-            if chosen_element is not None:
-                point, label = chosen_element.point, chosen_element.text
-            else:
-                point, problem = _target_point_in_snapshot(before, target, near)
-                if problem:
-                    return problem
-                label = target
+            point, problem = (
+                (coord_point, None) if coord_point is not None else
+                ((chosen.point, None) if chosen else _point_from_snapshot(before, target, near))
+            )
+            if problem:
+                return problem
+            assert point is not None
             _backend.hover(*point)
+            label = chosen.text if chosen else target or coord
             _log_action(action, label, point)
         elif action == "type":
             if not text:
                 return _error("type requires text")
-            _backend.type_text(text)
+            type_delivery = _backend.type_text(text)
             _log_action(action)
         elif action == "key":
             _backend.key(text)
             _log_action(action, text)
         elif action == "scroll":
-            point = chosen_element.point if chosen_element is not None else None
+            point = coord_point
             if point is None and target:
-                point, problem = _target_point_in_snapshot(before, target, near)
+                point, problem = (chosen.point, None) if chosen else _point_from_snapshot(before, target, near)
                 if problem:
                     return problem
             _backend.scroll(direction, amount, point=point)
-            _log_action(action, direction)
+            _log_action(action, target or coord or direction, point)
         elif action == "drag":
             if not text:
                 return _error("drag requires text as the drop-target's visible text")
-            if chosen_element is not None:
-                from_point = chosen_element.point
-            else:
-                from_point, problem = _target_point_in_snapshot(before, target, near)
-                if problem:
-                    return problem
-            to_point, problem = _target_point_in_snapshot(before, text, "")
+            # near= disambiguates the SOURCE only (audit F8) — applying it to
+            # the drop target too meant a near= chosen to pick out the source
+            # could just as easily filter out the correct drop target, since
+            # the two are rarely in the same screen region by definition.
+            from_point, problem = (chosen.point, None) if chosen else _point_from_snapshot(before, target, near)
+            if problem:
+                return problem
+            to_point, problem = _point_from_snapshot(before, text, "")
             if problem:
                 return problem
             try:
                 _backend.drag(from_point[0], from_point[1], to_point[0], to_point[1], modifiers=modifiers)
             except ValueError as exc:
                 return _error(str(exc))
-            _log_action(action, f"{chosen_element.text if chosen_element else target} -> {text}")
-        else:
+            _log_action(action, f"{target} -> {text}")
+        elif action == "open_app":
             _backend.open_app(target)
             _log_action(action, target)
-
+        else:
+            _validate_web_url(target)
+            _backend.open_url(target, app=app)
+            _log_action(action, f"{app or 'default'}: {target}")
+        # Settle before observing: live-reproduced (2026-07-17) a save-sheet's
+        # slide-in animation not finished when the very next action (typing the
+        # filename) fired, so it landed before the field was actually focused/
+        # selected -- the default "Untitled" silently never got replaced, no
+        # error anywhere. cmd+s-class actions are the common trigger but any
+        # click/key can open a sheet/dialog, so this applies broadly rather
+        # than special-casing specific hotkeys.
         _backend.settle()
-        snapshot, effect = _post_action_snapshot(before)
-        _LAST_SCREEN_TEXT[0] = _snapshot_text(snapshot)
-        _LAST_FRONTMOST_APP[0] = snapshot.app
-        if action == "open_app" and target.strip():
+        requested_app = target if action == "open_app" else app if action == "open_url" else ""
+        after, ui_effect = _post_action_snapshot(before, expect=expect, requested_app=requested_app)
+        Path(before.image_path).unlink(missing_ok=True)
+        _LAST_SCREEN_TEXT[0] = "\n".join(str(b.get("text", "")) for b in after.ocr_boxes); _LAST_FRONTMOST_APP[0] = after.app
+        # Independent verification signals, combined rather than overwritten —
+        # the previous version set a single `effect` string for each check in
+        # turn, so supplying expect= silently discarded both whether the UI
+        # actually changed AND the app_not_frontmost guard's own result. That
+        # produced exactly the live-usage symptom this fixes: a `[warning]`
+        # response whose own attached screenshot showed the action had, in
+        # fact, succeeded — the model had no way to tell "verification heuristic
+        # missed" apart from "nothing happened".
+        notes: list[str] = []
+        if action == "type":
+            notes.append(_type_input_verification(before, after))
+            if type_delivery == "clipboard_changed_externally":
+                notes.append("clipboard_changed_externally")
+        if requested_app.strip() and not _app_matches(requested_app, after.app):
             # `open -a` can return 0 without the target ever actually becoming
-            # frontmost — e.g. a dormant app reactivating slower than settle()+
-            # the post-action poll window under this Mac's single-GPU memory
-            # pressure, or a zero-window instance not stealing focus at all.
-            # Reporting [ok]/effect=changed here (fingerprint-only check) would
-            # let the model believe subsequent type/key calls land in the target
-            # app when they're still landing wherever WAS frontmost — a silent-
-            # failure class worse than an explicit error (live-reproduced
-            # 2026-07-21 walk R7-CB: 8 actions in a row typed into the terminal
-            # app hosting this session while it reported [ok] the whole time).
-            # Checked BOTH directions (audit F5): target="Visual Studio Code"
-            # vs. the real localized app name "Code" (or vice versa, target=
-            # "Chrome" vs. "Google Chrome") are legitimate matches either way —
-            # only flag when NEITHER string contains the other.
-            _t, _a = target.strip().casefold(), snapshot.app.casefold()
-            if _t not in _a and _a not in _t:
-                effect = "app_not_frontmost"
-        if action == "type" and text.strip():
-            # Best-effort AX read-back: a generic screen-fingerprint change (the
-            # base `effect` above) proves SOMETHING changed, not that the typed
-            # text landed in the field it was meant for — Thai IME composition,
-            # autocomplete, or focus drift mid-type can all silently produce a
-            # changed screen with garbled/partial content. Skip entirely when no
-            # AX-focused text element is available (e.g. Accessibility permission
-            # off, ax=permission_required) — no regression, same as [vision]'s
-            # best-effort pattern elsewhere in this file, just no NEW check.
-            typed_cf = text.strip().casefold()
-            focused = next((e for e in snapshot.elements if e.focused and e.text), None)
-            if focused is not None and typed_cf not in focused.text.casefold():
-                # A focused-element mismatch alone isn't proof of failure (audit
-                # F3): ScreenElement.text prefers AX's "name" over "value"
-                # (_screen_state.py), so a field with a static accessibility
-                # name/placeholder ("Search", "Username") compares the typed
-                # text against that LABEL, not the field's live content — a
-                # guaranteed false mismatch on any named field. Cross-check the
-                # OCR-visible screen text (what's actually rendered, independent
-                # of which AX attribute won) before flagging; only report
-                # type_unconfirmed when the typed text shows up NOWHERE on screen.
-                if typed_cf not in _snapshot_text(snapshot).casefold():
-                    effect = "type_unconfirmed"
+            # frontmost — reporting [ok] here would let the model believe
+            # subsequent type/key calls land in the target app when they're
+            # still landing wherever WAS frontmost (live-reproduced 2026-07-21
+            # on reference walk R7-CB, ported here — same design, same gap).
+            notes.append("app_not_frontmost")
+        expect_hint = ""
         if expect:
-            effect = "verified" if _expectation_met(snapshot, expect) else "expectation_not_met"
-        prefix = f"[ok] {action}" if effect in {"changed", "verified"} else (
-            f"[warning] {action}" if effect in {"expectation_not_met", "app_not_frontmost", "type_unconfirmed"} else f"[no_effect] {action}"
+            verdict = _expected(after, expect)
+            if verdict is None:
+                # A genuinely unknown state (for example focus: without AX, or
+                # text: without trustworthy focused-window bounds) must not
+                # collapse into expectation_not_met.
+                notes.append("expect_unknown")
+            elif verdict:
+                notes.append("verified")
+            else:
+                notes.append("expectation_not_met")
+                if not _expect_uses_recognized_kind(expect):
+                    # The failure is because expect used no recognized kind —
+                    # because it wasn't "app:"/"window:"/"text:"/"focus:" —
+                    # so it was searched as literal on-screen text and can
+                    # never match a prose state description. Tell the model
+                    # the right form instead of letting it repeat the same
+                    # broken expect= verbatim.
+                    expect_hint = (
+                        '\nhint: expect="' + expect[:60] + '" was searched as literal on-screen '
+                        'text and not found — for state checks use expect="focus:<label>" '
+                        '(is it focused now), "app:<name>", or "window:<text>" instead.'
+                    )
+        verification_warning = bool(
+            {"app_not_frontmost", "expectation_not_met", "expect_unknown", "clipboard_changed_externally"} & set(notes)
+        ) or (
+            action == "type"
+            and "input_verified" not in notes
+            and "verified" not in notes
         )
-        return _format_result(prefix, snapshot, effect)
+        if verification_warning:
+            prefix = f"[warning] {action}"
+        elif ui_effect == "changed" or "verified" in notes:
+            prefix = f"[ok] {action}"
+        else:
+            prefix = f"[no_effect] {action}"
+        effect = "+".join([ui_effect, *notes]) if notes else ui_effect
+        return _result(prefix, after, effect) + expect_hint
     except Exception as exc:
         return _error(str(exc))
     finally:
-        if before is not None and _LATEST_OBSERVATION[0] is not before:
-            _discard_snapshot(before)
+        _ACTION_LOCK.release()
+
+
+@tool
+def computer(action: str, target: str = "", text: str = "", coord: str = "", direction: str = "", amount: int = 3, near: str = "", element_id: str = "", observation_id: str = "", question: str = "", expect: str = "", modifiers: str = "", app: str = "") -> str:
+    """Control a native Mac app one guarded action at a time. ENDEAVOR_LOCAL_AGENT_TH sees the newest screen image
+    after every call and also receives a compact [OBS] Accessibility/OCR element list.
+
+    Start with action="see" when state is unknown — queues the current image and returns [OBS obs_N]
+    with eN elements to act on (scroll to reveal more). Prefer element_id="eN" + observation_id="obs_N"
+    over target text for drag and non-visual fallbacks. For ordinary mouse actions, use the newest screenshot directly.
+    Coordinate clicks follow move → look → click → look: first hover(coord="x,y", observation_id=<latest>), inspect the
+    returned screenshot and confirm the visible cursor is on the intended control, then click the same coord with that new
+    observation_id. AX/OCR/semantic anchors and Dock tooltips are helpers only and do not gate coordinate approval. The tool
+    mechanically refuses a coordinate click unless the latest screenshot shows the cursor already near that point. Verify
+    the new image/[OBS] after every mutation. Post-action change detection combines
+    semantic AX/OCR state with a compact visual fingerprint; type additionally reports input_verified or an explicit
+    unverified/focus-only state without retaining secure-field contents.
+
+    Silent-failure recovery: click → no_visible_change → detect failure from effect/image/[OBS] →
+    see or inspect → retry a different current element/target. Never repeat or claim success. A
+    delete/remove-looking click/drag target or permanently-remove hotkey is refused UNLESS the
+    user's own current message explicitly asked for deletion/removal.
+
+    Actions: see/inspect; click/double_click/triple_click/right_click/hover/drag; type literal text;
+    key(text=one key/combo, e.g. enter or cmd+s); scroll(direction, amount, optional target/element);
+    open_app(target=installed app); open_url(target=full HTTP(S) URL, app=installed browser). Use
+    open_url when the user explicitly wants Chrome/Safari to open a site. Optional expect=<text>,
+    expect="app:<name>"/"window:<text>", or expect="focus:<label>" (is that element focused now)
+    asks the tool to keep waiting (up to a few extra seconds, never less than normal) for that
+    condition and report effect=verified/expectation_not_met/expect_unknown instead of just
+    changed/no_effect — the ui-changed and expectation signals are independent, so a screen that
+    clearly changed is never reported as if nothing happened just because expect= missed. A bare
+    prose expect with no "app:"/"window:"/"text:"/"focus:" prefix (e.g. "field focused") is searched
+    as literal frontmost-window text and will never match — use focus:<label> for that, not prose. Detailed
+    mouse/keyboard, multi-app workflows, recovery, media, and safety notes return once after the
+    first call each turn.
+    ❌ submit typed URL → type(text="return")
+    ✅ submit typed URL → key(text="enter")
+    ❌ site requested → open_app(app="Google Chrome")
+    ✅ site requested → open_url(target="https://www.youtube.com", app="Google Chrome")
+    """
+    from tools._call_guard import first_call_this_turn
+    first = first_call_this_turn("computer")
+    result = _computer_impl(
+        action=action, target=target, text=text, coord=coord, direction=direction,
+        amount=amount, near=near, element_id=element_id,
+        observation_id=observation_id, question=question, expect=expect, modifiers=modifiers,
+        app=app,
+    )
+    if first and _SYNTAX_MANUAL:
+        result += _SYNTAX_MANUAL
+    return result
