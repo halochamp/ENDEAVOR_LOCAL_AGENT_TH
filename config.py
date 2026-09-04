@@ -43,7 +43,7 @@ API_KEY      = os.getenv("MLX_API_KEY",  "x")  # mlx_vlm.server ใช้ --api-
 TEMPERATURE     = float(os.getenv("V2_TEMPERATURE",     "0.1"))
 MAX_TOKENS      = int(os.getenv("V2_MAX_TOKENS",        "4096"))  # 8192→4096: caps thinking+response at ~230s (was 449s); thinking tokens count toward this limit
 # mlx_vlm.server accepts thinking_budget as a top-level request field.
-THINKING_BUDGET = int(os.getenv("V2_THINKING_BUDGET",   "2048"))
+THINKING_BUDGET = int(os.getenv("V2_THINKING_BUDGET",   "1536"))
 # Penalises repeated tokens over a 20-token window — breaks thinking loops at root cause.
 # 1.1: raised from 1.05 — disrupts repetitive thinking loops faster without corrupting tool JSON.
 # 0.0 = disabled (server default). Lower to 1.02 if JSON breaks.

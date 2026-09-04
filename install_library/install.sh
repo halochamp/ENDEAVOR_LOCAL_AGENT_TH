@@ -177,6 +177,7 @@ cat <<EOF
 
   2. เปิด MLX server (terminal แยก):
      conda activate ${ENV_NAME}
+     APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \\
      python -m mlx_vlm.server --model ${EFFECTIVE_MODEL} --host ${EFFECTIVE_HOST} --port ${EFFECTIVE_PORT}
 
   3. รัน agent — เลือกแบบที่ต้องการ:

@@ -65,6 +65,7 @@ bash install_library/install.sh
 
 # ขั้นที่ 2: เปิด MLX server (terminal แยก — เปิดทิ้งไว้ตลอด)
 conda activate mlx
+APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
 python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
 
 # ขั้นที่ 3: รัน agent — เลือกแบบที่ต้องการ (terminal ใหม่)
@@ -231,9 +232,12 @@ START → react (agent คุมเองทั้งหมด) → END
 | พารามิเตอร์ | ค่า default | ผลลัพธ์ |
 |---|---|---|
 | `TEMPERATURE` | 0.1 | คำตอบ deterministic, เหมาะกับ tool calling |
-| `THINKING_BUDGET` | 2048 tokens | จำกัดเวลาที่โมเดล "คิด" ก่อนตอบ — กัน query ง่าย ๆ คิดนานเกินไป |
+| `THINKING_BUDGET` | 1536 tokens | จำกัดเวลาที่โมเดล "คิด" ก่อนตอบ — ค่าเดียวกับ MAX_VLM production |
 | `REPETITION_PENALTY` | 1.05 | กัน thinking loop ซ้ำ ๆ โดยไม่กระทบ JSON ของ tool call |
 | `RECURSION_LIMIT` | 60 | จำนวน step สูงสุดต่อ 1 query (รองรับ research 4 ขั้นตอน × ~12 tool calls) |
+| `APC_ENABLED` | 1 | เปิด mlx_vlm Automatic Prefix Caching |
+| `APC_EXACT_CACHE_ENTRIES` | 2 | เก็บ exact snapshots 2 ช่อง — เหมาะกับบทสนทนาเส้นตรงแบบ guarded prefix |
+| `APC_EXACT_PREFIX_GUARD_TOKENS` | 64 | เก็บ reusable checkpoint ก่อน variable tail 64 tokens |
 
 ---
 
@@ -433,6 +437,7 @@ bash install_library/install.sh
 
 # 4. เปิด MLX server (terminal แยก)
 conda activate mlx
+APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
 python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
 
 # 5. รัน agent — เลือกแบบที่ต้องการ
@@ -466,6 +471,7 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 |---|---|---|
 | LLM Backend | `MLX_BASE_URL`, `V2_MODEL`, `MLX_API_KEY` | เปลี่ยน server/โมเดล |
 | Generation | `V2_TEMPERATURE`, `V2_THINKING_BUDGET`, `V2_REPETITION_PENALTY`, `V2_RECURSION_LIMIT` | tuning การตอบ |
+| MLX Prefix Cache | `APC_ENABLED`, `APC_EXACT_CACHE_ENTRIES`, `APC_EXACT_PREFIX_GUARD_TOKENS` | ลด prefill/TTFT ของ prefix ที่ซ้ำกัน |
 | Context Window | `V2_CONTEXT_MAX_CHARS` | ขยาย/ลด session length |
 | Agent Server | `AGENT_SERVER_PORT`, `AGENT_SERVER_TOKEN`, `AGENT_AUTH_DISABLED` | ตั้งค่า web server |
 | Workspace & Logs | `V2_WORKSPACE`, `V2_LOG_DIR`, `V2_LOG_MAX_ENTRIES` | path สำหรับไฟล์งานและ log |

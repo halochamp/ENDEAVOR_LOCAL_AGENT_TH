@@ -61,6 +61,16 @@ const PROD_MODEL = (_V2_MODEL && _MLX_BASE_URL !== _DEFAULT_MLX_URL)
   ? _V2_MODEL
   : 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
 
+// Keep mlx_vlm APC defaults aligned with MAX_VLM production. APC_ENABLED=0 or
+// other explicit environment overrides still win. Exact entries=2 is the
+// smallest useful capacity for the current guarded exact-prefix strategy:
+// one reusable guarded checkpoint + one full-prompt snapshot.
+const MLX_APC_ENV = {
+  APC_ENABLED: process.env.APC_ENABLED || '1',
+  APC_EXACT_CACHE_ENTRIES: process.env.APC_EXACT_CACHE_ENTRIES || '2',
+  APC_EXACT_PREFIX_GUARD_TOKENS: process.env.APC_EXACT_PREFIX_GUARD_TOKENS || '64',
+}
+
 let mainWindow = null
 let mlxProcess = null
 let agentServerProcess = null
@@ -194,7 +204,7 @@ function startMlxServer() {
   mlxProcess = spawn(PYTHON, ['-m', 'mlx_vlm.server', '--model', PROD_MODEL, '--host', '127.0.0.1', '--port', String(MLX_PORT)], {
     cwd: PROJECT_DIR,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: process.env,
+    env: { ...process.env, ...MLX_APC_ENV },
   })
   mlxProcess.stdout.on('data', d => console.log('[mlx]', d.toString().trim()))
   mlxProcess.stderr.on('data', d => {

@@ -66,6 +66,7 @@ shortcuts. If only the optional Chromium download fails, re-run
 
 ```bash
 conda activate mlx
+APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
 python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
 ```
 
@@ -159,7 +160,7 @@ where outputs land. See README.md "Security" section for the full read/write mod
 `MLX_BASE_URL` is ALSO changed from the default `http://localhost:8085/v1` — this is
 intentional (prevents `mlx_vlm.server` loading the wrong model silently). So set
 **both** `V2_MODEL` and `MLX_BASE_URL` (e.g. a different port) in `.env`, then start
-`python -m mlx_vlm.server --model <new model> --host 127.0.0.1 --port <new port>`. Minimum recommended:
+`APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 python -m mlx_vlm.server --model <new model> --host 127.0.0.1 --port <new port>`. Minimum recommended:
 Qwen3-14B. In this simple TH setup it is a text-only model: normal tool calling and
 `read_image` full-OCR fallback remain available, while `computer` and true pixel
 understanding require a vision-capable model. **Never silently swap models for the

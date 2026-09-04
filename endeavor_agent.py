@@ -415,7 +415,7 @@ def _is_load_cmd(q: str) -> bool:
 def main() -> None:
     if not _server_up():
         print(f"[!] เชื่อม mlx_vlm.server ไม่ได้ที่ {MLX_BASE_URL}")
-        print(f"    เริ่ม server ก่อน: python -m mlx_vlm.server --model {MODEL} --host 127.0.0.1 --port <port>")
+        print(f"    เริ่ม server ก่อน: APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 python -m mlx_vlm.server --model {MODEL} --host 127.0.0.1 --port <port>")
         return
 
     online = _internet_up()
