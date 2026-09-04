@@ -4,8 +4,8 @@
 
 """config.py — ENDEAVOR_AGENT_V2 configuration
 
-default: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit @ :8085 via mlx_vlm.server (MoE, bench 6/6, 7.7× faster than 27B)
-dev:     export V2_MODEL="mlx-community/Qwen3-1.7B-4bit" MLX_BASE_URL="http://localhost:8888/v1"
+default: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit @ :8085 via mlx_vlm.server (production)
+alternative: Qwen/Qwen3-14B-MLX-4bit for lower-memory Apple Silicon machines
 สลับด้วย env var — ไม่ต้องแก้ code
 """
 from __future__ import annotations
@@ -22,6 +22,8 @@ except ImportError:
 # ── Model + backend ───────────────────────────────────────────────────────
 _PROD_URL   = "http://localhost:8085/v1"
 _PROD_MODEL = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
+# Lower-memory alternative (text-only):
+# _PROD_MODEL = "Qwen/Qwen3-14B-MLX-4bit"
 
 MLX_BASE_URL = os.getenv("MLX_BASE_URL", _PROD_URL)
 # MODEL ใช้ production model เสมอ ยกเว้นตอน dev ที่เปลี่ยน MLX_BASE_URL ด้วย

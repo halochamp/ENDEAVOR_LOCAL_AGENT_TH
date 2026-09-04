@@ -29,7 +29,12 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from tools._ocr import read_layout as _ocr_layout
-from tools._vision_capability import UNKNOWN, TEXT_ONLY, get_capability
+from tools._vision_capability import (
+    UNKNOWN,
+    TEXT_ONLY,
+    get_capability,
+    probe_vision_capability,
+)
 from tools._progress import progress, phase
 from tools._safety import resolve_read_path
 
@@ -1578,8 +1583,13 @@ def read_image(source: str, region: str = "full", zoom: float = 1.0,
     zoom = _clamp_zoom(zoom)
     do_zoom = zoom > 1.0 or region != "full"
     ignored_region_zoom = do_find and do_zoom  # find wins — noted in the return
-    capability = get_capability()
     src = source.strip()
+    capability = get_capability()
+    if capability == UNKNOWN:
+        # Prove the configured backend semantically before publishing a user's
+        # image. A transport-success response is not enough: text-only models
+        # commonly accept image-shaped JSON and then refuse to inspect pixels.
+        capability = probe_vision_capability()
     needs_overview_first = (
         capability != TEXT_ONLY
         and src not in _OVERVIEW_SEEN
@@ -1861,7 +1871,7 @@ def read_image(source: str, region: str = "full", zoom: float = 1.0,
         if detail == "overview":
             vision_queued = bool(overview_urls) and _queue_image_bundle(overview_urls)
             if vision_queued:
-                if capability == UNKNOWN and not _retain_original_source(src, local_path):
+                if not _retain_original_source(src, local_path):
                     log.warning("read_image fallback OCR may be unavailable for %s", src)
                 _IMAGE_TURN_COUNT[0] += 1
                 _OVERVIEW_PENDING.add(src)

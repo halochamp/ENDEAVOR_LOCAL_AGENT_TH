@@ -56,7 +56,8 @@ class VisionCompatibilityTests(unittest.TestCase):
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         return str(path)
 
-    def _read_patches(self, source: str, ocr, *, encode=None):
+    def _read_patches(self, source: str, ocr, *, encode=None, probe=None):
+        probe = probe or (lambda: self.capability.mark_vision())
         return patch.multiple(
             self.ri,
             resolve_read_path=lambda _source: source,
@@ -70,6 +71,7 @@ class VisionCompatibilityTests(unittest.TestCase):
             _decode_qr=lambda _path: [],
             _looks_like_range_chart=lambda _boxes: False,
             _zoom_region_hint=lambda _boxes: "",
+            probe_vision_capability=probe,
             phase=lambda *_args, **_kwargs: None,
             progress=lambda *_args, **_kwargs: None,
         )
@@ -84,7 +86,7 @@ class VisionCompatibilityTests(unittest.TestCase):
             **kwargs,
         )
 
-    def test_vision_read_is_direct_first_and_success_marks_vision(self) -> None:
+    def test_vision_read_is_direct_first_and_probe_proves_vision(self) -> None:
         source = self._image()
         ocr_calls: list[str] = []
 
@@ -123,10 +125,31 @@ class VisionCompatibilityTests(unittest.TestCase):
                 )
             self.assertEqual(1, len(calls))
             self.assertEqual([], ocr_calls)
+            self.assertEqual(self.capability.VISION, self.capability.get_capability())
             self.assertEqual(
-                self.capability.VISION,
+                self.capability.UNKNOWN,
                 self.capability.get_capability("http://test.local/v1", "test-model"),
             )
+
+    def test_successful_image_transport_does_not_prove_vision(self) -> None:
+        self.capability.reset_for_tests()
+        model = self._model()
+
+        def fake_generate(model, messages, stop=None, run_manager=None, **kwargs):
+            return "transport accepted"
+
+        with patch.object(ChatOpenAI, "_generate", fake_generate):
+            result = model._generate([
+                HumanMessage(content=[
+                    {"type": "text", "text": "Describe this."},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,X"}},
+                ])
+            ])
+        self.assertEqual("transport accepted", result)
+        self.assertEqual(
+            self.capability.UNKNOWN,
+            self.capability.get_capability("http://test.local/v1", "test-model"),
+        )
 
     def test_react_boundary_publishes_original_without_sensor_work(self) -> None:
         source = self._image()
@@ -277,6 +300,43 @@ class VisionCompatibilityTests(unittest.TestCase):
         self.assertNotIn("VISUAL", empty.upper())
         self.assertEqual([], self.ri._PENDING_IMAGES)
 
+    def test_unknown_probe_text_only_uses_full_ocr_without_publication(self) -> None:
+        source = self._image()
+        ocr_calls: list[str] = []
+
+        def fake_ocr(path: str) -> list[dict]:
+            ocr_calls.append(path)
+            return [{"text": "VISION 742", "x": 0.1, "y": 0.1, "w": 0.4, "h": 0.1}]
+
+        def text_only_probe():
+            self.capability.mark_text_only()
+            return self.capability.TEXT_ONLY
+
+        with self._read_patches(
+            source,
+            fake_ocr,
+            encode=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("encoded")),
+            probe=text_only_probe,
+        ):
+            result = self.ri.read_image.invoke({"source": source})
+        self.assertIn("VISION 742", result)
+        self.assertEqual(1, len(ocr_calls))
+        self.assertEqual([], self.ri._PENDING_IMAGES)
+        self.assertEqual([], self.ri._ACTIVE_TURN_IMAGES)
+
+    def test_unknown_probe_vision_keeps_original_direct_first_and_no_ocr(self) -> None:
+        source = self._image()
+        ocr_calls: list[str] = []
+        with self._read_patches(
+            source,
+            lambda path: ocr_calls.append(path) or [{"text": "must not run"}],
+            probe=lambda: self.capability.mark_vision(),
+        ):
+            result = self.ri.read_image.invoke({"source": source})
+        self.assertIn("original image queued", result)
+        self.assertEqual([], ocr_calls)
+        self.assertEqual(1, len(self.ri._PENDING_IMAGES))
+
     def test_text_only_screen_ocr_pins_one_snapshot_for_the_turn(self) -> None:
         source = self._image()
         captured_paths: list[str] = []
@@ -311,6 +371,7 @@ class VisionCompatibilityTests(unittest.TestCase):
             _exif_normalize=lambda path: path,
             _encode_frame_data_url=lambda *_args, **_kwargs: "data:image/png;base64,ORIGINAL",
             _ocr_layout=lambda _path: [],
+            probe_vision_capability=lambda: self.capability.mark_vision(),
             phase=lambda *_args, **_kwargs: None,
             progress=lambda *_args, **_kwargs: None,
         ):
@@ -376,20 +437,94 @@ class VisionCompatibilityTests(unittest.TestCase):
         captured = {}
 
         class FakeClient:
-            def invoke(self, message):
-                captured["message"] = message
-                return "OK"
+            def invoke(self, messages):
+                captured["messages"] = messages
+                return "VISION 742"
 
         with patch.object(self.llm, "build_llm", return_value=FakeClient()) as build:
             state = self.capability.probe_vision_capability("http://probe.local/v1", "probe-model")
         self.assertEqual(self.capability.VISION, state)
         kwargs = build.call_args.kwargs
         self.assertFalse(kwargs["vision_fallback"])
-        self.assertEqual(1, kwargs["max_tokens"])
+        self.assertEqual(8, kwargs["max_tokens"])
         self.assertEqual(5.0, kwargs["timeout"])
-        content = captured["message"].content
+        messages = captured["messages"]
+        self.assertIsInstance(messages, list)
+        self.assertEqual(1, len(messages))
+        self.assertIsInstance(messages[0], HumanMessage)
+        content = messages[0].content
         self.assertEqual("image_url", content[1]["type"])
-        self.assertLessEqual(len(content[1]["image_url"]["url"]), 200)
+        self.assertLessEqual(len(content[1]["image_url"]["url"]), 20000)
+        self.assertNotIn(self.capability._PROBE_MARKER, content[0]["text"])
+        self.assertIn("NO_IMAGE_ACCESS", content[0]["text"])
+
+    def test_probe_list_shape_preserves_unsupported_vs_inconclusive_states(self) -> None:
+        captured: list[list[HumanMessage]] = []
+
+        class FakeClient:
+            def __init__(self, error=None):
+                self.error = error
+
+            def invoke(self, messages):
+                captured.append(messages)
+                if self.error is not None:
+                    raise self.error
+                return "OK"
+
+        with patch.object(
+            self.llm,
+            "build_llm",
+            side_effect=[
+                FakeClient(UnsupportedImageError()),
+                FakeClient(TimeoutError("probe timed out")),
+            ],
+        ) as build:
+            unsupported = self.capability.probe_vision_capability(
+                "http://probe-unsupported.local/v1", "probe-model"
+            )
+            inconclusive = self.capability.probe_vision_capability(
+                "http://probe-inconclusive.local/v1", "probe-model"
+            )
+
+        self.assertEqual(self.capability.TEXT_ONLY, unsupported)
+        self.assertEqual(self.capability.UNKNOWN, inconclusive)
+        self.assertEqual(2, build.call_count)
+        self.assertEqual(2, len(captured))
+        for messages in captured:
+            self.assertIsInstance(messages, list)
+            self.assertEqual(1, len(messages))
+            self.assertIsInstance(messages[0], HumanMessage)
+
+    def test_probe_semantic_proof_distinguishes_marker_refusal_and_ambiguity(self) -> None:
+        class FakeClient:
+            def __init__(self, response):
+                self.response = response
+
+            def invoke(self, _messages):
+                return self.response
+
+        with patch.object(
+            self.llm,
+            "build_llm",
+            side_effect=[
+                FakeClient("VISION 742"),
+                FakeClient("NO_IMAGE_ACCESS"),
+                FakeClient("I am not sure what is shown."),
+            ],
+        ):
+            proven = self.capability.probe_vision_capability("http://semantic-1/v1", "model")
+            refused = self.capability.probe_vision_capability("http://semantic-2/v1", "model")
+            ambiguous = self.capability.probe_vision_capability("http://semantic-3/v1", "model")
+        self.assertEqual(self.capability.VISION, proven)
+        self.assertEqual(self.capability.TEXT_ONLY, refused)
+        self.assertEqual(self.capability.UNKNOWN, ambiguous)
+
+        self.assertEqual(
+            self.capability.TEXT_ONLY,
+            self.capability._semantic_probe_result(
+                "I cannot view or analyze images directly."
+            ),
+        )
 
     def test_capability_cache_is_keyed_by_endpoint_and_model(self) -> None:
         self.capability.mark_text_only("http://one/v1", "model-a")

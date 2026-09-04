@@ -24,13 +24,13 @@ Capability = Literal["unknown", "vision", "text_only"]
 _CACHE: dict[tuple[str, str], Capability] = {}
 _CACHE_LOCK = threading.RLock()
 _PROBE_LOCK = threading.Lock()
+_PROBE_ATTEMPTED: set[tuple[str, str]] = set()
 
-# A valid, minimal PNG keeps the probe independent from user files and desktop
-# state.  It is sent only by probe_vision_capability(), never by computer itself.
-_PROBE_IMAGE_URL = (
-    "data:image/png;base64,"
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-)
+# The marker is deliberately absent from the probe prompt. A response containing
+# it is semantic evidence that the model actually read the pixels, not merely
+# that the OpenAI-compatible endpoint accepted an image-shaped payload.
+_PROBE_MARKER = "VISION 742"
+_PROBE_IMAGE_URL = ""
 
 _UNSUPPORTED_IMAGE_RE = re.compile(
     r"(?:"
@@ -42,6 +42,19 @@ _UNSUPPORTED_IMAGE_RE = re.compile(
     r"(?:image(?:_url)?|multimodal|vision|pixel)"
     r"|\btext[- ]only\b[^\n]{0,120}(?:image|multimodal|vision)"
     r"|(?:image|multimodal|vision)[^\n]{0,120}\btext[- ]only\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_NO_VISION_RESPONSE_RE = re.compile(
+    r"(?:"
+    r"\bno[_ -]?image[_ -]?access\b"
+    r"|"
+    r"\b(?:cannot|can't|can\s+not|unable\s+to|not\s+able\s+to)\b[^\n]{0,100}"
+    r"\b(?:view|see|look\s+at|analy[sz]e|interpret|access|understand)\b[^\n]{0,100}"
+    r"\b(?:image|images|picture|pictures|photo|photos|visual|pixel|pixels)\b"
+    r"|\b(?:do\s+not|don't|does\s+not|doesn't)\s+have\b[^\n]{0,80}"
+    r"\b(?:vision|visual\s+capabilit(?:y|ies)|image\s+access)\b"
     r")",
     re.IGNORECASE,
 )
@@ -81,6 +94,80 @@ def reset_for_tests() -> None:
     """Clear only the in-memory cache; intended for deterministic tests."""
     with _CACHE_LOCK:
         _CACHE.clear()
+        _PROBE_ATTEMPTED.clear()
+
+
+def _build_probe_image_url() -> str:
+    """Build a small high-contrast marker image without touching user data."""
+    global _PROBE_IMAGE_URL
+    if _PROBE_IMAGE_URL:
+        return _PROBE_IMAGE_URL
+
+    import base64
+    from io import BytesIO
+    from pathlib import Path
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = None
+    for candidate in (
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ):
+        if Path(candidate).is_file():
+            font = ImageFont.truetype(candidate, 48)
+            break
+
+    if font is not None:
+        image = Image.new("RGB", (420, 128), "white")
+        draw = ImageDraw.Draw(image)
+        bounds = draw.textbbox((0, 0), _PROBE_MARKER, font=font, stroke_width=1)
+        x = (image.width - (bounds[2] - bounds[0])) // 2
+        y = (image.height - (bounds[3] - bounds[1])) // 2 - bounds[1]
+        draw.rectangle((4, 4, image.width - 5, image.height - 5), outline="black", width=4)
+        draw.text((x, y), _PROBE_MARKER, fill="black", font=font, stroke_width=1)
+    else:
+        # Pillow's fallback font is rendered large so minimal test hosts still
+        # get a useful marker without a system TrueType font.
+        small = Image.new("RGB", (96, 18), "white")
+        ImageDraw.Draw(small).text((2, 2), _PROBE_MARKER, fill="black")
+        image = small.resize((384, 108), Image.Resampling.NEAREST)
+
+    encoded = BytesIO()
+    image.save(encoded, format="PNG", optimize=True)
+    _PROBE_IMAGE_URL = "data:image/png;base64," + base64.b64encode(
+        encoded.getvalue()
+    ).decode("ascii")
+    return _PROBE_IMAGE_URL
+
+
+def _response_text(response: object) -> str:
+    """Extract textual content from LangChain/OpenAI response shapes."""
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _semantic_probe_result(response: object) -> Capability:
+    """Classify only a marker proof or an explicit no-vision refusal."""
+    text = _response_text(response)
+    compact = re.sub(r"[^a-z0-9]+", "", text.casefold())
+    expected = re.sub(r"[^a-z0-9]+", "", _PROBE_MARKER.casefold())
+    if expected in compact:
+        return VISION
+    if _NO_VISION_RESPONSE_RE.search(text):
+        return TEXT_ONLY
+    return UNKNOWN
 
 
 def _exception_text(error: BaseException) -> str:
@@ -160,21 +247,24 @@ def probe_vision_capability(
     key = capability_key(endpoint, model)
     with _CACHE_LOCK:
         cached = _CACHE.get(key, UNKNOWN)
-    if cached != UNKNOWN:
+        attempted = key in _PROBE_ATTEMPTED
+    if cached != UNKNOWN or attempted:
         return cached
 
     with _PROBE_LOCK:
         with _CACHE_LOCK:
             cached = _CACHE.get(key, UNKNOWN)
-        if cached != UNKNOWN:
-            return cached
+            attempted = key in _PROBE_ATTEMPTED
+            if cached != UNKNOWN or attempted:
+                return cached
+            _PROBE_ATTEMPTED.add(key)
         try:
             from langchain_core.messages import HumanMessage
             from llm import build_llm
 
             overrides = {
                 "vision_fallback": False,
-                "max_tokens": 1,
+                "max_tokens": 8,
                 "temperature": 0,
                 "streaming": False,
                 "timeout": timeout,
@@ -186,12 +276,22 @@ def probe_vision_capability(
             if model is not None:
                 overrides["model"] = model
             client = build_llm(**overrides)
-            client.invoke(HumanMessage(content=[
-                {"type": "text", "text": "Reply OK only."},
-                {"type": "image_url", "image_url": {"url": _PROBE_IMAGE_URL}},
-            ]))
+            response = client.invoke([HumanMessage(content=[
+                {
+                    "type": "text",
+                    "text": "Read the visible alphanumeric marker from this image. "
+                    "Reply with only the marker, exactly as seen. "
+                    "If you cannot inspect image pixels, reply exactly NO_IMAGE_ACCESS.",
+                },
+                {"type": "image_url", "image_url": {"url": _build_probe_image_url()}},
+            ])])
         except Exception as error:
             if is_unsupported_image_error(error):
                 return mark_text_only(*key)
             return UNKNOWN
-        return mark_vision(*key)
+        semantic = _semantic_probe_result(response)
+        if semantic == VISION:
+            return mark_vision(*key)
+        if semantic == TEXT_ONLY:
+            return mark_text_only(*key)
+        return UNKNOWN

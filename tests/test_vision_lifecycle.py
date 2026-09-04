@@ -26,6 +26,12 @@ if str(ROOT) not in sys.path:
 
 def _read_image_regression() -> None:
     ri = importlib.import_module("tools.read_image")
+    capability = importlib.import_module("tools._vision_capability")
+    capability.reset_for_tests()
+    # This suite exercises the vision publication/lifecycle contract, not the
+    # live model capability probe. Keep it deterministic and server-free even
+    # when the repository default points at a text-only validation model.
+    capability.mark_vision()
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fixture:
         image_path = Path(fixture.name)
     Image.new("RGB", (48, 32), (20, 40, 60)).save(image_path)
@@ -53,6 +59,7 @@ def _read_image_regression() -> None:
         "_reconstruct_table": lambda _boxes: None,
         "_reconstruct_ranked_columns": lambda _boxes: None,
         "_looks_like_range_chart": lambda _boxes: False,
+        "probe_vision_capability": lambda: capability.VISION,
         "_zoom_region_hint": lambda _boxes: "",
         "phase": lambda *_args, **_kwargs: None,
         "progress": lambda *_args, **_kwargs: None,
@@ -108,6 +115,7 @@ def _read_image_regression() -> None:
     finally:
         ri.begin_image_turn()
         ri.reset_read_guards()
+        capability.reset_for_tests()
         image_path.unlink(missing_ok=True)
 
 

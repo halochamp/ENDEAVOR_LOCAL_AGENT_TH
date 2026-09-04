@@ -154,10 +154,6 @@ class VisionFallbackChatOpenAI(ChatOpenAI):
                 run_manager=run_manager,
                 **kwargs,
             )
-        if has_images:
-            from tools._vision_capability import mark_vision
-
-            mark_vision(*self._capability_args())
         return result
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
@@ -178,10 +174,6 @@ class VisionFallbackChatOpenAI(ChatOpenAI):
                 run_manager=run_manager,
                 **kwargs,
             )
-        if has_images:
-            from tools._vision_capability import mark_vision
-
-            mark_vision(*self._capability_args())
         return result
 
     def _stream(self, *args: Any, **kwargs: Any) -> Iterator[Any]:
@@ -202,11 +194,6 @@ class VisionFallbackChatOpenAI(ChatOpenAI):
             for chunk in super()._stream(*retry_args, **kwargs):
                 yield chunk
             return
-        if has_images:
-            from tools._vision_capability import mark_vision
-
-            mark_vision(*self._capability_args())
-
     async def _astream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
         messages = args[0] if args else kwargs.get("messages", [])
         has_images = _has_image_blocks(messages)
@@ -225,11 +212,6 @@ class VisionFallbackChatOpenAI(ChatOpenAI):
             async for chunk in super()._astream(*retry_args, **kwargs):
                 yield chunk
             return
-        if has_images:
-            from tools._vision_capability import mark_vision
-
-            mark_vision(*self._capability_args())
-
 
 def build_llm(**overrides) -> ChatOpenAI:
     """สร้าง ChatOpenAI client สำหรับ mlx_vlm.server (OpenAI-compatible).

@@ -1,7 +1,9 @@
 # ENDEAVOR_LOCAL_AGENT_TH
 
 **Local AI Agent ที่ออกแบบให้รองรับภาษาไทยโดยเฉพาะ ที่รันบนเครื่องของคุณเอง 100%**
-ไม่มี API key, ไม่มีค่า token รายเดือน, ไม่มีข้อมูลหลุดออกไปนอกเครื่อง — ขับเคลื่อนด้วย **Qwen3.6-35B** ผ่าน **MLX** บน Apple Silicon และ orchestrate ด้วย **LangGraph ReAct Agent**
+ไม่มี API key, ไม่มีค่า token รายเดือน, ไม่มีข้อมูลหลุดออกไปนอกเครื่อง — รองรับทั้ง **Qwen3.6-35B-A3B (MoE)** สำหรับคุณภาพสูง และ **Qwen3-14B** สำหรับเครื่องที่มี RAM น้อยกว่า ผ่าน **MLX** บน Apple Silicon และ orchestrate ด้วย **LangGraph ReAct Agent**
+
+เป้าหมายของโปรเจกต์คือทำให้ Local AI Agent ที่ใช้งานได้จริงเข้าถึงคนทั่วไปได้มากขึ้น: ถ้ามีเครื่องแรงสามารถใช้ 35B MoE เป็นรุ่นหลัก แต่ถ้ามี Mac ที่ RAM น้อยกว่านั้นก็สามารถเริ่มต้นด้วย 14B ได้ โดยยังคงความสามารถด้านภาษาไทย, reasoning และ tool calling หลัก ๆ ของ Agent ไว้
 
 ---
 
@@ -158,9 +160,10 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 - ต่างจาก 2 แบบข้างบนตรงที่**ไม่ต้องเปิด MLX server เองก่อน** — แอปจะ spawn `mlx_vlm.server` และ `agent_server.py` ให้อัตโนมัติตอนเปิด (เห็น log ความคืบหน้าบนหน้าจอ loading), คอย monitor และ restart ให้เองถ้า MLX server ค้าง/ตาย
 - ปิดแอป = ปิด MLX server + agent_server.py ให้อัตโนมัติด้วย (ไม่ต้องไป kill port เอง)
 - ใช้ conda env `mlx` เดียวกับที่ตั้งค่าไว้ตอน Setup ด้านล่าง (auto-detect ผ่าน `conda info`, override ได้ด้วย `MLX_CONDA_ENV`/`MLX_PYTHON`)
-- **RAM < 48GB:** อ่าน env `V2_MODEL`/`MLX_BASE_URL` เหมือนกับ `config.py` เป๊ะ (ต้องตั้งทั้งคู่พร้อมกัน ไม่งั้นยังโหลด 35B ตัวเต็มเหมือนเดิม) — เครื่อง RAM ไม่พอแนะนำ **Qwen3-14B** เป็นขั้นต่ำสำหรับ text/tool calling และ `read_image` จะใช้ full OCR fallback ได้ แต่ `computer` กับการเข้าใจ pixels โดยตรงต้องใช้โมเดล vision-capable เช่น
+- **เครื่องที่ RAM ไม่ถึงระดับเหมาะสมสำหรับ 35B:** อ่าน env `V2_MODEL`/`MLX_BASE_URL` เหมือนกับ `config.py` เป๊ะ (ต้องตั้งทั้งคู่พร้อมกัน ไม่งั้นยังใช้ 35B ซึ่งเป็น default) — แนะนำ **Qwen3-14B-MLX-4bit** เป็นรุ่นเริ่มต้นสำหรับ text/tool calling โดยประมาณ **24GB unified memory เป็นขั้นต่ำเชิงปฏิบัติ และ 32GB ขึ้นไปแนะนำ** เพื่อเหลือพื้นที่ให้ macOS, KV cache, context และ tools อื่น ๆ; 16GB ไม่แนะนำสำหรับการใช้งาน Agent ต่อเนื่อง แม้บาง workload อาจโหลดโมเดลได้ก็ตาม
+- Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` จะใช้ full OCR fallback อัตโนมัติ ส่วน `computer` และการเข้าใจ pixels โดยตรงต้องใช้โมเดล vision-capable
   ```bash
-  export V2_MODEL="mlx-community/Qwen3-14B-4bit" MLX_BASE_URL="http://localhost:8888/v1"
+  export V2_MODEL="Qwen/Qwen3-14B-MLX-4bit" MLX_BASE_URL="http://localhost:8888/v1"
   npm start
   ```
   (ตั้งก่อนเปิด `agent_start.command`/`npm start` ในเทอร์มินัลเดียวกัน หรือ export ถาวรไว้ใน `~/.zshrc`)
@@ -238,8 +241,8 @@ START → react (agent คุมเองทั้งหมด) → END
 
 | Layer | เทคโนโลยี | หน้าที่ |
 |---|---|---|
-| **LLM Runtime** | [MLX](https://github.com/ml-explore/mlx) | รัน Qwen3.6-35B แบบ quantized (4-bit) บน Apple Silicon GPU ผ่าน Metal |
-| **Model** | `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | reasoning + tool calling — สลับเป็นโมเดลเล็กกว่าได้ผ่าน `.env` |
+| **LLM Runtime** | [MLX](https://github.com/ml-explore/mlx) | รัน Qwen แบบ quantized (4-bit) บน Apple Silicon GPU ผ่าน Metal |
+| **Model** | `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE, default) หรือ `Qwen/Qwen3-14B-MLX-4bit` | 35B เน้นคุณภาพสูง; 14B ลดข้อกำหนดด้าน RAM และช่วยให้คนทั่วไปเข้าถึง Local Agent ได้ง่ายขึ้น |
 | **Agent Framework** | [LangGraph](https://github.com/langchain-ai/langgraph) `create_react_agent` | ReAct loop, state graph, checkpointing |
 | **LLM Client** | LangChain Core + `langchain-openai` | คุยกับ `mlx_vlm.server` ผ่าน OpenAI-compatible API |
 | **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | WebSocket (real-time streaming) + REST endpoints |
@@ -398,14 +401,18 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 ## Requirements
 
 - macOS Apple Silicon (M1/M2/M3/M4/M5)
-- RAM ≥ 48 GB (สำหรับ 35B model)
+- **Qwen3-14B 4-bit:** unified memory ประมาณ **24GB ขั้นต่ำเชิงปฏิบัติ**, **32GB+ แนะนำ**
+- **Qwen3.6-35B-A3B 4-bit (default):** แนะนำ **48GB+**
+- ปริมาณ RAM ที่ใช้จริงขึ้นกับ context length, KV cache, tools และโปรแกรมอื่นที่เปิดพร้อมกัน ตัวเลขข้างต้นจึงเป็นแนวทางสำหรับการใช้งาน Agent ไม่ใช่เพียงการโหลด weights ให้สำเร็จ
 - Python 3.11 via conda (`mlx` env)
 - `mlx-vlm` installed (และติดตั้ง `mlx-lm` เป็น dependency ที่ server ใช้ร่วมกัน)
 - (optional) `computer` direct screenshot vision works without extra setup; System Settings → Privacy & Security → **Accessibility** access for the process running the agent adds richer element data — the tool tells you in its own output (`ax=permission_required`) if this is off, no crash either way
 
-> **หมายเหตุเรื่องโมเดล:** harness นี้ออกแบบและ tune มาเพื่อ **Qwen3.6-35B-A3B (MoE)** ซึ่งเป็น production model ที่ใช้อยู่ — ค่า default ทั้งหมด (prompt, thinking budget, repetition penalty, tool-calling behavior) คาดหวังความสามารถระดับนี้
+> **หมายเหตุเรื่องโมเดล:** ค่า default และ production profile ของโปรเจกต์คือ **Qwen3.6-35B-A3B (MoE)** ซึ่งให้ headroom ด้าน reasoning, planning และ tool calling สูงกว่า และเป็นรุ่นที่แนะนำเมื่อเครื่องมี RAM เพียงพอ
 >
-> หากเครื่องไม่พอ (RAM < 48GB) และต้องการรันโมเดลเล็กกว่า แนะนำ **Qwen3-14B** เป็นขั้นต่ำสำหรับ text/tool calling — `read_image` ยังใช้งานได้ด้วย full OCR fallback แต่ `computer` และการเข้าใจ pixels โดยตรงต้องใช้ vision-capable model; โมเดลที่เล็กกว่านี้ (เช่น 7B/8B ลงไป) มีโอกาสสูงที่จะ tool-call ผิด, หลุด format, หรือตอบไม่ตรงคำถามบ่อยขึ้น ต้อง tune prompt/parameter เพิ่มเอง
+> สำหรับผู้ใช้ที่ต้องการเริ่มต้นบนเครื่องที่เข้าถึงง่ายกว่า โปรเจกต์รองรับ **Qwen3-14B-MLX-4bit** ด้วย โดยจากการทดสอบ Agent สามารถทำงานด้าน text/tool calling หลักได้ครบ เหมาะกับ Mac unified memory **24GB เป็นขั้นต่ำเชิงปฏิบัติ และ 32GB+ แนะนำ**; `read_image` ใช้ full OCR fallback สำหรับ text-only model และ `computer` จะปิดอย่างชัดเจนเมื่อโมเดลไม่รองรับ vision
+>
+> โมเดลที่เล็กกว่านี้ (เช่น 7B/8B ลงไป) ไม่ใช่ target ที่แนะนำของโปรเจกต์ เพราะมีโอกาส tool-call ผิด, หลุด format หรือ reasoning ไม่พอสำหรับ workflow หลายขั้นมากขึ้น
 >
 > สลับโมเดลทำได้ผ่าน `config.py` หรือ env var `V2_MODEL` + `MLX_BASE_URL` (ดูหัวข้อ [Configuration](#configuration-env))
 
