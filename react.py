@@ -43,7 +43,9 @@ _DIRECT_VISION_OVERLAY = (
     "\n\n[PUBLIC DIRECT-VISION CONTRACT]\n"
     "- Route explicit image-understanding requests to read_image and explicit screen/application actions to computer.\n"
     "- read_image is progressive direct vision: a source-only call exposes the whole original image to the main VLM first, without an automatic OCR/classifier/table/QR pass.  Only after that same source is visible may you request detail=text, detail=chart, detail=slide, find, or region/zoom assistance.  Do not pass a semantic question or prompt argument; the conversation supplies semantics.\n"
+    "- If the configured backend rejects image input, read_image automatically switches to full OCR and returns a clearly marked [TEXT-ONLY IMAGE FALLBACK].  Use that OCR in the same turn without asking the user to retry, and never invent visual facts that OCR does not contain.\n"
     "- computer is an independent direct-vision/action tool.  It owns its current screenshot and observation lifecycle, while read_image owns its own image lifecycle.  Their queues, guards, and snapshots are never shared; the main model receives whichever pixels each tool publishes.\n"
+    "- computer requires a vision-capable model.  If it returns [unsupported] because the current model is text-only, tell the user clearly and do not substitute OCR or retry desktop actions.\n"
 )
 
 # Shared per-turn context stats — updated by graph.py before each react_node invocation

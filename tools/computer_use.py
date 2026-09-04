@@ -32,6 +32,7 @@ from . import _mac_input as _backend
 from ._ocr import read_layout as _ocr_layout
 from .read_file import _sample_coverage
 from ._screen_state import ScreenElement, ScreenSnapshot, build_snapshot, format_snapshot
+from ._vision_capability import TEXT_ONLY, UNKNOWN, VISION, get_capability, probe_vision_capability
 from tools._progress import progress as _progress, phase as _phase
 
 _ACTION_ATTEMPTS = [0]
@@ -134,6 +135,11 @@ def active_computer_turn_images() -> list[str]:
 
 def end_computer_turn() -> None:
     """Release computer-only transient pixels/screenshot at the outer-turn boundary."""
+    _clear_computer_vision_state(remove_snapshot=True)
+
+
+def invalidate_computer_images() -> None:
+    """Drop transient computer pixels after a model rejects image input."""
     _clear_computer_vision_state(remove_snapshot=True)
 
 
@@ -1152,6 +1158,27 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
         _ACTION_LOCK.release()
 
 
+def _vision_capability_gate() -> str | None:
+    """Require proven image support before any computer screenshot/action path."""
+    try:
+        capability = get_capability()
+        if capability == UNKNOWN:
+            capability = probe_vision_capability()
+    except Exception:
+        capability = UNKNOWN
+    if capability == VISION:
+        return None
+    if capability == TEXT_ONLY:
+        return (
+            "[unsupported] computer requires a vision-capable model; current model "
+            "does not support image input."
+        )
+    return (
+        "[error] computer vision capability check was inconclusive; no desktop "
+        "action or screenshot was attempted."
+    )
+
+
 @tool
 def computer(action: str, target: str = "", text: str = "", coord: str = "", direction: str = "", amount: int = 3, near: str = "", element_id: str = "", observation_id: str = "", question: str = "", expect: str = "", modifiers: str = "", app: str = "") -> str:
     """Control a native Mac app one guarded action at a time. ENDEAVOR_LOCAL_AGENT_TH sees the newest screen image
@@ -1190,7 +1217,14 @@ def computer(action: str, target: str = "", text: str = "", coord: str = "", dir
     ✅ submit typed URL → key(text="enter")
     ❌ site requested → open_app(app="Google Chrome")
     ✅ site requested → open_url(target="https://www.youtube.com", app="Google Chrome")
+
+    A text-only model cannot safely use this tool.  The wrapper performs a tiny,
+    non-mutating capability probe when needed and refuses before any screenshot
+    or desktop action if image support is absent or inconclusive.
     """
+    capability_error = _vision_capability_gate()
+    if capability_error:
+        return capability_error
     from tools._call_guard import first_call_this_turn
     first = first_call_this_turn("computer")
     result = _computer_impl(

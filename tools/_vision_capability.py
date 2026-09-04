@@ -1,0 +1,197 @@
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
+
+"""Process-local capability detection for the configured image model.
+
+The cache is deliberately ephemeral and keyed by the effective endpoint/model
+pair.  It is shared by the read-image fallback and the computer-use safety gate,
+but it never persists a capability decision to the workspace or to a file.
+"""
+from __future__ import annotations
+
+import json
+import re
+import threading
+from typing import Literal
+
+
+UNKNOWN = "unknown"
+VISION = "vision"
+TEXT_ONLY = "text_only"
+Capability = Literal["unknown", "vision", "text_only"]
+
+_CACHE: dict[tuple[str, str], Capability] = {}
+_CACHE_LOCK = threading.RLock()
+_PROBE_LOCK = threading.Lock()
+
+# A valid, minimal PNG keeps the probe independent from user files and desktop
+# state.  It is sent only by probe_vision_capability(), never by computer itself.
+_PROBE_IMAGE_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+_UNSUPPORTED_IMAGE_RE = re.compile(
+    r"(?:"
+    r"(?:image(?:_url)?|multimodal|vision|pixel)[^\n]{0,120}"
+    r"(?:unsupported|not[\s_-]+supported|not[\s_-]+accepted|does[\s_-]+not[\s_-]+support|"
+    r"doesn't[\s_-]+support|isn't[\s_-]+supported|only[\s_-]+supports[\s_-]+text)"
+    r"|(?:unsupported|not[\s_-]+supported|not[\s_-]+accepted|does[\s_-]+not[\s_-]+support|"
+    r"doesn't[\s_-]+support|isn't[\s_-]+supported|only[\s_-]+supports[\s_-]+text)[^\n]{0,120}"
+    r"(?:image(?:_url)?|multimodal|vision|pixel)"
+    r"|\btext[- ]only\b[^\n]{0,120}(?:image|multimodal|vision)"
+    r"|(?:image|multimodal|vision)[^\n]{0,120}\btext[- ]only\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def capability_key(endpoint: str | None = None, model: str | None = None) -> tuple[str, str]:
+    """Return the normalized process-local key for an endpoint/model pair."""
+    if endpoint is None or model is None:
+        from config import MLX_BASE_URL, MODEL
+
+        endpoint = MLX_BASE_URL if endpoint is None else endpoint
+        model = MODEL if model is None else model
+    return (str(endpoint).strip().rstrip("/"), str(model).strip())
+
+
+def get_capability(endpoint: str | None = None, model: str | None = None) -> Capability:
+    key = capability_key(endpoint, model)
+    with _CACHE_LOCK:
+        return _CACHE.get(key, UNKNOWN)
+
+
+def mark_vision(endpoint: str | None = None, model: str | None = None) -> Capability:
+    key = capability_key(endpoint, model)
+    with _CACHE_LOCK:
+        _CACHE[key] = VISION
+    return VISION
+
+
+def mark_text_only(endpoint: str | None = None, model: str | None = None) -> Capability:
+    key = capability_key(endpoint, model)
+    with _CACHE_LOCK:
+        _CACHE[key] = TEXT_ONLY
+    return TEXT_ONLY
+
+
+def reset_for_tests() -> None:
+    """Clear only the in-memory cache; intended for deterministic tests."""
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
+
+def _exception_text(error: BaseException) -> str:
+    parts = [str(error)]
+    for attr in ("message", "body"):
+        value = getattr(error, attr, None)
+        if value:
+            parts.append(json.dumps(value, ensure_ascii=False, default=str)
+                         if isinstance(value, (dict, list)) else str(value))
+    response = getattr(error, "response", None)
+    if response is not None:
+        for attr in ("text", "reason"):
+            value = getattr(response, attr, None)
+            if value:
+                parts.append(str(value))
+        value = getattr(response, "_content", None)
+        if value:
+            parts.append(value.decode(errors="replace") if isinstance(value, bytes) else str(value))
+    return " ".join(parts).casefold()
+
+
+def _status_code(error: BaseException) -> int | None:
+    candidates = [getattr(error, "status_code", None)]
+    response = getattr(error, "response", None)
+    if response is not None:
+        candidates.extend((getattr(response, "status_code", None), getattr(response, "status", None)))
+    for value in candidates:
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def is_unsupported_image_error(error: BaseException) -> bool:
+    """Conservatively recognize a backend's explicit text-only/image rejection.
+
+    Authentication, transport, timeout, server, context-window, malformed-tool,
+    and generic bad-request errors intentionally return False.  A status code is
+    helpful but not required when an exception carries an unambiguous backend
+    message (as several OpenAI-compatible servers do).
+    """
+    text = _exception_text(error)
+    error_type = type(error).__name__.casefold()
+    status = _status_code(error)
+
+    if any(token in error_type for token in ("timeout", "connection", "connecterror", "readerror")):
+        return False
+    if re.search(r"\b(?:timed?\s*out|timeout|connection\s+(?:refused|reset|error)|network\s+error)\b", text):
+        return False
+    if re.search(r"context[^\n]{0,50}(?:length|window|limit)|(?:maximum|max)[^\n]{0,20}context", text):
+        return False
+    if "tool" in text and re.search(r"(?:tool|function)[^\n]{0,80}(?:invalid|malformed|schema|argument|json|call)", text):
+        return False
+    if status is not None and status not in {400, 415, 422}:
+        return False
+    if status is None:
+        textual_status = re.search(r"\b([1-5]\d{2})\b", text)
+        if textual_status and int(textual_status.group(1)) not in {400, 415, 422}:
+            return False
+    return bool(_UNSUPPORTED_IMAGE_RE.search(text))
+
+
+def probe_vision_capability(
+    endpoint: str | None = None,
+    model: str | None = None,
+    *,
+    timeout: float = 5.0,
+) -> Capability:
+    """Send one tiny, non-mutating image request when capability is unknown.
+
+    The probe disables the read-image fallback so an unsupported response cannot
+    be mistaken for a successful text-only retry.  Inconclusive failures remain
+    UNKNOWN and are therefore fail-closed by computer_use.py.
+    """
+    key = capability_key(endpoint, model)
+    with _CACHE_LOCK:
+        cached = _CACHE.get(key, UNKNOWN)
+    if cached != UNKNOWN:
+        return cached
+
+    with _PROBE_LOCK:
+        with _CACHE_LOCK:
+            cached = _CACHE.get(key, UNKNOWN)
+        if cached != UNKNOWN:
+            return cached
+        try:
+            from langchain_core.messages import HumanMessage
+            from llm import build_llm
+
+            overrides = {
+                "vision_fallback": False,
+                "max_tokens": 1,
+                "temperature": 0,
+                "streaming": False,
+                "timeout": timeout,
+                "max_retries": 0,
+                "extra_body": {"enable_thinking": False},
+            }
+            if endpoint is not None:
+                overrides["base_url"] = endpoint
+            if model is not None:
+                overrides["model"] = model
+            client = build_llm(**overrides)
+            client.invoke(HumanMessage(content=[
+                {"type": "text", "text": "Reply OK only."},
+                {"type": "image_url", "image_url": {"url": _PROBE_IMAGE_URL}},
+            ]))
+        except Exception as error:
+            if is_unsupported_image_error(error):
+                return mark_text_only(*key)
+            return UNKNOWN
+        return mark_vision(*key)

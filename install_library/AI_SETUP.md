@@ -160,8 +160,11 @@ where outputs land. See README.md "Security" section for the full read/write mod
 intentional (prevents `mlx_vlm.server` loading the wrong model silently). So set
 **both** `V2_MODEL` and `MLX_BASE_URL` (e.g. a different port) in `.env`, then start
 `python -m mlx_vlm.server --model <new model> --host 127.0.0.1 --port <new port>`. Minimum recommended:
-Qwen3-14B. **Never silently swap models for the user without telling them** — model
-choice affects tool-calling reliability.
+Qwen3-14B. In this simple TH setup it is a text-only model: normal tool calling and
+`read_image` full-OCR fallback remain available, while `computer` and true pixel
+understanding require a vision-capable model. **Never silently swap models for the
+user without telling them** — model choice affects tool-calling reliability and
+image capabilities.
 
 **Restarting / stopping servers** — if the agent seems stuck, offline, or the user
 wants a clean restart:
@@ -194,7 +197,7 @@ instead of re-reading the whole README:
 |---|---|
 | "ใช้งานยังไง" / how do I start | Run step 3 (MLX server) + step 4 (CLI or Web UI) above |
 | "model offline" / agent ขึ้น offline | Step 3 server not running or wrong port — check `curl http://localhost:8085/v1/models` |
-| "เปลี่ยนโมเดล" / change model | Edit **both** `V2_MODEL` + `MLX_BASE_URL` (different port) in `.env` — changing only `V2_MODEL` is ignored. Restart `mlx_vlm.server` with new `--model --host 127.0.0.1 --port`. Min: Qwen3-14B |
+| "เปลี่ยนโมเดล" / change model | Edit **both** `V2_MODEL` + `MLX_BASE_URL` (different port) in `.env` — changing only `V2_MODEL` is ignored. Restart `mlx_vlm.server` with new `--model --host 127.0.0.1 --port`. Min: Qwen3-14B for text/tool calling and `read_image` OCR fallback; use a vision-capable model for `computer` |
 | "port ถูกใช้อยู่" / port in use | `lsof -ti:8085 \| xargs kill -9` (MLX) or `:8765` (agent_server) |
 | "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
 | "ลืม conversation เก่า" / load old chat | `/history` in CLI, or just reopen the Web UI (loads from `logs/history.db`) |

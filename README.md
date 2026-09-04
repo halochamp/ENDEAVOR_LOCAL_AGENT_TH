@@ -144,7 +144,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 - แชทแบบ streaming token-by-token, รองรับ markdown, command autocomplete พิมพ์ `/` แล้วเลือกจาก dropdown
 - เมื่อเปิด skill mode (เช่น `/pdf_to_text`) ป้ายชื่อผู้ตอบในแชทจะเปลี่ยนเป็น `Agent | pdf_to_text` ให้เห็นชัดว่ากำลังอยู่ใน mode ไหน
 - **หยุดกลางคัน**: ปุ่ม ■ หยุด ระหว่าง agent กำลังทำงาน — ยกเลิก turn ที่รันอยู่ได้ทันที ไม่ต้องรอจบ
-- **แนบไฟล์/รูปภาพ**: ปุ่ม 📎 แนบไฟล์เข้ากับคำถามได้ — ไฟล์ถูกอัปโหลดเข้า `workspace/uploads/` แล้ว agent อ่านเองด้วย `read_file`/`read_image` ตามชนิดไฟล์ (รูปภาพส่งเข้า VLM โดยตรงก่อน; OCR อ่านข้อความ/ตาราง/QR เป็น sensor เสริมเมื่อเรียกใช้)
+- **แนบไฟล์/รูปภาพ**: ปุ่ม 📎 แนบไฟล์เข้ากับคำถามได้ — ไฟล์ถูกอัปโหลดเข้า `workspace/uploads/` แล้ว agent อ่านเองด้วย `read_file`/`read_image` ตามชนิดไฟล์ (โมเดล vision จะเห็นรูปโดยตรงก่อน; ถ้า backend/model เป็น text-only ระบบจะเปลี่ยนเป็น full OCR อัตโนมัติใน turn เดียว)
 
 ### 3. AGENT_UI — Electron Desktop App
 
@@ -158,7 +158,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 - ต่างจาก 2 แบบข้างบนตรงที่**ไม่ต้องเปิด MLX server เองก่อน** — แอปจะ spawn `mlx_vlm.server` และ `agent_server.py` ให้อัตโนมัติตอนเปิด (เห็น log ความคืบหน้าบนหน้าจอ loading), คอย monitor และ restart ให้เองถ้า MLX server ค้าง/ตาย
 - ปิดแอป = ปิด MLX server + agent_server.py ให้อัตโนมัติด้วย (ไม่ต้องไป kill port เอง)
 - ใช้ conda env `mlx` เดียวกับที่ตั้งค่าไว้ตอน Setup ด้านล่าง (auto-detect ผ่าน `conda info`, override ได้ด้วย `MLX_CONDA_ENV`/`MLX_PYTHON`)
-- **RAM < 48GB:** อ่าน env `V2_MODEL`/`MLX_BASE_URL` เหมือนกับ `config.py` เป๊ะ (ต้องตั้งทั้งคู่พร้อมกัน ไม่งั้นยังโหลด 35B ตัวเต็มเหมือนเดิม) — เครื่อง RAM ไม่พอแนะนำ **Qwen3-14B** เป็นขั้นต่ำ เช่น
+- **RAM < 48GB:** อ่าน env `V2_MODEL`/`MLX_BASE_URL` เหมือนกับ `config.py` เป๊ะ (ต้องตั้งทั้งคู่พร้อมกัน ไม่งั้นยังโหลด 35B ตัวเต็มเหมือนเดิม) — เครื่อง RAM ไม่พอแนะนำ **Qwen3-14B** เป็นขั้นต่ำสำหรับ text/tool calling และ `read_image` จะใช้ full OCR fallback ได้ แต่ `computer` กับการเข้าใจ pixels โดยตรงต้องใช้โมเดล vision-capable เช่น
   ```bash
   export V2_MODEL="mlx-community/Qwen3-14B-4bit" MLX_BASE_URL="http://localhost:8888/v1"
   npm start
@@ -251,7 +251,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | **Data Processing** | `pandas`, `numpy` | วิเคราะห์ข้อมูล CSV/Excel |
 | **Visualization** | `matplotlib` + Pillow | สร้างกราฟ พร้อมรองรับฟอนต์ไทย (Noto Sans Thai / Thonburi) |
 | **Document Parsing** | `markitdown[pdf,docx,xlsx,xls]` | แปลง PDF/Word/Excel → markdown ให้ agent อ่านได้ |
-| **Vision + OCR assist** | mlx-vlm + Apple Vision Framework (`pyobjc`) | ให้ VLM เห็น pixels โดยตรง; เรียก OCR/table/QR ช่วยอ่านข้อความเมื่อต้องการ — แม่นยำสูงสำหรับภาษาไทย |
+| **Vision + OCR assist** | mlx-vlm + Apple Vision Framework (`pyobjc`) | โมเดล vision เห็น pixels โดยตรง; เรียก OCR/table/QR ช่วยอ่านข้อความเมื่อต้องการ — ถ้า backend เป็น text-only `read_image` จะ fallback เป็น full OCR แต่ `computer` จะถูกปิด |
 | **Persistence** | SQLite (`langgraph.checkpoint.sqlite`) | เก็บ conversation history แบบ persistent |
 | **Config** | `python-dotenv` | โหลด `.env` อัตโนมัติ — ปรับ config ได้โดยไม่แก้ code |
 | **Sandboxing** | macOS `sandbox-exec` | จำกัด `bash` tool ให้เขียนไฟล์ได้เฉพาะใน workspace |
@@ -335,13 +335,13 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 
 | Tool | คำอธิบาย |
 |---|---|
-| `read_image` | progressive direct vision สำหรับไฟล์ local, URL และ `screen`: การเรียกครั้งแรกส่งภาพต้นฉบับทั้งภาพให้ main VLM โดยไม่ทำ OCR อัตโนมัติ; หลังจากเห็นภาพแล้วจึงเรียก `detail="text"` (OCR/table/QR), `detail="chart"`/`"slide"` หรือ `find`/`region+zoom` ได้ โดยไม่ส่งคำถาม semantic เข้า tool |
+| `read_image` | progressive direct vision สำหรับไฟล์ local, URL และ `screen`: การเรียกครั้งแรกส่งภาพต้นฉบับทั้งภาพให้ main VLM โดยไม่ทำ OCR อัตโนมัติ; ถ้า endpoint/model ปฏิเสธ image input ระบบจะ OCR ภาพต้นฉบับเต็มและใส่ `[TEXT-ONLY IMAGE FALLBACK]` ใน turn เดียว; หลังจากเห็นภาพแล้วจึงเรียก `detail="text"` (OCR/table/QR), `detail="chart"`/`"slide"` หรือ `find`/`region+zoom` ได้ โดยไม่ส่งคำถาม semantic เข้า tool |
 
 ### 🖱️ Computer Use
 
 | Tool | คำอธิบาย |
 |---|---|
-| `computer` | direct vision + guarded action บนหน้าจอจริงของเครื่อง ทีละ action — ส่ง screenshot ล่าสุดให้ main VLM พร้อม `[OBS]` Accessibility/OCR ช่วยอ้างอิง; เป็น tool/state owner แยกจาก `read_image`, มี lifecycle/guards/snapshot ของตัวเอง และยังจำกัด action ต่อ turn (เข้มขึ้นตอนไม่มีคนเฝ้าหน้าจอผ่าน `awake`'s `screen`) พร้อมปฏิเสธ action ที่ดูเหมือนลบ/ถอนการติดตั้ง/format เว้นแต่ user สั่งชัดเจน |
+| `computer` | direct vision + guarded action บนหน้าจอจริงของเครื่อง ทีละ action — ต้องใช้ vision-capable model; จะตรวจ capability แบบไม่แตะ desktop ก่อนเริ่ม และถ้าเป็น text-only จะคืน `[unsupported]` โดยไม่ถ่าย screenshot/กด/พิมพ์/เปิด/เลื่อน และไม่ใช้ OCR แทน; ส่ง screenshot ล่าสุดให้ main VLM พร้อม `[OBS]` Accessibility/OCR ช่วยอ้างอิง; เป็น tool/state owner แยกจาก `read_image` และยังจำกัด action ต่อ turn |
 
 ### 🧠 Memory
 
@@ -405,7 +405,7 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 
 > **หมายเหตุเรื่องโมเดล:** harness นี้ออกแบบและ tune มาเพื่อ **Qwen3.6-35B-A3B (MoE)** ซึ่งเป็น production model ที่ใช้อยู่ — ค่า default ทั้งหมด (prompt, thinking budget, repetition penalty, tool-calling behavior) คาดหวังความสามารถระดับนี้
 >
-> หากเครื่องไม่พอ (RAM < 48GB) และต้องการรันโมเดลเล็กกว่า แนะนำ **Qwen3-14B** เป็นขั้นต่ำที่ยังพอใช้งาน tool calling ได้สมเหตุสมผล — โมเดลที่เล็กกว่านี้ (เช่น 7B/8B ลงไป) มีโอกาสสูงที่จะ tool-call ผิด, หลุด format, หรือตอบไม่ตรงคำถามบ่อยขึ้น ต้อง tune prompt/parameter เพิ่มเอง
+> หากเครื่องไม่พอ (RAM < 48GB) และต้องการรันโมเดลเล็กกว่า แนะนำ **Qwen3-14B** เป็นขั้นต่ำสำหรับ text/tool calling — `read_image` ยังใช้งานได้ด้วย full OCR fallback แต่ `computer` และการเข้าใจ pixels โดยตรงต้องใช้ vision-capable model; โมเดลที่เล็กกว่านี้ (เช่น 7B/8B ลงไป) มีโอกาสสูงที่จะ tool-call ผิด, หลุด format, หรือตอบไม่ตรงคำถามบ่อยขึ้น ต้อง tune prompt/parameter เพิ่มเอง
 >
 > สลับโมเดลทำได้ผ่าน `config.py` หรือ env var `V2_MODEL` + `MLX_BASE_URL` (ดูหัวข้อ [Configuration](#configuration-env))
 
@@ -547,7 +547,7 @@ def my_tool(query: str) -> str:
 
 ### ใช้โมเดลอื่น
 
-⚠️ default ของ harness ทุกค่า (prompt, thinking budget, repetition penalty) tune สำหรับ **Qwen3.6-35B-A3B (MoE)** — เปลี่ยนโมเดลแล้วพฤติกรรม tool-calling อาจต่างไปและต้อง tune เพิ่มเอง ถ้า RAM ไม่พอสำหรับ 35B แนะนำ **Qwen3-14B** เป็นขั้นต่ำ:
+⚠️ default ของ harness ทุกค่า (prompt, thinking budget, repetition penalty) tune สำหรับ **Qwen3.6-35B-A3B (MoE)** — เปลี่ยนโมเดลแล้วพฤติกรรม tool-calling อาจต่างไปและต้อง tune เพิ่มเอง ถ้า RAM ไม่พอสำหรับ 35B แนะนำ **Qwen3-14B** เป็นขั้นต่ำสำหรับ text/tool calling และ `read_image` OCR fallback; `computer` กับ true pixel understanding ต้องใช้ vision-capable model:
 
 ```bash
 export V2_MODEL="mlx-community/Qwen3-14B-4bit"

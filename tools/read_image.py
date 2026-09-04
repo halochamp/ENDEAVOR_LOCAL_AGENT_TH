@@ -18,6 +18,7 @@ import base64
 import functools
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -28,6 +29,7 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 from tools._ocr import read_layout as _ocr_layout
+from tools._vision_capability import UNKNOWN, TEXT_ONLY, get_capability
 from tools._progress import progress, phase
 from tools._safety import resolve_read_path
 
@@ -69,6 +71,12 @@ _PROSE_COL_CHARS = 14
 # intermediate tool call without leaking an image into a later user turn.
 _PENDING_IMAGES: list[str] = []
 _ACTIVE_TURN_IMAGES: list[str] = []
+# Retained normalized originals let the model-call fallback OCR the exact pixels
+# that were published, including URL/screen sources whose ordinary temp files are
+# cleaned when the tool returns.  The copied files are process-local and deleted
+# at the outer-turn boundary; user files are never added to these lists.
+_PENDING_IMAGE_SOURCES: list[tuple[str, str]] = []
+_ACTIVE_IMAGE_SOURCES: list[tuple[str, str]] = []
 # source="screen" is a moving target, but every progressive follow-up must inspect
 # the SAME pixels as the original overview the agent actually saw. Keep one native
 # screenshot file pinned for this outer turn; begin/end clean it deterministically.
@@ -107,6 +115,37 @@ def _queue_image_bundle(images: list[str]) -> bool:
         return False
     _PENDING_IMAGES.extend(images)
     return True
+
+
+def _retain_original_source(source: str, local_path: str) -> bool:
+    """Keep a private temp copy of a queued original for a possible OCR retry."""
+    retained_path = ""
+    try:
+        suffix = Path(local_path).suffix or ".png"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+            retained_path = handle.name
+        shutil.copyfile(local_path, retained_path)
+        _PENDING_IMAGE_SOURCES.append((source, retained_path))
+        return True
+    except Exception as exc:
+        if retained_path:
+            try:
+                Path(retained_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        log.warning("read_image source retention failed: %s", exc)
+        return False
+
+
+def _clear_retained_sources() -> None:
+    paths = {path for _, path in _PENDING_IMAGE_SOURCES + _ACTIVE_IMAGE_SOURCES}
+    _PENDING_IMAGE_SOURCES.clear()
+    _ACTIVE_IMAGE_SOURCES.clear()
+    for path in paths:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _vision_budget_notice(needed: int) -> str:
@@ -167,6 +206,24 @@ _OVERVIEW_PENDING: set[str] = set()
 _OVERVIEW_SEEN: set[str] = set()
 
 
+def invalidate_published_images() -> None:
+    """Drop rejected image publication and reset affected read state.
+
+    The model-call fallback invokes this only after copying the retained source
+    list for OCR.  Since a rejected overview was never actually seen by the
+    model, it must not leave ``_OVERVIEW_SEEN`` or an overview dedup result that
+    could authorize/return stale pixels later in the same turn.
+    """
+    with _READ_IMAGE_CALL_LOCK:
+        _PENDING_IMAGES.clear()
+        _ACTIVE_TURN_IMAGES.clear()
+        _clear_retained_sources()
+        _OVERVIEW_PENDING.clear()
+        _OVERVIEW_SEEN.clear()
+        _READ_SEEN.clear()
+        _READ_ATTEMPTS.clear()
+
+
 def reset_read_guards() -> None:
     """Clear the per-turn full-read loop guards (V2-VLM04).
 
@@ -224,6 +281,7 @@ def begin_image_turn() -> int:
         stale = len(_PENDING_IMAGES) + len(_ACTIVE_TURN_IMAGES)
         _PENDING_IMAGES.clear()
         _ACTIVE_TURN_IMAGES.clear()
+        _clear_retained_sources()
         _OVERVIEW_PENDING.clear()
         _clear_screen_turn_snapshot()
         _IMAGE_TURN_COUNT[0] = 0
@@ -241,9 +299,17 @@ def active_turn_images() -> list[str]:
         if _PENDING_IMAGES:
             _ACTIVE_TURN_IMAGES.extend(_PENDING_IMAGES)
             _PENDING_IMAGES.clear()
+            _ACTIVE_IMAGE_SOURCES.extend(_PENDING_IMAGE_SOURCES)
+            _PENDING_IMAGE_SOURCES.clear()
             _OVERVIEW_SEEN.update(_OVERVIEW_PENDING)
             _OVERVIEW_PENDING.clear()
         return list(_ACTIVE_TURN_IMAGES)
+
+
+def active_turn_image_sources() -> list[tuple[str, str]]:
+    """Return ordered original sources retained for a same-call OCR recovery."""
+    with _READ_IMAGE_CALL_LOCK:
+        return list(_ACTIVE_IMAGE_SOURCES)
 
 
 def end_image_turn() -> None:
@@ -251,6 +317,7 @@ def end_image_turn() -> None:
     with _READ_IMAGE_CALL_LOCK:
         _PENDING_IMAGES.clear()
         _ACTIVE_TURN_IMAGES.clear()
+        _clear_retained_sources()
         _OVERVIEW_PENDING.clear()
         _clear_screen_turn_snapshot()
 
@@ -265,6 +332,7 @@ def pop_pending_images() -> list[str]:
     with _READ_IMAGE_CALL_LOCK:
         imgs = list(_PENDING_IMAGES)
         _PENDING_IMAGES.clear()
+        _clear_retained_sources()
         _OVERVIEW_PENDING.clear()
         return imgs
 
@@ -1296,6 +1364,81 @@ def _enhance_for_ocr(image_path: str) -> str:
     return tmp.name
 
 
+_TEXT_ONLY_OCR_MAX_CHARS = 12000
+
+
+def _full_ocr_boxes(image_path: str) -> list[dict]:
+    """Return full-image OCR boxes, with the existing one-time enhancement retry."""
+    boxes = _ocr_layout(image_path)
+    if boxes:
+        return boxes
+    enhanced_tmp: str | None = None
+    try:
+        enhanced_tmp = _enhance_for_ocr(image_path)
+        return _ocr_layout(enhanced_tmp)
+    except Exception:
+        return []
+    finally:
+        if enhanced_tmp:
+            try:
+                os.unlink(enhanced_tmp)
+            except Exception:
+                pass
+
+
+def _bound_full_ocr(text: str) -> str:
+    """Bound extreme OCR deterministically without silently summarizing it."""
+    if len(text) <= _TEXT_ONLY_OCR_MAX_CHARS:
+        return text
+    marker = (
+        f"[OCR truncated for context safety: original={len(text)} chars; "
+        "deterministic head/tail retained — no summary was generated]"
+    )
+    available = max(_TEXT_ONLY_OCR_MAX_CHARS - len(marker) - 2, 2)
+    head_len = available // 2
+    tail_len = available - head_len
+    return f"{text[:head_len].rstrip()}\n{marker}\n{text[-tail_len:].lstrip()}"
+
+
+def full_ocr_for_text_only(image_path: str, source: str = "image") -> str:
+    """Produce bounded full-image OCR for a backend that cannot accept pixels.
+
+    The raw lines remain in Vision reading order.  A deterministic table-layout
+    candidate and QR payloads are additional evidence when the existing helpers
+    can recover them; nothing here asks an LLM to summarize or describe pixels.
+    """
+    display_source = str(source)[:160]
+    try:
+        boxes = _full_ocr_boxes(image_path)
+    except Exception:
+        boxes = []
+    raw_text = "\n".join(str(box.get("text", "")) for box in boxes if box.get("text"))
+    if not raw_text.strip():
+        return (
+            f"[TEXT-ONLY IMAGE FALLBACK — source: {display_source}]\n"
+            "[no readable text found — this text-only model cannot understand image "
+            "pixels, and OCR found no readable text]"
+        )
+
+    sections = [f"[OCR — full reading order]\n{raw_text}"]
+    try:
+        table_md = _reconstruct_table(boxes)
+    except Exception:
+        table_md = None
+    if table_md:
+        sections.append(f"[OCR TABLE LAYOUT CANDIDATE]\n{table_md}")
+    try:
+        qr_payloads = _decode_qr(image_path)
+    except Exception:
+        qr_payloads = []
+    if qr_payloads:
+        sections.append("[QR]\n" + "\n".join(qr_payloads))
+    return (
+        f"[TEXT-ONLY IMAGE FALLBACK — source: {display_source}]\n"
+        + _bound_full_ocr("\n\n".join(sections))
+    )
+
+
 def _locate_find_box(boxes: list, find: str) -> dict | None:
     """Find the OCR box whose text contains `find` (case-insensitive substring).
     Multiple matches → the one with the SMALLEST box height (the small hard-to-read
@@ -1414,7 +1557,9 @@ def read_image(source: str, region: str = "full", zoom: float = 1.0,
     "[zoomed OCR — region=<name> x<zoom>]" or "[zoomed OCR — find=\"<text>\"]" plus
     "\n<crop text>" (and the crop via direct vision same-turn), or a no-text status
     if the crop has no OCR text. [error] prefix on failure, invalid region, "full"+
-    zoom, or no find match.
+    zoom, or no find match. If the configured model is known text-only, no image is
+    published: the full original-image OCR is returned instead, with an explicit
+    limitation when OCR finds no readable text.
     """
     if not source or not source.strip():
         return "[error] source is required"
@@ -1433,13 +1578,17 @@ def read_image(source: str, region: str = "full", zoom: float = 1.0,
     zoom = _clamp_zoom(zoom)
     do_zoom = zoom > 1.0 or region != "full"
     ignored_region_zoom = do_find and do_zoom  # find wins — noted in the return
+    capability = get_capability()
     src = source.strip()
     needs_overview_first = (
-        src not in _OVERVIEW_SEEN
+        capability != TEXT_ONLY
+        and src not in _OVERVIEW_SEEN
         and (do_find or do_zoom or detail != "overview")
     )
     deferred_sensor = ""
-    if needs_overview_first:
+    if capability == TEXT_ONLY:
+        phase(f"🖼 read_image · OCR/text-only · {source[:50]}")
+    elif needs_overview_first:
         if do_find:
             deferred_sensor = f'find="{find}"'
         elif do_zoom:
@@ -1540,7 +1689,7 @@ def read_image(source: str, region: str = "full", zoom: float = 1.0,
             do_zoom = False
             ignored_region_zoom = False
 
-        if do_find or do_zoom:
+        if capability != TEXT_ONLY and (do_find or do_zoom):
             # Hard cap FIRST (V2-VLM-LOOP): bounds every zoom/find path this read
             # cycle, incl. a repeated region="full"+zoom whose [error] returns below
             # before the (A) dedup set is ever touched — that was the exact 25× loop.
@@ -1666,6 +1815,25 @@ def read_image(source: str, region: str = "full", zoom: float = 1.0,
                     f"ห้ามเรียก read_image กับภาพนี้อีก ตอบจากข้อมูลที่มีอยู่ในบทสนทนา หรือบอกตรงๆ "
                     f"ว่าข้อมูลที่ต้องการไม่มีในภาพ")
 
+        # Once this endpoint/model is known to reject image input, never queue
+        # another image or pretend that an overview was seen.  Return complete
+        # deterministic OCR of the original source for every later read.
+        if capability == TEXT_ONLY:
+            result = full_ocr_for_text_only(local_path, src)
+            if do_find or do_zoom:
+                result += (
+                    "\n[targeted image publication unavailable on this text-only model; "
+                    "full original-image OCR returned instead]"
+                )
+            if src.lower() == "screen" and downloaded_tmp:
+                # Text-only turns still pin the native screen source so a later
+                # same-turn OCR request reads the exact pixels that produced the
+                # first result, rather than a moving desktop snapshot.
+                _pin_screen_turn_snapshot(downloaded_tmp)
+                downloaded_tmp = None
+            _READ_SEEN[read_sig] = result
+            return result
+
         # ── Direct vision / structural image preparation ───────────────────
         # Stage 1 (overview) is intentionally pixels-only. Stage 2 chart/slide
         # needs the source frame for native-resolution crops. detail="text" does
@@ -1693,6 +1861,8 @@ def read_image(source: str, region: str = "full", zoom: float = 1.0,
         if detail == "overview":
             vision_queued = bool(overview_urls) and _queue_image_bundle(overview_urls)
             if vision_queued:
+                if capability == UNKNOWN and not _retain_original_source(src, local_path):
+                    log.warning("read_image fallback OCR may be unavailable for %s", src)
                 _IMAGE_TURN_COUNT[0] += 1
                 _OVERVIEW_PENDING.add(src)
                 img_label = (
