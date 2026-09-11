@@ -5,6 +5,7 @@ const { spawn, exec } = require('child_process')
 const http = require('http')
 const crypto = require('crypto')
 const { isInsideWorkspace } = require('./lib/workspace_guard')
+const { listenerPidFromLsof, modelFromCommand, classifyServerPresence } = require('./lib/runtime_model')
 
 // Static auth token (P2 fix) — generated once per launch, shared with the Python
 // server via env and with the renderer via IPC. The agent server requires it on
@@ -12,9 +13,7 @@ const { isInsideWorkspace } = require('./lib/workspace_guard')
 // cannot drive the agent or read workspace files.
 const AGENT_TOKEN = crypto.randomBytes(32).toString('base64url')
 
-// ENDEAVOR_LOCAL_AGENT_TH fork of AGENT_UI_MAX (2026-08-16): TH's backend lives
-// directly at the repo root (this folder's parent), not in a nested
-// ENDEAVOR_LOCAL_AGENT_MAX sibling like MAX's multi-project layout.
+// The TH backend lives directly at the repo root (this folder's parent).
 const PROJECT_DIR = path.join(__dirname, '..')
 const AGENT_DIR = PROJECT_DIR
 
@@ -57,11 +56,24 @@ const _DEFAULT_MLX_URL = 'http://localhost:8085/v1'
 const _MLX_BASE_URL = process.env.MLX_BASE_URL || _DEFAULT_MLX_URL
 const _V2_MODEL = process.env.V2_MODEL || ''
 const MLX_PORT = Number(new URL(_MLX_BASE_URL).port) || 8085
-const PROD_MODEL = (_V2_MODEL && _MLX_BASE_URL !== _DEFAULT_MLX_URL)
-  ? _V2_MODEL
-  : 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
+const _DEFAULT_MODEL = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
+const _MODEL_CHOICES = new Set([_DEFAULT_MODEL, 'Qwen/Qwen3-14B-MLX-4bit'])
+const _RUNTIME_SETTINGS_PATH = path.join(PROJECT_DIR, 'workspace', 'runtime_settings.json')
 
-// Keep mlx_vlm APC defaults aligned with MAX_VLM production. APC_ENABLED=0 or
+function _persistedModel() {
+  try {
+    const data = JSON.parse(fs.readFileSync(_RUNTIME_SETTINGS_PATH, 'utf8'))
+    return data && data.owner === 'agent_th' && _MODEL_CHOICES.has(data.model) ? data.model : ''
+  } catch { return '' }
+}
+
+let activeModel = (_V2_MODEL && _MLX_BASE_URL !== _DEFAULT_MLX_URL)
+  ? _V2_MODEL
+  : (_persistedModel() || _DEFAULT_MODEL)
+let _mlxOwnedByThisApp = false
+let _sharedMlxExternal = false
+
+// Keep mlx_vlm APC defaults aligned with the documented production profile. APC_ENABLED=0 or
 // other explicit environment overrides still win. Exact entries=2 is the
 // smallest useful capacity for the current guarded exact-prefix strategy:
 // one reusable guarded checkpoint + one full-prompt snapshot.
@@ -156,35 +168,58 @@ function waitPortFree(port, timeoutMs = 5000) {
   })
 }
 
-function checkPort(port, path = '/v1/models') {
-  return new Promise(resolve => {
-    const req = http.get(`http://localhost:${port}${path}`, res => {
-      resolve(res.statusCode < 500)
-      res.resume()
-    })
-    req.on('error', () => resolve(false))
-    req.setTimeout(2000, () => { req.destroy(); resolve(false) })
-  })
-}
-
-// Verifies that the production model is actually loaded — not just any server on the port.
-function checkMLXReady(port) {
+function getMLXModels(port) {
   return new Promise(resolve => {
     const req = http.get(`http://localhost:${port}/v1/models`, res => {
-      if (res.statusCode >= 500) { res.resume(); resolve(false); return }
+      if (res.statusCode >= 500) { res.resume(); resolve([]); return }
       let body = ''
       res.on('data', d => { body += d })
       res.on('end', () => {
         try {
           const data = JSON.parse(body)
-          const ids = (data.data || []).map(m => m.id)
-          resolve(ids.includes(PROD_MODEL))
-        } catch { resolve(false) }
+          resolve((data.data || []).map(m => String(m.id || '')).filter(Boolean))
+        } catch { resolve([]) }
       })
     })
-    req.on('error', () => resolve(false))
-    req.setTimeout(3000, () => { req.destroy(); resolve(false) })
+    req.on('error', () => resolve([]))
+    req.setTimeout(3000, () => { req.destroy(); resolve([]) })
   })
+}
+
+function getListenerProcess(port) {
+  return new Promise(resolve => {
+    exec(`lsof -nP -iTCP:${port} -sTCP:LISTEN -Fp`, (_err, stdout) => {
+      const pid = listenerPidFromLsof(stdout)
+      if (!pid) { resolve({ pid: 0, command: '' }); return }
+      exec(`ps -p ${pid} -o command=`, (_psErr, command) => {
+        resolve({ pid, command: String(command || '').trim() })
+      })
+    })
+  })
+}
+
+async function getMLXServerInfo(port) {
+  // Listener ownership comes first. /v1/models is only an API-health/advertisement
+  // signal and must never decide which model is active: MAX may advertise many
+  // supported models while one process owns exactly one --model.
+  const { pid, command } = await getListenerProcess(port)
+  const models = await getMLXModels(port)
+  if (!pid && !models.length) return null
+  return {
+    models,
+    pid,
+    command,
+    model: modelFromCommand(command),
+    api_ready: models.length > 0,
+  }
+}
+
+// Verifies that the model Agent TH currently intends to call is both process-owned
+// and reachable through the API. The advertised model list is health-only metadata;
+// it is deliberately not consulted for active-model identity.
+async function checkMLXReady(port) {
+  const info = await getMLXServerInfo(port)
+  return !!(info && info.pid && info.model === activeModel && info.api_ready)
 }
 
 function sendStatus(msg, phase = 'info') {
@@ -201,7 +236,9 @@ function sendStatus(msg, phase = 'info') {
 // absolute python binary (_findCondaEnvDir above), so no `conda run` or PATH
 // shim is needed.
 function startMlxServer() {
-  mlxProcess = spawn(PYTHON, ['-m', 'mlx_vlm.server', '--model', PROD_MODEL, '--host', '127.0.0.1', '--port', String(MLX_PORT)], {
+  _mlxOwnedByThisApp = true
+  _sharedMlxExternal = false
+  mlxProcess = spawn(PYTHON, ['-m', 'mlx_vlm.server', '--model', activeModel, '--host', '127.0.0.1', '--port', String(MLX_PORT)], {
     cwd: PROJECT_DIR,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, ...MLX_APC_ENV },
@@ -221,7 +258,13 @@ function startAgentServer() {
     // group-wide SIGKILL that fires when the network service utility crashes.
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true,
-    env: { ...process.env, AGENT_SERVER_TOKEN: AGENT_TOKEN },
+    env: {
+      ...process.env,
+      AGENT_SERVER_TOKEN: AGENT_TOKEN,
+      // Special shared-server mode only: when :8085 pre-existed before TH
+      // launched, force the agent client to use the model that server exposes.
+      TH_SHARED_MLX_MODEL: _sharedMlxExternal ? activeModel : '',
+    },
   })
   // With detached:true Node.js would keep the event loop alive for this child.
   // Unreffing lets the Electron process exit normally even if the agent hangs.
@@ -253,6 +296,10 @@ function startAgentServer() {
 
       const mlxOk = await checkMLXReady(MLX_PORT)
       if (!mlxOk) {
+        if (!_mlxOwnedByThisApp) {
+          sendStatus('Shared MLX server is offline — leaving external :8085 untouched', 'warn')
+          return
+        }
         const restored = await restartMLXNow('agent crash')
         if (!restored) return
         _crashCount = 0
@@ -280,6 +327,10 @@ async function waitForMLX(timeoutMs = 180000) {
 // ── MLX restart (shared by agent crash handler + proactive monitor) ────────────
 
 async function restartMLXNow(reason) {
+  if (!_mlxOwnedByThisApp) {
+    sendStatus(`Shared MLX server unavailable (${reason}) — Agent TH will not restart an external server`, 'warn')
+    return false
+  }
   if (_mlxRestarting) return false
   _mlxRestarting = true
   try {
@@ -308,6 +359,7 @@ async function restartMLXNow(reason) {
 // ── Proactive MLX monitor ──────────────────────────────────────────────────────
 
 function startMLXMonitor() {
+  if (!_mlxOwnedByThisApp) return
   if (_mlxMonitorInterval) return
   _mlxMonitorInterval = setInterval(async () => {
     if (_mlxRestarting) return              // restart already in progress
@@ -322,17 +374,95 @@ function startMLXMonitor() {
 
 // ── Startup sequence ───────────────────────────────────────────────────────────
 
+async function applyRuntimeModel(model) {
+  const requested = String(model || '').trim()
+  if (!_MODEL_CHOICES.has(requested)) {
+    return { ok: false, error: `unsupported model: ${requested}` }
+  }
+
+  if (_sharedMlxExternal) {
+    const info = await getMLXServerInfo(MLX_PORT)
+    const sharedModel = info && info.model ? info.model : ''
+    if (!sharedModel) {
+      return {
+        ok: false,
+        shared: true,
+        model: activeModel,
+        error: `cannot determine active model on shared :${MLX_PORT}; external server left untouched`,
+      }
+    }
+    activeModel = sharedModel
+    if (requested !== sharedModel) {
+      return {
+        ok: false,
+        shared: true,
+        model: activeModel,
+        error: `shared :${MLX_PORT} is running ${sharedModel}; Agent TH will not switch an external server`,
+      }
+    }
+    return { ok: true, shared: true, model: activeModel }
+  }
+
+  if (!_mlxOwnedByThisApp) {
+    return { ok: false, error: 'MLX server is not ready yet' }
+  }
+  if (requested === activeModel && await checkMLXReady(MLX_PORT)) {
+    return { ok: true, shared: false, model: activeModel }
+  }
+
+  const previous = activeModel
+  activeModel = requested
+  const switched = await restartMLXNow('model switch')
+  if (switched) return { ok: true, shared: false, model: activeModel }
+
+  activeModel = previous
+  const restored = await restartMLXNow('model rollback')
+  return {
+    ok: false,
+    shared: false,
+    model: activeModel,
+    error: restored
+      ? `model switch failed; restored ${previous}`
+      : `model switch failed and rollback to ${previous} also failed`,
+  }
+}
+
 async function startup() {
-  // Check before killing: if the model server is already warm, adopt it instead of
-  // force-killing it (which would discard the KV cache and cost 1–3 min reload).
-  const alreadyUp = await checkMLXReady(MLX_PORT)
-  if (alreadyUp) {
-    sendStatus('MLX server already running (model verified) ✓', 'ok')
+  // Special shared-server branch: if a healthy OpenAI-compatible MLX server
+  // already exists, adopt its actual model and never kill/restart that process.
+  // Normal public behavior remains unchanged when the port is free: TH starts
+  // and owns its own mlx_vlm.server.
+  const existing = await getMLXServerInfo(MLX_PORT)
+  const presence = classifyServerPresence({
+    pid: existing && existing.pid,
+    model: existing && existing.model,
+    apiReady: !!(existing && existing.api_ready),
+  })
+  if (presence !== 'free') {
+    _sharedMlxExternal = true
+    _mlxOwnedByThisApp = false
+    if (presence === 'external_unknown') {
+      const detail = existing && existing.pid
+        ? `listener PID ${existing.pid} exists but --model cannot be determined`
+        : 'an API responds but no local listener process can be identified'
+      sendStatus(`Found external MLX state on :${MLX_PORT} (${detail}) — leaving it untouched`, 'error')
+      return
+    }
+    activeModel = existing.model
+    if (presence === 'shared_loading') {
+      sendStatus(`Shared MLX :${MLX_PORT} · ${activeModel} is still loading — waiting without taking ownership...`, 'info')
+      const ready = await waitForMLX()
+      if (!ready) {
+        sendStatus(`Shared MLX :${MLX_PORT} did not become ready — leaving external process untouched`, 'error')
+        return
+      }
+    }
+    sendStatus(`Using shared MLX :${MLX_PORT} · ${activeModel} ✓`, 'ok')
   } else {
     sendStatus('Clearing stale ports...', 'info')
     await killPort(MLX_PORT)
     await sleep(600)
-    sendStatus('Starting mlx_vlm.server...', 'info')
+    sendStatus(`Starting mlx_vlm.server · ${activeModel}...`, 'info')
     startMlxServer()
     sendStatus('Waiting for MLX server (this may take 1-3 min)...', 'info')
     const ready = await waitForMLX()
@@ -431,6 +561,7 @@ ipcMain.on('open-workspace', () => {
 })
 
 ipcMain.handle('get-token', () => AGENT_TOKEN)
+ipcMain.handle('apply-runtime-model', async (_e, model) => applyRuntimeModel(model))
 
 // Compact mode: renderer toggles its CSS, but only the main process can resize
 // the BrowserWindow. Shrink to a floating mini-chat pinned above other windows;

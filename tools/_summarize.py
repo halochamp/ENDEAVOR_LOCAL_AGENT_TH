@@ -37,6 +37,13 @@ _LLM_CACHE: dict = {}
 _BATCH_LLM_CACHE: dict = {}
 _LLM_CACHE_LOCK = threading.Lock()
 
+
+def invalidate_llm_cache() -> None:
+    """Drop cached model-bound summary clients after runtime settings change."""
+    with _LLM_CACHE_LOCK:
+        _LLM_CACHE.clear()
+        _BATCH_LLM_CACHE.clear()
+
 # (url, query, day, md5(raw)) → finished summary. Re-browsing the same URL
 # within a ReAct session pays the LLM call only once (same idea as read_image's
 # re-look cache). FIFO-evicted; process-lifetime only.

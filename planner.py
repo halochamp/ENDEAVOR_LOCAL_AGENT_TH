@@ -133,6 +133,11 @@ def _parse(text: str) -> dict | None:
 _planner_llm = None  # module-level cache: avoid rebuilding ChatOpenAI + httpx pool every plan() call
 
 
+def invalidate_llm_cache() -> None:
+    global _planner_llm
+    _planner_llm = None
+
+
 def _get_planner_llm():
     global _planner_llm
     if _planner_llm is None:

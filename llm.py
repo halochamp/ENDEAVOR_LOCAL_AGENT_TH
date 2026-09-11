@@ -13,12 +13,14 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
-from config import MLX_BASE_URL, MODEL, API_KEY, TEMPERATURE, MAX_TOKENS, THINKING_BUDGET, REPETITION_PENALTY
+from config import (
+    MLX_BASE_URL, API_KEY, TEMPERATURE, MAX_TOKENS, REPETITION_PENALTY,
+    get_model, get_thinking_budget,
+)
 
 
 _DEFAULT_EXTRA_BODY = {
     "enable_thinking": True,
-    "thinking_budget": THINKING_BUDGET,
     "repetition_penalty": REPETITION_PENALTY,  # top-level body field in mlx_vlm
 }
 
@@ -224,7 +226,7 @@ def build_llm(**overrides) -> ChatOpenAI:
     params = dict(
         base_url=MLX_BASE_URL,
         api_key=API_KEY,
-        model=MODEL,
+        model=get_model(),
         temperature=TEMPERATURE,
         max_tokens=MAX_TOKENS,
         streaming=True,   # enable token-by-token streaming สำหรับ LangGraph "messages" mode
@@ -235,6 +237,10 @@ def build_llm(**overrides) -> ChatOpenAI:
     extra_body = {**_DEFAULT_EXTRA_BODY, **override_extra_body}
     if extra_body.get("enable_thinking") is False:
         extra_body.pop("thinking_budget", None)
+    else:
+        # The Settings tab owns the numeric budget for every thinking-enabled
+        # TH client. Callers may disable thinking, but cannot silently override it.
+        extra_body["thinking_budget"] = get_thinking_budget()
     params["extra_body"] = extra_body
     client_type = VisionFallbackChatOpenAI if vision_fallback else ChatOpenAI
     return client_type(**params)

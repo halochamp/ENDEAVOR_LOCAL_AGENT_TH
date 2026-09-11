@@ -22,7 +22,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 from graph import build_graph, force_compact, rewarm_after_compact, summarize_history
 from react import get_system_prompt, ctx_stats as _ctx_stats
-from config import RECURSION_LIMIT, MODEL, MLX_BASE_URL, CONTEXT_MAX_CHARS
+from config import RECURSION_LIMIT, MLX_BASE_URL, CONTEXT_MAX_CHARS, get_model
 from runtime_common import (
     mlx_up as _server_up, internet_up as _internet_up,
     parse_plan_steps as _parse_plan_steps,
@@ -415,7 +415,7 @@ def _is_load_cmd(q: str) -> bool:
 def main() -> None:
     if not _server_up():
         print(f"[!] เชื่อม mlx_vlm.server ไม่ได้ที่ {MLX_BASE_URL}")
-        print(f"    เริ่ม server ก่อน: APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 python -m mlx_vlm.server --model {MODEL} --host 127.0.0.1 --port <port>")
+        print(f"    เริ่ม server ก่อน: APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 python -m mlx_vlm.server --model {get_model()} --host 127.0.0.1 --port <port>")
         return
 
     online = _internet_up()
@@ -467,7 +467,7 @@ def main() -> None:
             _purge_thread(_db_conn, _WARM_THREAD_ID)
     _threading.Thread(target=_warm_llm_cache, daemon=True).start()
 
-    print_header(MODEL, len(active_tools), online=online)
+    print_header(get_model(), len(active_tools), online=online)
     print_startup_hint()
     _reg = _load_skill_registry()
     _hard_cmds = [c["name"] for c in _reg.get("builtin_cmds", [])]

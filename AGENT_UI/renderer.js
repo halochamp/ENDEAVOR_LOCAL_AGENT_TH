@@ -32,6 +32,10 @@ let attachedFilePath = null  // path of file attached via 📎 button
 let currentToolName = ''
 let pendingTurnQuery = ''
 let waitingSummaryTimer = null
+let runtimeSettings = {
+  model: '', thinking_budget: 1536, shared_server: false, model_locked: false,
+  switching: false, error: '', model_options: [], thinking_options: [],
+}
 
 const THINKING_SUMMARY_DELAY_MS = 6000
 
@@ -76,7 +80,7 @@ function toggleTheme() {
 }
 
 // ── Compact mode ───────────────────────────────────────────────────────────────
-// Mini always-on-top widget, same idea as SERVER_MONITOR's Compact toggle: hide
+// Mini always-on-top widget: hide
 // sidebar/context bar, shrink the window (main.js owns the actual resize/pin via
 // the 'set-compact' IPC message), keep only chat + input visible.
 function applyCompact(compact) {
@@ -173,6 +177,9 @@ function handleEvent(ev) {
   switch (ev.type) {
     case 'status':
       applyStatus(ev)
+      break
+    case 'runtime_settings':
+      applyRuntimeSettings(ev)
       break
     case 'files':
       if (ev.root) workspaceRoot = ev.root
@@ -1136,6 +1143,9 @@ function togglePanel(name) {
     if (name === 'history') {
       wsSend({ type: 'get_history' })
     }
+    if (name === 'settings') {
+      wsSend({ type: 'get_runtime_settings' })
+    }
   }
 }
 
@@ -1156,6 +1166,119 @@ function fmtTs(ts) {
   const hh = String(d.getHours()).padStart(2, '0')
   const min = String(d.getMinutes()).padStart(2, '0')
   return `${dd}/${mm} ${hh}:${min}`
+}
+
+function applyRuntimeSettings(ev) {
+  runtimeSettings = {
+    ...runtimeSettings,
+    model: String(ev.model || runtimeSettings.model || ''),
+    thinking_budget: Number(ev.thinking_budget || runtimeSettings.thinking_budget || 1536),
+    shared_server: !!ev.shared_server,
+    model_locked: !!ev.model_locked,
+    switching: !!ev.switching,
+    error: String(ev.error || ''),
+    model_options: Array.isArray(ev.model_options) ? ev.model_options : runtimeSettings.model_options,
+    thinking_options: Array.isArray(ev.thinking_options) ? ev.thinking_options : runtimeSettings.thinking_options,
+  }
+
+  const model = document.getElementById('runtime-model')
+  const think = document.getElementById('runtime-think')
+  const status = document.getElementById('runtime-status')
+
+  if (model && runtimeSettings.model_options.length) {
+    const currentValue = model.value
+    const focused = document.activeElement === model
+    const optionValues = runtimeSettings.model_options.map(opt => String(opt.value || ''))
+    model.replaceChildren(...runtimeSettings.model_options.map(opt => {
+      const item = document.createElement('option')
+      item.value = String(opt.value || '')
+      item.textContent = String(opt.label || opt.value || '')
+      return item
+    }))
+    model.value = selectValueAfterRefresh(currentValue, runtimeSettings.model, focused, optionValues)
+  }
+
+  if (think && runtimeSettings.thinking_options.length) {
+    const currentValue = think.value
+    const focused = document.activeElement === think
+    const optionValues = runtimeSettings.thinking_options.map(opt => String(Number(opt.value)))
+    think.replaceChildren(...runtimeSettings.thinking_options.map(opt => {
+      const item = document.createElement('option')
+      item.value = String(Number(opt.value))
+      item.textContent = `${String(opt.label || '')} · ${Number(opt.value)}`
+      return item
+    }))
+    think.value = selectValueAfterRefresh(
+      currentValue, String(runtimeSettings.thinking_budget), focused, optionValues,
+    )
+  }
+
+  if (model) {
+    model.disabled = runtimeSettings.switching || runtimeSettings.model_locked
+    model.title = runtimeSettings.shared_server
+      ? 'Shared :8085 — ใช้ model ที่ server กำลังโหลดอยู่'
+      : runtimeSettings.model_locked
+        ? 'Model ถูกล็อกด้วย V2_MODEL + MLX_BASE_URL'
+        : 'Model'
+  }
+  if (think) think.disabled = runtimeSettings.switching
+  if (status) {
+    status.textContent = runtimeSettings.error
+      ? `⚠ ${runtimeSettings.error}`
+      : runtimeSettings.switching
+        ? 'switching…'
+        : runtimeSettings.shared_server
+          ? `shared :8085 · ${runtimeSettings.model}`
+          : runtimeSettings.model_locked
+            ? `env · ${runtimeSettings.model}`
+            : ''
+  }
+  if (runtimeSettings.model) setModelLabel(runtimeSettings.model)
+}
+
+async function saveRuntimeSettings() {
+  if (runtimeSettings.switching) return
+  const model = document.getElementById('runtime-model')
+  const think = document.getElementById('runtime-think')
+  const status = document.getElementById('runtime-status')
+  if (!model || !think) return
+  if (isBusy) {
+    if (status) status.textContent = '⚠ รอให้ agent ทำงานจบก่อนเปลี่ยน runtime settings'
+    applyRuntimeSettings(runtimeSettings)
+    return
+  }
+
+  const requestedModel = model.value
+  const requestedBudget = Number(think.value)
+  if (status) status.textContent = 'applying…'
+
+  if (
+    requestedModel !== runtimeSettings.model
+    && window.electronAPI
+    && window.electronAPI.applyRuntimeModel
+  ) {
+    runtimeSettings.switching = true
+    model.disabled = true
+    think.disabled = true
+    let switched
+    try {
+      switched = await window.electronAPI.applyRuntimeModel(requestedModel)
+    } catch (err) {
+      switched = { ok: false, error: String(err && err.message || err) }
+    }
+    runtimeSettings.switching = false
+    if (!switched || !switched.ok) {
+      if (status) status.textContent = `⚠ ${(switched && switched.error) || 'model switch failed'}`
+      wsSend({ type: 'get_runtime_settings' })
+      return
+    }
+  }
+
+  wsSend({
+    type: 'set_runtime_settings',
+    model: requestedModel,
+    thinking_budget: requestedBudget,
+  })
 }
 
 function renderHistory(pairs, total) {
@@ -1259,6 +1382,11 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#btn-workspace', () => togglePanel('workspace'))
   on('#btn-activity', () => togglePanel('activity'))
   on('#btn-history', () => togglePanel('history'))
+  on('#btn-settings', () => togglePanel('settings'))
+  const runtimeModel = document.getElementById('runtime-model')
+  const runtimeThink = document.getElementById('runtime-think')
+  if (runtimeModel) runtimeModel.addEventListener('change', saveRuntimeSettings)
+  if (runtimeThink) runtimeThink.addEventListener('change', saveRuntimeSettings)
   on('#send-btn', () => sendMessage())
   on('#cancel-btn', () => sendCancel())
   on('#btn-clear', () => sendClear())

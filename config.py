@@ -9,7 +9,10 @@ alternative: Qwen/Qwen3-14B-MLX-4bit for lower-memory Apple Silicon machines
 สลับด้วย env var — ไม่ต้องแก้ code
 """
 from __future__ import annotations
+import json
 import os
+import tempfile
+import threading
 from pathlib import Path
 
 # Auto-load .env from project root (silent if not found; shell exports take priority)
@@ -39,11 +42,162 @@ if MLX_BASE_URL != _PROD_URL and not _model_env:
     )
 API_KEY      = os.getenv("MLX_API_KEY",  "x")  # mlx_vlm.server ใช้ --api-key ได้ แต่ ChatOpenAI ต้องมี non-empty
 
-# ── Generation ────────────────────────────────────────────────────────────
+# ── Runtime model + generation ────────────────────────────────────────────
+# The desktop UI may share an already-running :8085 with Agent MAX VLM during
+# development.  Runtime selection therefore belongs to the TH agent client;
+# the Electron host only restarts :8085 when it started that server itself.
+MODEL_CHOICES = (
+    _PROD_MODEL,
+    "Qwen/Qwen3-14B-MLX-4bit",
+)
+MODEL_LABELS = {
+    _PROD_MODEL: "Qwen3.6 35B",
+    "Qwen/Qwen3-14B-MLX-4bit": "Qwen3 14B · text",
+}
+
 TEMPERATURE     = float(os.getenv("V2_TEMPERATURE",     "0.1"))
 MAX_TOKENS      = int(os.getenv("V2_MAX_TOKENS",        "4096"))  # 8192→4096: caps thinking+response at ~230s (was 449s); thinking tokens count toward this limit
 # mlx_vlm.server accepts thinking_budget as a top-level request field.
 THINKING_BUDGET = int(os.getenv("V2_THINKING_BUDGET",   "1536"))
+THINKING_BUDGET_LEVELS = (
+    ("Low", 256),
+    ("Medium", 512),
+    ("High", 1024),
+    ("xhigh", 1536),
+    ("Max", 2048),
+)
+_THINKING_BUDGET_VALUES = frozenset(value for _label, value in THINKING_BUDGET_LEVELS)
+_RUNTIME_SETTINGS_PATH = os.getenv(
+    "V2_RUNTIME_SETTINGS_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace", "runtime_settings.json"),
+)
+_runtime_settings_lock = threading.Lock()
+_SHARED_MLX_MODEL = os.getenv("TH_SHARED_MLX_MODEL", "").strip()
+_ENV_MODEL_LOCKED = bool(_model_env and MLX_BASE_URL != _PROD_URL)
+_LOCKED_MODEL = _SHARED_MLX_MODEL or (MODEL if _ENV_MODEL_LOCKED else "")
+_current_model = _LOCKED_MODEL or MODEL
+_current_thinking_budget = THINKING_BUDGET
+
+
+def _runtime_payload(model: str, thinking_budget: int) -> dict:
+    return {
+        "owner": "agent_th",
+        "model": model,
+        "thinking_budget": thinking_budget,
+    }
+
+
+def _validate_runtime_values(model: str, thinking_budget: int) -> None:
+    if _LOCKED_MODEL:
+        if model != _LOCKED_MODEL:
+            reason = "shared server" if _SHARED_MLX_MODEL else "environment override"
+            raise ValueError(f"model is locked by {reason}: {_LOCKED_MODEL}")
+    elif model not in MODEL_CHOICES:
+        raise ValueError(f"unsupported model: {model}")
+    if thinking_budget not in _THINKING_BUDGET_VALUES:
+        raise ValueError(f"unsupported thinking budget: {thinking_budget}")
+
+
+def _read_runtime_settings_file() -> dict | None:
+    try:
+        with open(_RUNTIME_SETTINGS_PATH, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("owner") != "agent_th":
+        return None
+    model = payload.get("model")
+    try:
+        budget = int(payload.get("thinking_budget"))
+    except (TypeError, ValueError):
+        return None
+    valid_model = model in MODEL_CHOICES or bool(_LOCKED_MODEL and model == _LOCKED_MODEL)
+    if not valid_model or budget not in _THINKING_BUDGET_VALUES:
+        return None
+    return _runtime_payload(model, budget)
+
+
+def refresh_runtime_settings_from_file() -> bool:
+    global _current_model, _current_thinking_budget
+    payload = _read_runtime_settings_file()
+    if payload is None:
+        return False
+    model = _LOCKED_MODEL or payload["model"]
+    changed = (
+        model != _current_model
+        or payload["thinking_budget"] != _current_thinking_budget
+    )
+    _current_model = model
+    _current_thinking_budget = payload["thinking_budget"]
+    return changed
+
+
+def get_model() -> str:
+    return _current_model
+
+
+def get_thinking_budget() -> int:
+    return _current_thinking_budget
+
+
+def get_runtime_settings() -> dict:
+    if _LOCKED_MODEL:
+        prefix = "Shared" if _SHARED_MLX_MODEL else "Env"
+        model_options = [{
+            "value": _LOCKED_MODEL,
+            "label": f"{prefix} · {MODEL_LABELS.get(_LOCKED_MODEL, _LOCKED_MODEL)}",
+        }]
+    else:
+        model_options = [
+            {"value": model, "label": MODEL_LABELS[model]}
+            for model in MODEL_CHOICES
+        ]
+    return {
+        "model": get_model(),
+        "thinking_budget": get_thinking_budget(),
+        "shared_server": bool(_SHARED_MLX_MODEL),
+        "model_locked": bool(_LOCKED_MODEL),
+        "model_options": model_options,
+        "thinking_options": [
+            {"label": label, "value": value}
+            for label, value in THINKING_BUDGET_LEVELS
+        ],
+    }
+
+
+def set_runtime_settings(*, model: str, thinking_budget: int) -> dict:
+    """Persist TH client selection without taking ownership of the MLX server."""
+    global _current_model, _current_thinking_budget
+    model = str(model or "").strip()
+    thinking_budget = int(thinking_budget)
+    _validate_runtime_values(model, thinking_budget)
+    with _runtime_settings_lock:
+        old_model = _current_model
+        old_budget = _current_thinking_budget
+        payload = _runtime_payload(model, thinking_budget)
+        state_dir = os.path.dirname(_RUNTIME_SETTINGS_PATH)
+        os.makedirs(state_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=".runtime_settings.", suffix=".tmp", dir=state_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, sort_keys=True)
+            os.replace(tmp_path, _RUNTIME_SETTINGS_PATH)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        _current_model = model
+        _current_thinking_budget = thinking_budget
+    return {
+        "model_changed": model != old_model,
+        "thinking_budget_changed": thinking_budget != old_budget,
+        **get_runtime_settings(),
+    }
+
+
+refresh_runtime_settings_from_file()
 # Penalises repeated tokens over a 20-token window — breaks thinking loops at root cause.
 # 1.1: raised from 1.05 — disrupts repetitive thinking loops faster without corrupting tool JSON.
 # 0.0 = disabled (server default). Lower to 1.02 if JSON breaks.

@@ -195,6 +195,13 @@ _REACT = None  # set by build_graph
 _SYNTH_LLM = None   # cached synthesis LLM (no-thinking, max_tokens=2048)
 _COMPACT_LLM = None  # cached compact-summarizer LLM (no-thinking, max_tokens=250)
 
+
+def invalidate_llm_cache() -> None:
+    """Drop model-bound helper clients after runtime model/budget changes."""
+    global _SYNTH_LLM, _COMPACT_LLM
+    _SYNTH_LLM = None
+    _COMPACT_LLM = None
+
 _COMPACT_TRIGGER = 1.00   # compact เมื่อ context เต็ม ≥ 100%
 _COMPACT_RESET   = 0.70   # cooldown หายหลัง context ลงต่ำกว่า 70%
 _COMPACT_MIN_MSGS = 4     # ต้องมีอย่างน้อย 4 messages ถึงจะ compact

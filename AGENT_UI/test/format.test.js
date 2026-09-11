@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { mlxLabel, shortModelName, actTimestamp } = require('../lib/format')
+const { mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh } = require('../lib/format')
 
 test('mlxLabel extracts port from URL', () => {
   assert.strictEqual(mlxLabel('http://localhost:8085/v1'), 'MLX :8085')
@@ -37,4 +37,25 @@ test('actTimestamp defaults to "now" when no date given', () => {
   const ts = actTimestamp()
   assert.match(ts, /^\d{2}:\d{2}:\d{2}$/)
   assert.ok(Date.now() - before < 1000)
+})
+
+test('selectValueAfterRefresh preserves a focused valid user choice', () => {
+  assert.strictEqual(
+    selectValueAfterRefresh('512', '256', true, ['256', '512', '1024']),
+    '512',
+  )
+})
+
+test('selectValueAfterRefresh uses authoritative value when selector is not focused', () => {
+  assert.strictEqual(
+    selectValueAfterRefresh('512', '256', false, ['256', '512', '1024']),
+    '256',
+  )
+})
+
+test('selectValueAfterRefresh rejects a focused value no longer present in options', () => {
+  assert.strictEqual(
+    selectValueAfterRefresh('999', '512', true, ['256', '512', '1024']),
+    '512',
+  )
 })

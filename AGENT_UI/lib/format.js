@@ -21,6 +21,13 @@ function actTimestamp(date) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
 }
 
+function selectValueAfterRefresh(currentValue, authoritativeValue, isFocused, optionValues) {
+  const current = String(currentValue ?? '')
+  const authoritative = String(authoritativeValue ?? '')
+  const valid = new Set((optionValues || []).map(value => String(value)))
+  return isFocused && valid.has(current) ? current : authoritative
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { mlxLabel, shortModelName, actTimestamp }
+  module.exports = { mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh }
 }

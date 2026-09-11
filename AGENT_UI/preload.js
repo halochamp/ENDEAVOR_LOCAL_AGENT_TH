@@ -10,5 +10,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteFile: (p) => ipcRenderer.invoke('delete-file', p),
   showOpenDialog: () => ipcRenderer.invoke('show-open-dialog'),
   setCompact: (compact) => ipcRenderer.send('set-compact', compact),
+  applyRuntimeModel: (model) => ipcRenderer.invoke('apply-runtime-model', model),
   platform: process.platform,
 })

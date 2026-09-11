@@ -13,6 +13,7 @@ GET        http://localhost:8765/file   — read file (?path=...)
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -21,6 +22,7 @@ import stat
 import subprocess
 import sys
 import threading
+import urllib.parse
 import uuid
 
 import uvicorn
@@ -34,9 +36,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agent_log import AgentLogger
 from awake_engine import AwakeEngine, Registry, drain_notices, restore_notices
 from config import (
-    MLX_BASE_URL, MODEL, RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED,
+    MLX_BASE_URL, RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED,
     READ_FILE_MAX_BYTES, READ_FILE_AUDIO_VIDEO_MAX_BYTES,
+    get_model, get_thinking_budget, get_runtime_settings, set_runtime_settings,
 )
+import graph as _graph
+import planner as _planner
 from graph import build_graph, force_compact, rewarm_after_compact, summarize_history
 from react import get_system_prompt, ctx_stats as _ctx_stats
 from runtime_common import (
@@ -52,6 +57,7 @@ from runtime_common import (
     _MAX_DB_ROWS, load_history_pairs as _load_history_pairs,
 )
 from tools import ALL_TOOLS, SKILL_TOOLS
+from tools import _summarize as _summarize_tool
 from tools._progress import (
     set_callback as set_progress_callback,
     set_phase_callback,
@@ -242,6 +248,103 @@ async def _ws_busy_guard(websocket: WebSocket, msg: str = "agent กำลัง
         await websocket.send_json({"type": "error", "msg": msg})
         return True
     return False
+
+
+def _model_from_process_command(command: str) -> str:
+    match = re.search(
+        r"(?:^|\s)--model(?:=|\s+)(?:\"([^\"]+)\"|'([^']+)'|([^\s]+))",
+        str(command or ""),
+    )
+    return (match.group(1) or match.group(2) or match.group(3)) if match else ""
+
+
+def _active_mlx_model() -> str:
+    """Resolve the model owned by the local listener from its ``--model`` argv.
+
+    ``/v1/models`` is intentionally not consulted here. Some MLX launchers
+    advertise many supported models (and even a one-item catalogue is not proof
+    of process ownership), so active-model discovery is process-first and
+    fail-closed. Remote/custom backends are handled by the explicit V2_MODEL
+    environment lock instead of attempting to inspect another machine.
+    """
+    try:
+        parsed = urllib.parse.urlparse(MLX_BASE_URL)
+        host = (parsed.hostname or "").lower()
+        if host not in {"localhost", "127.0.0.1", "::1"}:
+            return ""
+        port = int(parsed.port or 80)
+        found = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fp"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        pid = 0
+        for line in found.stdout.splitlines():
+            if line.startswith("p") and line[1:].isdigit():
+                pid = int(line[1:])
+                break
+        if not pid:
+            return ""
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        return _model_from_process_command(proc.stdout.strip())
+    except Exception:
+        return ""
+
+
+def _runtime_settings_payload(*, error: str = "") -> dict:
+    return {
+        "type": "runtime_settings",
+        **get_runtime_settings(),
+        "error": str(error or ""),
+    }
+
+
+def _rebuild_runtime_llms() -> None:
+    """Drop every cached model-bound client, then rebuild the active agent graph."""
+    _graph.invalidate_llm_cache()
+    _planner.invalidate_llm_cache()
+    _summarize_tool.invalidate_llm_cache()
+    _state._rebuild_app(_state._get_skill_tools(_state.skill))
+
+
+async def _apply_runtime_settings(model: str, thinking_budget: int) -> dict:
+    """Apply TH client settings only when the requested model is actually served."""
+    if _busy.locked():
+        return _runtime_settings_payload(error="agent is busy")
+
+    requested = str(model or "").strip()
+    runtime = get_runtime_settings()
+    # Environment-locked custom backends already have an authoritative V2_MODEL;
+    # do not inspect a possibly remote process just to change the per-request budget.
+    if not (runtime.get("model_locked") and not runtime.get("shared_server")):
+        active = await asyncio.to_thread(_active_mlx_model)
+        if not active or requested != active:
+            shown = active or "unknown"
+            return _runtime_settings_payload(
+                error=f"MLX active model is {shown}; switch the server model first"
+            )
+    if _busy.locked():
+        return _runtime_settings_payload(error="agent became busy; try again after the turn finishes")
+
+    async with _busy:
+        try:
+            changed = set_runtime_settings(
+                model=requested,
+                thinking_budget=int(thinking_budget),
+            )
+        except Exception as exc:
+            return _runtime_settings_payload(error=str(exc))
+
+        if changed.get("model_changed") or changed.get("thinking_budget_changed"):
+            _rebuild_runtime_llms()
+            log.info(
+                "runtime settings applied model=%s thinking_budget=%s",
+                get_model(), get_thinking_budget(),
+            )
+
+    return _runtime_settings_payload()
 
 
 # ── Agent Awake — host wiring ──────────────────────────────────────────────────
@@ -851,7 +954,7 @@ def get_status():
         "skill": _state.skill,
         "skills": _list_skills(),
         "builtin_cmds": _load_builtin_cmds(),
-        "model": MODEL,
+        "model": get_model(),
     }
 
 
@@ -1317,6 +1420,17 @@ async def ws_endpoint(websocket: WebSocket):
                         await websocket.send_json({"type": "error", "msg": f"เปิดไม่ได้: {e}"})
 
             elif msg_type == "get_status":
+                await websocket.send_json({"type": "status", **get_status()})
+
+            elif msg_type == "get_runtime_settings":
+                await websocket.send_json(_runtime_settings_payload())
+
+            elif msg_type == "set_runtime_settings":
+                result = await _apply_runtime_settings(
+                    str(data.get("model", "")),
+                    data.get("thinking_budget", get_thinking_budget()),
+                )
+                await websocket.send_json(result)
                 await websocket.send_json({"type": "status", **get_status()})
 
             elif msg_type == "get_history":
