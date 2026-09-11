@@ -1,7 +1,7 @@
 """CPU-only regressions for text-only image compatibility.
 
 Run from the target repository with:
-    /opt/homebrew/anaconda3/envs/mlx/bin/python tests/test_text_only_vision.py
+    conda run -n mlx python tests/test_text_only_vision.py
 
 All backend/model calls and computer paths are mocked.  The tests do not contact
 an MLX server or mutate the desktop.

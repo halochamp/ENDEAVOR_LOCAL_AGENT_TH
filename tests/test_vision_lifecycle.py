@@ -1,7 +1,7 @@
 """CPU-only regressions for the direct-vision publication/lifecycle boundaries.
 
 Run from the target repository with the project's mlx interpreter:
-    /opt/homebrew/anaconda3/envs/mlx/bin/python tests/test_vision_lifecycle.py
+    conda run -n mlx python tests/test_vision_lifecycle.py
 
 The probes use synthetic pixels and mocked sensors/model calls. They never start
 or contact an MLX server and never use a private project path.
