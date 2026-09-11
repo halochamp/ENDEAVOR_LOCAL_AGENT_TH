@@ -358,7 +358,7 @@ research_orchestrator
   (กัน tool ถูก bind ตอน offline mode)
 
 **4. (optional) `react.py` M-rung** — ถ้า skill ต้องการ routing พิเศษ
-- แก้ใน `#developer/react.py` แล้ว rebuild `.so` ใหม่
+- แก้ใน `react.py` ซึ่งเป็น tracked Python source ของโปรเจกต์ตามจำเป็น
 - ไม่มี central pattern — ตัดสินใจ case-by-case
 
 **5. Regression gate + docs** หลังแก้เสร็จ

@@ -143,7 +143,9 @@ For `agent_server.py`, WebSocket/REST, `chat.html`, or desktop integration:
 
 ## 11. Compiled `.so` artifacts
 
-Some public-tree behavior is represented only by compiled extension artifacts.
+The current public tree does not track compiled Python extension artifacts. An
+ignored/local `.so` may still exist in a developer environment; it is not part
+of the public product.
 
 If corresponding source is not present:
 
@@ -156,7 +158,9 @@ If corresponding source is not present:
 
 ## 12. Testing procedure
 
-Unlike several other public projects, this repository currently does not document one canonical root deterministic regression command and contains compiled developer artifacts rather than a clear public Python test suite.
+Unlike several other public projects, this repository currently does not document
+one canonical root deterministic regression command. It does contain targeted
+public Python regression scripts, but they are not a single universal suite.
 
 Therefore:
 

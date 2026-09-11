@@ -8,6 +8,6 @@
 - Preserve API/WebSocket authentication. `.agent_token` is secret local runtime state; never commit or print it. `AGENT_AUTH_DISABLED=1` is development-only and must not become the normal default.
 - Preserve model-specific prompt/tool/generation assumptions. Do not substitute another model and call that production verification.
 - Treat tool descriptions, planner/routing behavior, context trimming, persistence, and standing-trigger behavior as product contracts.
-- Some logic is shipped only as compiled `.so` artifacts in this public tree. If source is absent, do not claim to have inspected or modified the binary's internals; constrain conclusions to documented/observed behavior.
+- Local developer environments may contain ignored compiled `.so` artifacts. If source is absent, do not claim to have inspected or modified a binary's internals; constrain conclusions to documented/observed behavior.
 - Do not invent a deterministic test command that is not present in this public repository. Inspect available public test/developer artifacts and report verification limits honestly.
 - Never commit `.agent_token`, `.env`, logs/history/memory state, workspaces, credentials, private documents, or machine-specific absolute paths.

@@ -4,11 +4,10 @@
 
 """_freshness.py — deterministic date extraction + staleness check for scraped content.
 
-Ported from ENDEAVOR_LOCAL_AGENT_MAX Session 51b: an earlier version asked the
-summarization LLM to decide whether content was stale. Live test showed this is
-unreliable — the model can invent a date that doesn't appear in the source and
-flag staleness relative to a date in the FUTURE. Date comparison must be code,
-not an LLM judgment call.
+This helper keeps staleness detection deterministic. An earlier LLM-based
+approach was unreliable — the model could invent a date that did not appear in
+the source and flag staleness relative to a date in the FUTURE. Date comparison
+must be code, not an LLM judgment call.
 """
 from __future__ import annotations
 import datetime

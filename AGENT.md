@@ -24,7 +24,9 @@ Important components documented by the project include:
 - `awake_engine.py` — standing-trigger execution;
 - `workspace/`, logs/history/memory — runtime state.
 
-Some public-tree components are compiled `.so` files. Treat them as opaque when their source is absent.
+The tracked public release ships its runtime as source. Ignored local `.so`
+artifacts, if present in a developer environment, are not part of the product;
+treat them as opaque when their source is absent.
 
 ## Start every task
 
@@ -73,7 +75,7 @@ If source for a `.so` is absent:
 
 This public tree does not currently document one universal deterministic root test command comparable to the other public repos. Before testing, inspect the currently available public source/test/developer artifacts and use only supported entry points you can actually verify.
 
-Do not invent a command or describe compiled developer artifacts as source tests. Separate static/source checks, local runtime checks, and live production-model checks in the final report.
+Do not invent commands or claim that unrun checks are tests. Separate static/source checks, local runtime checks, and live production-model checks in the final report.
 
 ## Git/release hygiene
 

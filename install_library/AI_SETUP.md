@@ -171,8 +171,8 @@ image capabilities.
 wants a clean restart:
 
 ```bash
-lsof -ti:8085 | xargs kill -9   # MLX server
-lsof -ti:8765 | xargs kill -9   # agent_server.py (if running Web UI)
+cd <project_root>
+bash agent_stop.command
 ```
 
 Then redo step 3 (and step 4 if using the Web UI).
@@ -199,7 +199,7 @@ instead of re-reading the whole README:
 | "ใช้งานยังไง" / how do I start | Run step 3 (MLX server) + step 4 (CLI or Web UI) above |
 | "model offline" / agent ขึ้น offline | Step 3 server not running or wrong port — check `curl http://localhost:8085/v1/models` |
 | "เปลี่ยนโมเดล" / change model | Edit **both** `V2_MODEL` + `MLX_BASE_URL` (different port) in `.env` — changing only `V2_MODEL` is ignored. Restart `mlx_vlm.server` with new `--model --host 127.0.0.1 --port`. Min: Qwen3-14B for text/tool calling and `read_image` OCR fallback; use a vision-capable model for `computer` |
-| "port ถูกใช้อยู่" / port in use | `lsof -ti:8085 \| xargs kill -9` (MLX) or `:8765` (agent_server) |
+| "port ถูกใช้อยู่" / port in use | Run `bash agent_stop.command` from the project root, then repeat the relevant start step |
 | "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
 | "ลืม conversation เก่า" / load old chat | `/history` in CLI, or just reopen the Web UI (loads from `logs/history.db`) |
 | "ปลอดภัยไหม" / is my data safe | Yes — model runs 100% locally via MLX, no cloud LLM calls. See README "Security" |

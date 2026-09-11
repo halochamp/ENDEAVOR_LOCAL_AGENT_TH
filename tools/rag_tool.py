@@ -3,8 +3,7 @@
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
 """rag_tool.py — Knowledge base search pipe via a separate local ENDEAVOR_RAG_LITE
-engine (MiniLM + ChromaDB + BM25 + RRF), forked from ENDEAVOR_LOCAL_AGENT_MAX's
-tools/rag_tool.py.
+engine (MiniLM + ChromaDB + BM25 + RRF).
 
 This tool file ships WITHOUT any index/knowledge base of its own — that lives
 in the sibling ENDEAVOR_RAG_LITE project (see _RAG_DIR below and the README's
