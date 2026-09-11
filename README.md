@@ -34,7 +34,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 - [บทนำ](#บทนำ)
 - [เริ่มใช้งานเร็ว (Quick Start)](#เริ่มใช้งานเร็ว-quick-start)
 - [ENDEAVOR Agent ทำอะไรได้บ้าง?](#endeavor-agent-ทำอะไรได้บ้าง)
-- [UI ที่มีให้ (2 แบบ)](#ui-ที่มีให้-2-แบบ)
+- [UI ที่มีให้ (3 แบบ)](#ui-ที่มีให้-3-แบบ)
 - [หลักการทำงานของ Agent](#หลักการทำงานของ-agent)
 - [เทคโนโลยีที่ใช้](#เทคโนโลยีที่ใช้)
 - [Security](#security)
@@ -55,7 +55,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 
 **ทางลัด — ไม่อยากยุ่งกับ terminal เลย:** ดับเบิลคลิก `agent_start.command` ที่ root ของโปรเจกต์ — เปิดครั้งแรกจะติดตั้งให้อัตโนมัติทั้งหมด (conda env + AGENT_UI dependencies) แล้วเปิด desktop app ให้เลย โดยไม่ต้องเปิด MLX server เองแยกต่างหาก (AGENT_UI จัดการให้เองในตัว) ครั้งต่อๆ ไปดับเบิลคลิกซ้ำแค่เปิดแอปตรงๆ ไม่ติดตั้งซ้ำ
 
-มีปัญหา/อยากเริ่มใหม่สะอาดๆ → ดับเบิลคลิก `agent_stop.command` — kill mlx_vlm.server, agent_server.py, หน้าต่าง AGENT_UI, และ CLI ที่ค้างอยู่ทั้งหมด (kill process เท่านั้น ไม่แตะ workspace/ข้อมูล/config) แล้วค่อยเปิด `agent_start.command` ใหม่
+มีปัญหา/อยากเริ่มใหม่สะอาดๆ → ดับเบิลคลิก `agent_stop.command` — จะเคลียร์ process ตามพอร์ตและโฟลเดอร์ของโปรเจกต์ที่กำหนดไว้ (ไม่แตะ workspace/ข้อมูล/config) แล้วค่อยเปิด `agent_start.command` ใหม่
 
 หรือทำเองทีละขั้นผ่าน terminal:
 
@@ -80,15 +80,7 @@ bash run.sh
 conda activate mlx && python agent_server.py
 ```
 
-ถ้า run ไม่ได้เพราะ port ถูกใช้อยู่ (เช่น เปิด server ค้างจากรอบก่อน) ให้ kill ตัวเก่าก่อน — ดับเบิลคลิก `agent_stop.command` (เคลียร์ให้ครบทุกอย่างในทีเดียว) หรือ kill เองทีละตัว:
-
-```bash
-# kill MLX server (port 8085)
-lsof -ti:8085 | xargs kill -9
-
-# kill agent_server.py (port 8765)
-lsof -ti:8765 | xargs kill -9
-```
+ถ้า run ไม่ได้เพราะ port ถูกใช้อยู่ (เช่น เปิด server ค้างจากรอบก่อน) ให้รัน `agent_stop.command` เพื่อเคลียร์ process ตามพอร์ตที่โปรเจกต์กำหนด แล้วค่อยเปิด `agent_start.command` ใหม่
 
 > เพิ่งเคย clone ครั้งแรก หรืออยากดูทุกขั้นตอนแบบละเอียด (รวม `git clone`, config, ติดตั้งแบบไม่ใช้สคริปต์) → ดู [Setup](#setup)
 
@@ -126,7 +118,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 ## UI ที่มีให้ (3 แบบ)
 
-เลือกใช้ได้ทั้ง 2 แบบ — ทำงานเหมือนกัน ต่างกันที่หน้าตา ทุกแบบ**บอก user เสมอว่า agent กำลังทำอะไรอยู่** ไม่ใช่แค่รอคำตอบเฉย ๆ
+เลือกใช้ได้ทั้ง 3 แบบ — ทำงานเหมือนกัน ต่างกันที่หน้าตา ทุกแบบ**บอก user เสมอว่า agent กำลังทำอะไรอยู่** ไม่ใช่แค่รอคำตอบเฉย ๆ
 
 ### 1. CLI (`endeavor_agent.py`)
 
@@ -158,8 +150,10 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
   npm install     # โหลด Electron + dependencies (~150MB, ครั้งเดียว)
   npm start
   ```
-- ต่างจาก 2 แบบข้างบนตรงที่**ไม่ต้องเปิด MLX server เองก่อน** — แอปจะ spawn `mlx_vlm.server` และ `agent_server.py` ให้อัตโนมัติตอนเปิด (เห็น log ความคืบหน้าบนหน้าจอ loading), คอย monitor และ restart ให้เองถ้า MLX server ค้าง/ตาย
-- ปิดแอป = ปิด MLX server + agent_server.py ให้อัตโนมัติด้วย (ไม่ต้องไป kill port เอง)
+- ต่างจาก 2 แบบข้างบนตรงที่**ไม่ต้องเปิด MLX server เองก่อน** — กรณีปกติที่ `:8085` ว่าง แอปจะ spawn `mlx_vlm.server` และ `agent_server.py` ให้อัตโนมัติตอนเปิด (เห็น log ความคืบหน้าบนหน้าจอ loading), คอย monitor และ restart เฉพาะ MLX server ที่แอปเปิดเอง
+- กรณีพิเศษถ้าเปิดแอปแล้วพบ MLX listener อยู่บน `:8085` ก่อนแล้ว แอปจะ **adopt server เดิม** โดยอ่าน active model จาก `--model` ของ process ที่ถือ listener จริง; `/v1/models` ใช้เป็น health/compatibility signal เท่านั้น ไม่ใช้เดา active model. ถ้าระบุ process/model ไม่ได้จะ fail-closed และปล่อย external server ไว้ untouched — เหมาะสำหรับ developer ที่ต้องการให้ Agent TH ใช้ model server ร่วมกับ Agent MAX VLM ในการทดสอบ
+- แถบ **Settings** ใน AGENT_UI เลือก model และ Think Budget ได้: Low 256 / Medium 512 / High 1024 / xhigh 1536 / Max 2048. ใน shared-server mode ช่อง Model จะล็อกตาม model ที่ `:8085` ใช้อยู่ แต่ Think Budget ยังเปลี่ยนได้ต่อ request; ใน standalone mode สามารถเลือก 35B/14B และแอปจะ restart เฉพาะ server ที่ตัวเองเป็นเจ้าของ
+- ปิดแอป = ปิด `agent_server.py` และปิด MLX server เฉพาะกรณีที่แอปเป็นคนเปิดเอง; external/shared `:8085` จะไม่ถูกแตะ
 - ใช้ conda env `mlx` เดียวกับที่ตั้งค่าไว้ตอน Setup ด้านล่าง (auto-detect ผ่าน `conda info`, override ได้ด้วย `MLX_CONDA_ENV`/`MLX_PYTHON`)
 - **เครื่องที่ RAM ไม่ถึงระดับเหมาะสมสำหรับ 35B:** อ่าน env `V2_MODEL`/`MLX_BASE_URL` เหมือนกับ `config.py` เป๊ะ (ต้องตั้งทั้งคู่พร้อมกัน ไม่งั้นยังใช้ 35B ซึ่งเป็น default) — แนะนำ **Qwen3-14B-MLX-4bit** เป็นรุ่นเริ่มต้นสำหรับ text/tool calling โดยประมาณ **24GB unified memory เป็นขั้นต่ำเชิงปฏิบัติ และ 32GB ขึ้นไปแนะนำ** เพื่อเหลือพื้นที่ให้ macOS, KV cache, context และ tools อื่น ๆ; 16GB ไม่แนะนำสำหรับการใช้งาน Agent ต่อเนื่อง แม้บาง workload อาจโหลดโมเดลได้ก็ตาม
 - Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` จะใช้ full OCR fallback อัตโนมัติ ส่วน `computer` และการเข้าใจ pixels โดยตรงต้องใช้โมเดล vision-capable
@@ -232,7 +226,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | พารามิเตอร์ | ค่า default | ผลลัพธ์ |
 |---|---|---|
 | `TEMPERATURE` | 0.1 | คำตอบ deterministic, เหมาะกับ tool calling |
-| `THINKING_BUDGET` | 1536 tokens | จำกัดเวลาที่โมเดล "คิด" ก่อนตอบ — ค่าเดียวกับ MAX_VLM production |
+| `THINKING_BUDGET` | 1536 tokens | จำกัดเวลาที่โมเดล "คิด" ก่อนตอบ — ค่าเดียวกับ production profile |
 | `REPETITION_PENALTY` | 1.05 | กัน thinking loop ซ้ำ ๆ โดยไม่กระทบ JSON ของ tool call |
 | `RECURSION_LIMIT` | 60 | จำนวน step สูงสุดต่อ 1 query (รองรับ research 4 ขั้นตอน × ~12 tool calls) |
 | `APC_ENABLED` | 1 | เปิด mlx_vlm Automatic Prefix Caching |
@@ -574,7 +568,7 @@ def my_tool(query: str) -> str:
 ⚠️ default ของ harness ทุกค่า (prompt, thinking budget, repetition penalty) tune สำหรับ **Qwen3.6-35B-A3B (MoE)** — เปลี่ยนโมเดลแล้วพฤติกรรม tool-calling อาจต่างไปและต้อง tune เพิ่มเอง ถ้า RAM ไม่พอสำหรับ 35B แนะนำ **Qwen3-14B** เป็นขั้นต่ำสำหรับ text/tool calling และ `read_image` OCR fallback; `computer` กับ true pixel understanding ต้องใช้ vision-capable model:
 
 ```bash
-export V2_MODEL="mlx-community/Qwen3-14B-4bit"
+export V2_MODEL="Qwen/Qwen3-14B-MLX-4bit"
 export MLX_BASE_URL="http://localhost:8081/v1"
 python endeavor_agent.py
 ```
