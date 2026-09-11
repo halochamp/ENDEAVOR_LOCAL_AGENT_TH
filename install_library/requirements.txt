@@ -1784,7 +1784,9 @@ matplotlib==3.11.1 \
 mcp==1.26.0 \
     --hash=sha256:904a21c33c25aa98ddbeb47273033c435e595bbacfdb177f4bd87f6dceebe1ca \
     --hash=sha256:db6e2ef491eecc1a0d93711a76f28dec2e05999f93afd48795da1c1137142c66
-    # via browser-use
+    # via
+    #   -r install_library/requirements.in
+    #   browser-use
 mdurl==0.1.2 \
     --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8 \
     --hash=sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba

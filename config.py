@@ -105,6 +105,14 @@ AUTH_DISABLED = os.getenv("AGENT_AUTH_DISABLED") == "1"
 WORKSPACE = os.getenv("V2_WORKSPACE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace"))
 os.makedirs(WORKSPACE, exist_ok=True)
 
+# ── MCP client ─────────────────────────────────────────────────────────────
+# Developer-provisioned servers are optional and empty by default in this public
+# release. Users can register Streamable HTTP or guarded local stdio servers at
+# runtime through mcp_add_server; those entries live under workspace/tool_mcp/.
+MCP_SERVERS: dict[str, dict] = {}
+MCP_MAX_CHARS = int(os.getenv("V2_MCP_MAX_CHARS", "4000"))
+MCP_TIMEOUT   = int(os.getenv("V2_MCP_TIMEOUT",   "60"))
+
 # ── Activity logging ───────────────────────────────────────────────────────
 LOG_DIR         = os.getenv("V2_LOG_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"))
 LOG_MAX_ENTRIES = int(os.getenv("V2_LOG_MAX_ENTRIES", "5000"))

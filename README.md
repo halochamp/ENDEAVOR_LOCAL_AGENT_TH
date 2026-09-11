@@ -38,7 +38,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 - [หลักการทำงานของ Agent](#หลักการทำงานของ-agent)
 - [เทคโนโลยีที่ใช้](#เทคโนโลยีที่ใช้)
 - [Security](#security)
-- [Tools ที่มีให้ (24 tools)](#tools-ที่มีให้-24-tools)
+- [Tools ที่มีให้ (28 tools)](#tools-ที่มีให้-28-tools)
 - [Skill Modes](#skill-modes)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -186,7 +186,7 @@ user input
 │                                               │
 │   1. วิเคราะห์ query + ประวัติการสนทนา        │
 │   2. งานซับซ้อน? → เรียก create_plan ก่อน     │
-│   3. เลือก tool ที่เหมาะสมจาก 24 tools         │
+│   3. เลือก tool ที่เหมาะสมจาก 28 tools         │
 │   4. รัน tool → ได้ผลลัพธ์ (Observation)       │
 │   5. คิดต่อ: ทำต่อ tool ถัดไป หรือ ตอบเลย      │
 │      ↑_____________________________│         │
@@ -303,7 +303,7 @@ Tool ที่ spawn process จริง (`bash`, `bash_bg`, `python_exec`) ถ
 
 ---
 
-## Tools ที่มีให้ (24 tools)
+## Tools ที่มีให้ (28 tools)
 
 Agent เลือก tool เองตาม docstring ของแต่ละ tool — ไม่ต้องสั่งตรง ๆ
 
@@ -361,6 +361,17 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 | Tool | คำอธิบาย |
 |---|---|
 | `rag_search` | ค้นหาความรู้ในฐานข้อมูลส่วนตัวของคุณเอง (BM25 + vector search) — **ไม่ได้ bundle engine หรือฐานข้อมูลมาให้** ต้อง clone [`ENDEAVOR_RAG_LITE`](https://github.com/halochamp/ENDEAVOR_RAG_LITE) (MiniLM + ChromaDB + BM25 + RRF) เป็นโฟลเดอร์พี่น้องชื่อ `ENDEAVOR_RAG_LITE` (อยู่นอกรีโปนี้ ระดับเดียวกัน — `git clone` ตรงๆ ได้ชื่อโฟลเดอร์ถูกอยู่แล้ว) — ถ้าไม่พบ engine จะตอบ `[error]` บอกวิธีตั้งค่าแทนที่จะ crash หรือเงียบ |
+
+### 🔌 MCP (Model Context Protocol)
+
+| Tool | คำอธิบาย |
+|---|---|
+| `mcp_list_tools` | ดู catalog ของ MCP server ที่ตั้งค่าไว้ หรือระบุ `tool_name` เพื่อดู description + input schema ของ tool เดียวก่อนเรียก |
+| `mcp_call_tool` | เรียก tool ของ MCP server ด้วย `arguments_json` — รองรับทั้ง Streamable HTTP และ local stdio |
+| `mcp_add_server` | ลงทะเบียน MCP server ระหว่างใช้งาน: HTTP ใช้ URL/headers; stdio ใช้ absolute executable + args และ `cwd` ที่อยู่ใน workspace |
+| `mcp_remove_server` | ถอดเฉพาะ server ที่ลงทะเบียนผ่าน `mcp_add_server`; server ที่ developer กำหนดใน `config.MCP_SERVERS` จะไม่ถูกลบ |
+
+MCP stdio ถูก spawn โดยไม่ผ่าน shell และอยู่ใต้ macOS sandbox เดียวกับ `bash`: เขียนได้เฉพาะ `workspace/` และ `/tmp` และยังติด sensitive-path read guards เดิม ส่วน registry อยู่ที่ `workspace/tool_mcp/servers.json` แบบ atomic และ permission `0600` เพื่อเก็บค่า config/HTTP headers ในเครื่อง โดย public repo **ไม่ bundle default MCP server ใด ๆ** มาให้
 
 ### 🔊 Audio
 
