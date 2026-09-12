@@ -185,6 +185,10 @@ START → react (agent คุมเองทั้งหมด) → END
 — main agent เห็น **full message history + tool results ทั้งหมด** ภายใน loop เดียว
 แล้วตัดสินใจเองว่าจะ "วางแผน → ทำตามแผน → สรุปคำตอบ" หรือ "ตอบตรง ๆ" ลด overhead จากการส่ง state ข้าม node และลดจุดที่ context หลุด
 
+ทุก tool call ผ่าน `ToolNode` guard กลาง: ถ้าเรียก tool เดิมด้วย arguments เดิมติดกันครั้งที่สอง
+ระบบจะคืน hint โดยไม่รันซ้ำ และถ้ายังเรียกซ้ำครั้งที่สามจะหยุด turn อย่าง deterministic;
+`web_search` จะ normalize ตัวพิมพ์และ whitespace ของ query ก่อนเทียบซ้ำด้วย
+
 ### องค์ประกอบหลัก
 
 | ส่วน | ทำหน้าที่ |
@@ -299,7 +303,7 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 
 | Tool | คำอธิบาย |
 |---|---|
-| `read_file` | อ่านไฟล์ text/code รวมถึง PDF, Word, Excel — แปลงเป็น markdown อัตโนมัติ |
+| `read_file` | อ่านไฟล์ text/code รวมถึง PDF, Word, Excel — แปลงเป็น markdown อัตโนมัติ; ส่ง `path` เป็น list 2-4 ไฟล์เพื่ออ่านแบบ parallel หรือใช้ `requests` เมื่อแต่ละไฟล์มี filter/range ต่างกัน |
 | `write_file` | สร้างไฟล์ใหม่ใน workspace (สำหรับไฟล์ที่ยังไม่มี) |
 | `edit` | แก้ไขไฟล์ที่มีอยู่แบบ find & replace (รองรับ replace ทั้งหมด) |
 | `grep` | ค้นหา regex pattern ข้ามไฟล์ในโฟลเดอร์ — คืนผลแบบ `file:line: content` |
@@ -318,7 +322,7 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 
 | Tool | คำอธิบาย |
 |---|---|
-| `read_image` | progressive direct vision สำหรับไฟล์ local, URL และ `screen`: การเรียกครั้งแรกส่งภาพต้นฉบับทั้งภาพให้ main VLM โดยไม่ทำ OCR อัตโนมัติ; ถ้า endpoint/model ปฏิเสธ image input ระบบจะ OCR ภาพต้นฉบับเต็มและใส่ `[TEXT-ONLY IMAGE FALLBACK]` ใน turn เดียว; หลังจากเห็นภาพแล้วจึงเรียก `detail="text"` (OCR/table/QR), `detail="chart"`/`"slide"` หรือ `find`/`region+zoom` ได้ โดยไม่ส่งคำถาม semantic เข้า tool |
+| `read_image` | progressive direct vision สำหรับไฟล์ local, URL และ `screen`; ส่ง `source` เป็น list ได้สูงสุด 10 ภาพเพื่อ resolve/encode แบบ parallel และเลือก OCR ด้วย `ocr=true` หรือ `ocr=[1,3]`; ภาพใหม่จะถูกส่งเป็น original ก่อน แล้วค่อย OCR หลัง model เห็นภาพ; text-only backend จะคืน full OCR fallback ต่อภาพ |
 
 ### 🖱️ Computer Use
 
@@ -465,6 +469,7 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 | Context Window | `V2_CONTEXT_MAX_CHARS` | ขยาย/ลด session length |
 | Agent Server | `AGENT_SERVER_PORT`, `AGENT_SERVER_TOKEN`, `AGENT_AUTH_DISABLED` | ตั้งค่า authenticated backend สำหรับ Electron/custom clients |
 | Workspace & Logs | `V2_WORKSPACE`, `V2_LOG_DIR`, `V2_LOG_MAX_ENTRIES` | path สำหรับไฟล์งานและ log |
+| File & Vision Batch | `V2_READ_FILE_BATCH_MAX_FILES`, `V2_READ_FILE_BATCH_MAX_CHARS` | จำกัดจำนวนไฟล์และขนาดผลรวมของ parallel `read_file` batch; `read_image` จำกัด 10 ภาพต่อ batch ตาม vision turn budget |
 | Web Tool Limits | `V2_WEB_SEARCH_MAX_RESULTS`, `V2_BROWSE_URL_MAX_CHARS`, ฯลฯ | จำกัดขนาดผลลัพธ์จาก web tools |
 | Web Cache | `V2_WEB_CACHE_MAX_ENTRIES`, `V2_WEB_CACHE_MAX_BYTES` | จัดการ cache เนื้อหาเว็บ |
 | Summarization | `V2_SUMMARY_MAX_CHARS`, `V2_SUMMARY_SKIP_LLM_BELOW` | ควบคุมการสรุปผลลัพธ์ก่อนเข้า context |

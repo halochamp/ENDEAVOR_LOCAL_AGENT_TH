@@ -8,15 +8,119 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 import datetime
+import json as _json
 import logging
-from langgraph.prebuilt import create_react_agent
+from langgraph.prebuilt import create_react_agent, ToolNode
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from config import CONTEXT_MAX_CHARS
 
 from llm import build_llm
+from runtime_common import ToolLoopDetected
 from tools import ALL_TOOLS
 from system_prompt import SYSTEM
 
 log = logging.getLogger(__name__)
+
+
+# Generic consecutive-call circuit breaker. The second identical call returns
+# a corrective hint without executing the expensive/side-effectful tool; a
+# third identical call stops the turn deterministically.
+_REPEAT_TOOL_HINT_TEXT = (
+    "[tool_loop_hint] เรียก {name} ด้วย query/arguments เดิมซ้ำ 2 รอบติด; "
+    "รอบนี้จึงไม่รัน tool ซ้ำ. ต้องเปลี่ยน query/arguments หรือเปลี่ยนเครื่องมือก่อนทำต่อ. "
+    "ห้ามเรียกคำขอเดิมติดกันอีก; ครั้งที่ 3 จะหยุด turn เพื่อป้องกัน loop."
+)
+
+
+def _normalise_web_query(value):
+    """Canonicalize web_search query text so spacing/case cannot bypass the guard."""
+    if isinstance(value, str):
+        return " ".join(value.split()).casefold()
+    if isinstance(value, list):
+        return [_normalise_web_query(item) for item in value]
+    return value
+
+
+def _tool_call_fingerprint(tool_call: dict) -> str:
+    """Stable loop identity independent of the provider-generated call id."""
+    name = str(tool_call.get("name") or "")
+    args = tool_call.get("args") or {}
+    identity = args
+    if name == "web_search" and isinstance(args, dict) and "query" in args:
+        identity = {"query": _normalise_web_query(args.get("query"))}
+    return _json.dumps(
+        {"name": name, "identity": identity},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _prior_tool_calls_in_turn(messages: list, call_id: str) -> list[dict] | None:
+    """Return tool-call attempts before ``call_id`` in the current user turn."""
+    turn_start = -1
+    for idx in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[idx], HumanMessage):
+            turn_start = idx
+            break
+
+    prior: list[dict] = []
+    for msg in messages[turn_start + 1:]:
+        if not isinstance(msg, AIMessage):
+            continue
+        for candidate in (getattr(msg, "tool_calls", None) or []):
+            if str(candidate.get("id") or "") == call_id:
+                return prior
+            prior.append(candidate)
+    return None
+
+
+def _guard_repeated_tool_call(request, execute):
+    """Hint on the second identical consecutive call; stop on the third."""
+    call = request.tool_call or {}
+    call_id = str(call.get("id") or "")
+    name = str(call.get("name") or "tool")
+    if not call_id:
+        return execute(request)
+
+    state = request.state
+    if isinstance(state, dict):
+        messages = list(state.get("messages") or [])
+    else:
+        messages = list(getattr(state, "messages", None) or [])
+    if not messages:
+        return execute(request)
+
+    prior = _prior_tool_calls_in_turn(messages, call_id)
+    if prior is None:
+        return execute(request)
+
+    fingerprint = _tool_call_fingerprint(call)
+    same_before = 0
+    for candidate in reversed(prior):
+        if _tool_call_fingerprint(candidate) != fingerprint:
+            break
+        same_before += 1
+
+    if same_before == 0:
+        return execute(request)
+    if same_before == 1:
+        log.warning(
+            "[tool-loop-guard] duplicate call hint for %s: %s",
+            name, fingerprint[:500],
+        )
+        return ToolMessage(
+            content=_REPEAT_TOOL_HINT_TEXT.format(name=name),
+            tool_call_id=call_id,
+            name=name,
+        )
+
+    log.error(
+        "[tool-loop-guard] stopping turn after third consecutive %s call: %s",
+        name, fingerprint[:500],
+    )
+    raise ToolLoopDetected(name)
 
 
 # Main agent system prompt — Thai output, tool guidance, complex-routing, synthesize rules
@@ -186,4 +290,5 @@ def build_react_agent(checkpointer=None, memory: str = "", tools=None, **llm_ove
                 break
         return [_SM(content=base_prompt)] + msgs
 
-    return create_react_agent(llm, active_tools, prompt=dynamic_prompt, checkpointer=checkpointer)
+    tool_node = ToolNode(active_tools, wrap_tool_call=_guard_repeated_tool_call)
+    return create_react_agent(llm, tool_node, prompt=dynamic_prompt, checkpointer=checkpointer)

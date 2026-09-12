@@ -16,6 +16,7 @@ The main conversation owns meaning and decides whether a follow-up sensor is nee
 from __future__ import annotations
 import base64
 import functools
+import json
 import logging
 import os
 import shutil
@@ -24,6 +25,7 @@ import tempfile
 import threading
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -91,6 +93,10 @@ _SCREEN_TURN_SNAPSHOT: list[str | None] = [None]
 # atomic: a five-view market-slide pack is either wholly available to the model or
 # deferred to a later outer turn -- never silently cut halfway through its evidence.
 _IMAGE_TURN_MAX = 10
+# A batch is bounded by the same practical outer-turn vision ceiling. OCR work
+# uses the same cap so a single tool call cannot create an unbounded sensor fanout.
+_READ_IMAGE_BATCH_MAX = 10
+_OCR_BATCH_MAX = 10
 
 # ToolNode may execute synchronous calls from one AIMessage in parallel, while
 # every read_image call shares the transient queues, counters, and progressive
@@ -1247,6 +1253,360 @@ def _crop_to_tempfile(image_path: str, anchor: tuple[float, float], zoom: float)
     return tmp.name
 
 
+def _batch_ocr_result(local_path: str, source: str) -> str:
+    """Run bounded OCR for one image after its overview is already visible."""
+    boxes = _ocr_layout(local_path)
+    enhanced = False
+    if not boxes:
+        enhanced_tmp: str | None = None
+        try:
+            enhanced_tmp = _enhance_for_ocr(local_path)
+            retry_boxes = _ocr_layout(enhanced_tmp)
+            if retry_boxes:
+                boxes = retry_boxes
+                enhanced = True
+        except Exception:
+            pass
+        finally:
+            if enhanced_tmp:
+                try:
+                    os.unlink(enhanced_tmp)
+                except Exception:
+                    pass
+    ocr_text = "\n".join(str(box.get("text", "")) for box in boxes).strip()
+    if not ocr_text:
+        return "[OCR ASSIST — no text found; original image remains in direct-vision context]"
+    tag = (
+        "[OCR ASSIST — enhanced transcription; pixels are primary]"
+        if enhanced
+        else "[OCR ASSIST — transcription hint; pixels are primary]"
+    )
+    return _combine([f"{tag}\n{ocr_text}"], source)
+
+
+def _copy_batch_source(local_path: str) -> str:
+    """Return a private retained copy for URL/screen batch sources."""
+    retained_path = ""
+    try:
+        suffix = Path(local_path).suffix or ".png"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+            retained_path = handle.name
+        shutil.copyfile(local_path, retained_path)
+        return retained_path
+    except Exception:
+        if retained_path:
+            Path(retained_path).unlink(missing_ok=True)
+        return ""
+
+
+def _prepare_batch_source(
+    src: str, *, need_overview: bool, do_ocr: bool, text_only: bool,
+) -> dict:
+    """Resolve and process one batch source without mutating shared turn state."""
+    downloaded_tmp: str | None = None
+    screen_tmp: str | None = None
+    retained_path = ""
+    extra_tmps: list[str] = []
+    try:
+        if src.lower() == "screen":
+            pinned = _SCREEN_TURN_SNAPSHOT[0]
+            if pinned and Path(pinned).exists():
+                local_path = pinned
+            else:
+                screen_tmp = f"/tmp/endeavor_screen_{uuid.uuid4().hex[:8]}.png"
+                result = subprocess.run(
+                    ["screencapture", "-x", "-m", screen_tmp],
+                    capture_output=True, timeout=5,
+                )
+                if result.returncode != 0 or not Path(screen_tmp).exists():
+                    return {
+                        "error": (
+                            "screencapture failed — กรุณาเปิดสิทธิ์ Screen Recording: "
+                            "System Settings → Privacy & Security → Screen Recording"
+                        ),
+                        "screen_tmp": screen_tmp,
+                    }
+                local_path = screen_tmp
+        elif src.startswith("http://") or src.startswith("https://"):
+            local_path = _download_url(src)
+            downloaded_tmp = local_path
+        else:
+            local_path = resolve_read_path(src)
+            if not Path(local_path).exists():
+                return {"error": f"file not found: {src}"}
+
+        converted_path = _maybe_convert_heic(local_path)
+        if converted_path != local_path:
+            extra_tmps.append(converted_path)
+            local_path = converted_path
+
+        fixed_path = _exif_normalize(local_path)
+        if fixed_path != local_path:
+            extra_tmps.append(fixed_path)
+            local_path = fixed_path
+
+        if text_only:
+            return {
+                "ocr_result": full_ocr_for_text_only(local_path, src),
+                "screen_tmp": screen_tmp,
+            }
+
+        image_url = ""
+        if need_overview:
+            image_url = _encode_vlm_data_url(local_path, VLM_MAX_SIDE)
+            retained_path = _copy_batch_source(local_path)
+        ocr_result = _batch_ocr_result(local_path, src) if do_ocr else ""
+        return {
+            "image_url": image_url,
+            "ocr_result": ocr_result,
+            "retained_path": retained_path,
+            "screen_tmp": screen_tmp,
+        }
+    except PermissionError as exc:
+        if retained_path:
+            Path(retained_path).unlink(missing_ok=True)
+        return {"error": str(exc), "screen_tmp": screen_tmp}
+    except Exception as exc:
+        if retained_path:
+            Path(retained_path).unlink(missing_ok=True)
+        return {"error": str(exc), "screen_tmp": screen_tmp}
+    finally:
+        if downloaded_tmp:
+            try:
+                os.unlink(downloaded_tmp)
+            except Exception:
+                pass
+        for tmp_path in extra_tmps:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+
+def _coerce_ocr_selector(ocr: bool | list[int] | str | None):
+    """Accept Qwen's occasional JSON/string serialization of a valid selector."""
+    if isinstance(ocr, str):
+        text = ocr.strip()
+        lowered = text.lower()
+        if lowered == "true":
+            return True
+        if lowered in {"false", ""}:
+            return False
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                decoded = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded = None
+            if isinstance(decoded, list):
+                return decoded
+    return ocr
+
+
+def _normalise_batch_ocr(
+    ocr: bool | list[int] | str | None, count: int,
+) -> tuple[set[int], str]:
+    """Return zero-based OCR selections for a batch, or an error string."""
+    ocr = _coerce_ocr_selector(ocr)
+    if ocr is False or ocr is None:
+        return set(), ""
+    if ocr is True:
+        return set(range(count)), ""
+    if not isinstance(ocr, list):
+        return set(), "[error] ocr must be false, true, or a list of 1-based image numbers"
+    if len(ocr) > _OCR_BATCH_MAX:
+        return set(), f"[error] ocr can select at most {_OCR_BATCH_MAX} images"
+    selected: set[int] = set()
+    for raw in ocr:
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return set(), "[error] ocr image numbers must be integers"
+        if raw < 1 or raw > count:
+            return set(), f"[error] ocr image number {raw} is out of range 1-{count}"
+        selected.add(raw - 1)
+    return selected, ""
+
+
+def _read_image_batch(sources: list[str], ocr: bool | list[int] | str) -> str:
+    """Batch overview/OCR path. Caller already holds _READ_IMAGE_CALL_LOCK."""
+    if not sources:
+        return "[error] source batch is empty"
+    if len(sources) > _READ_IMAGE_BATCH_MAX:
+        return f"[error] read_image accepts at most {_READ_IMAGE_BATCH_MAX} images per batch"
+
+    cleaned: list[str] = []
+    seen_sources: set[str] = set()
+    for raw in sources:
+        if not isinstance(raw, str) or not raw.strip():
+            return "[error] every batch source must be a non-empty string"
+        src = raw.strip()
+        if src in seen_sources:
+            return f"[error] duplicate image in batch: {src}"
+        seen_sources.add(src)
+        cleaned.append(src)
+
+    selected, selection_error = _normalise_batch_ocr(ocr, len(cleaned))
+    if selection_error:
+        return selection_error
+
+    capability = get_capability()
+    if capability == UNKNOWN:
+        capability = probe_vision_capability()
+    text_only = capability == TEXT_ONLY
+    phase(
+        f"🖼 read_image · batch {len(cleaned)} image(s)"
+        + (" · text-only OCR" if text_only else f" · OCR {len(selected)} selected")
+    )
+
+    results: list[str | None] = [None] * len(cleaned)
+    # (index, source, needs overview, should OCR, OCR was deferred)
+    specs: list[tuple[int, str, bool, bool, bool]] = []
+    for idx, src in enumerate(cleaned):
+        wants_ocr = text_only or idx in selected
+        if text_only:
+            read_sig = (src, "overview")
+            if read_sig in _READ_SEEN:
+                results[idx] = (
+                    "[อ่านซ้ำ] ภาพนี้ถูก OCR แล้วใน turn นี้ ผลลัพธ์เดิมคือ:\n"
+                    f"{_READ_SEEN[read_sig]}"
+                )
+                continue
+            if _READ_ATTEMPTS.get(src, 0) >= _READ_ATTEMPT_MAX:
+                results[idx] = (
+                    f"[ครบจำนวนอ่านภาพสูงสุด] อ่านภาพนี้ไปแล้ว "
+                    f"{_READ_ATTEMPTS.get(src, 0)} ครั้งใน turn นี้"
+                )
+                continue
+            specs.append((idx, src, False, True, False))
+            continue
+
+        need_overview = src not in _OVERVIEW_SEEN
+        if src in _OVERVIEW_PENDING and idx in selected:
+            results[idx] = (
+                "[requested OCR deferred — the original image is queued but has not "
+                "reached the model yet; wait for the next model step, then retry "
+                "this SAME batch with the same ocr selection]"
+            )
+            continue
+        ocr_deferred = idx in selected and need_overview
+        do_ocr = idx in selected and not need_overview
+
+        if need_overview:
+            read_sig = (src, "overview")
+            if read_sig in _READ_SEEN:
+                results[idx] = (
+                    "[อ่านซ้ำ] overview ของภาพนี้ถูกประมวลผลแล้วใน turn นี้:\n"
+                    f"{_READ_SEEN[read_sig]}"
+                )
+                continue
+        elif do_ocr:
+            read_sig = (src, "text")
+            if read_sig in _READ_SEEN:
+                results[idx] = (
+                    "[อ่านซ้ำ] OCR ของภาพนี้ถูกประมวลผลแล้วใน turn นี้:\n"
+                    f"{_READ_SEEN[read_sig]}"
+                )
+                continue
+        else:
+            results[idx] = "[original image already active in direct-vision context]"
+            continue
+
+        if _READ_ATTEMPTS.get(src, 0) >= _READ_ATTEMPT_MAX:
+            results[idx] = (
+                f"[ครบจำนวนอ่านภาพสูงสุด] อ่านภาพนี้ไปแล้ว "
+                f"{_READ_ATTEMPTS.get(src, 0)} ครั้งใน turn นี้"
+            )
+            continue
+        specs.append((idx, src, need_overview, do_ocr, ocr_deferred))
+
+    worker_results: dict[int, dict] = {}
+    if specs:
+        with ThreadPoolExecutor(max_workers=min(_READ_IMAGE_BATCH_MAX, len(specs))) as pool:
+            futures = {
+                pool.submit(
+                    _prepare_batch_source,
+                    src,
+                    need_overview=need_overview,
+                    do_ocr=do_ocr,
+                    text_only=text_only,
+                ): idx
+                for idx, src, need_overview, do_ocr, _deferred in specs
+            }
+            for future, idx in futures.items():
+                try:
+                    worker_results[idx] = future.result()
+                except Exception as exc:
+                    worker_results[idx] = {"error": str(exc)}
+
+    for idx, src, need_overview, do_ocr, ocr_deferred in specs:
+        worker = worker_results[idx]
+        screen_tmp = worker.get("screen_tmp")
+        error = worker.get("error")
+        if error:
+            results[idx] = f"[error] read_image: {error}"
+            if worker.get("retained_path"):
+                Path(worker["retained_path"]).unlink(missing_ok=True)
+            if screen_tmp:
+                Path(screen_tmp).unlink(missing_ok=True)
+            continue
+
+        _READ_ATTEMPTS[src] = _READ_ATTEMPTS.get(src, 0) + 1
+        if text_only:
+            result = str(worker.get("ocr_result") or "")
+            if not result:
+                result = "[TEXT-ONLY IMAGE FALLBACK — no OCR result]"
+            _READ_SEEN[(src, "overview")] = result
+            results[idx] = result
+            if src.lower() == "screen" and screen_tmp:
+                _pin_screen_turn_snapshot(screen_tmp)
+                screen_tmp = None
+            if screen_tmp:
+                Path(screen_tmp).unlink(missing_ok=True)
+            continue
+
+        retained_path = worker.get("retained_path") or ""
+        if need_overview:
+            image_url = str(worker.get("image_url") or "")
+            queued = bool(image_url) and _queue_image_bundle([image_url])
+            if queued:
+                if retained_path:
+                    _PENDING_IMAGE_SOURCES.append((src, retained_path))
+                    retained_path = ""
+                _IMAGE_TURN_COUNT[0] += 1
+                _OVERVIEW_PENDING.add(src)
+                result = (
+                    "[original image queued for agent direct vision — "
+                    "inspect pixels first; no OCR/table/QR sensor run]"
+                )
+                if ocr_deferred:
+                    result += (
+                        "\n[requested OCR deferred — original was attached first. "
+                        "Inspect it now, then call read_image on the same batch again "
+                        "with the same ocr selection.]"
+                    )
+                if src.lower() == "screen" and screen_tmp:
+                    _pin_screen_turn_snapshot(screen_tmp)
+                    screen_tmp = None
+            else:
+                result = "[original image direct vision deferred]\n" + _vision_budget_notice(1)
+            _READ_SEEN[(src, "overview")] = result
+            results[idx] = result
+        elif do_ocr:
+            result = str(worker.get("ocr_result") or "")
+            if not result:
+                result = "[OCR ASSIST — no text found; original image remains in direct-vision context]"
+            _READ_SEEN[(src, "text")] = result
+            results[idx] = result
+
+        if retained_path:
+            Path(retained_path).unlink(missing_ok=True)
+        if screen_tmp:
+            Path(screen_tmp).unlink(missing_ok=True)
+
+    return "\n\n".join(
+        f"[image:{idx + 1} {src}]\n{results[idx] or '[error] no result'}"
+        for idx, src in enumerate(cleaned)
+    )
+
+
 def _exif_normalize(path: str) -> str:
     """If `path` carries a non-identity EXIF orientation tag, write an upright copy
     to a temp PNG and return its path; otherwise return `path` unchanged (no temp
@@ -1524,16 +1884,28 @@ def _download_url(url: str) -> str:
 
 @tool
 @_serialize_read_image
-def read_image(source: str, region: str = "full", zoom: float = 1.0,
-                find: str = "", detail: str = "overview") -> str:
-    """Read and understand an image from a file path, URL, or the current screen.
+def read_image(source: str | list[str], region: str = "full", zoom: float = 1.0,
+                find: str = "", detail: str = "overview",
+                ocr: bool | list[int] | str = False) -> str:
+    """Read one image or batch-read up to ten images in parallel.
+
+    Single-image behavior is unchanged. Batch mode accepts a list of 1-10
+    distinct paths/URLs/``screen`` sources and supports overview plus optional
+    OCR selection only. Use ``ocr=True`` for every image or ``ocr=[1, 3]`` for
+    selected 1-based positions. A JSON-list string is accepted when the model
+    serializes an array as text. New vision-capable sources are queued as whole
+    originals first; requested OCR is deferred until the model has seen them.
+    On a text-only backend, batch mode returns bounded full-image OCR for every
+    source because pixels cannot be published to that model.
 
     First call with default detail="overview" queues only the original image for
     direct agent vision; it deliberately does not run OCR or other content sensors.
     After the agent sees those pixels, follow-up modes can request Apple Vision OCR,
     table/QR assist, structural crops, or targeted zoom/find crops as needed.
 
-    source   : file path in workspace / absolute path | https:// URL | "screen" (screenshot)
+    source   : file path/URL/"screen", or a list of 1-10 distinct sources
+    ocr      : batch-only false/true/list of 1-based image positions; use
+               detail="text" for one-image OCR
     region   : "full" (default) or a zoom anchor — center/top/bottom/left/right/
                top-left/top-right/bottom-left/bottom-right. Unknown name →
                "[error] invalid region '<name>' — must be...": retry with a listed
@@ -1566,8 +1938,30 @@ def read_image(source: str, region: str = "full", zoom: float = 1.0,
     published: the full original-image OCR is returned instead, with an explicit
     limitation when OCR finds no readable text.
     """
-    if not source or not source.strip():
+    if isinstance(source, str):
+        source_text = source.strip()
+        if source_text.startswith("[") and source_text.endswith("]"):
+            try:
+                decoded_source = json.loads(source_text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded_source = None
+            if isinstance(decoded_source, list):
+                source = decoded_source
+
+    ocr = _coerce_ocr_selector(ocr)
+    if isinstance(source, list):
+        if region != "full" or zoom != 1.0 or find or detail != "overview":
+            return (
+                "[error] batch read_image supports overview + ocr selection only; "
+                "use separate single-image calls for region/zoom/find/chart/slide/text extras"
+            )
+        return _read_image_batch(source, ocr)
+
+    if not isinstance(source, str) or not source.strip():
         return "[error] source is required"
+
+    if ocr not in (False, None, []):
+        return "[error] ocr selection is batch-only; use detail='text' for one image"
 
     detail = (detail or "overview").strip().lower()
     detail_err = _validate_detail(detail)

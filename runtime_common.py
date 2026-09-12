@@ -53,6 +53,19 @@ _THINKING_MSGS = [
 ]
 
 
+class ToolLoopDetected(BaseException):
+    """Deterministic stop signal for repeated identical tool-call loops."""
+
+    def __init__(self, tool_name: str):
+        self.tool_name = str(tool_name or "tool")
+        super().__init__(
+            "⚠️ หยุดการทำงานเพื่อป้องกัน tool loop: "
+            f"Agent เรียก {self.tool_name} ด้วย query/arguments เดิมซ้ำ 3 รอบติด "
+            "แม้ระบบเตือนให้เปลี่ยน query หรือเปลี่ยนเครื่องมือแล้ว "
+            "กรุณาปรับคำค้นหรือแนวทางแล้วลองใหม่"
+        )
+
+
 # ── Thinking-message rotator ───────────────────────────────────────────────────
 
 class ThinkingTimer:
@@ -448,6 +461,12 @@ def run_turn_core(
                             final = _clean_final(m.content)
                             if on_final:
                                 on_final(final)
+    except ToolLoopDetected as exc:
+        # Repeated identical calls must end the turn at the stream boundary;
+        # otherwise ToolNode/model state could continue the same loop.
+        final = str(exc)
+        if on_final:
+            on_final(final)
     finally:
         if thread_id == _MEMORY_THREAD:
             try:

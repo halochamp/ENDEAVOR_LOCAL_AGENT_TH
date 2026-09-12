@@ -3,18 +3,24 @@
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
 from __future__ import annotations
+import json
 import os
 import re
 import subprocess
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from pathlib import Path
 from langchain_core.tools import tool
+from pydantic import BaseModel, ConfigDict, Field
 from tools._progress import progress
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     READ_FILE_MAX_CHARS as _MAX_CHARS,
+    READ_FILE_BATCH_MAX_FILES as _BATCH_MAX_FILES,
+    READ_FILE_BATCH_MAX_CHARS as _BATCH_MAX_CHARS,
     READ_FILE_MAX_BYTES as _MAX_FILE_BYTES,
     READ_FILE_AUDIO_VIDEO_MAX_BYTES as _MAX_AV_BYTES,
     WORKSPACE,
@@ -25,6 +31,27 @@ _DOC_EXT = {".pdf", ".doc", ".docx", ".xlsx", ".xls"}
 # Raster image formats only — NOT .svg, which is XML text that read_file reads fine.
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic", ".heif", ".tiff", ".tif"}
 _AV_EXT = _AUDIO_EXT | _VIDEO_EXT
+
+
+class ReadFileRequest(BaseModel):
+    """One independently-filtered file read inside a concurrent batch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="Path of the file to read.")
+    user_query: str = ""
+    line_start: int = 0
+    line_end: int = 0
+    page_start: int = 0
+    page_end: int = 0
+    contains: str = ""
+    contains_any: list[str] | None = None
+    contains_all: list[str] | None = None
+    regex: str = ""
+    regex_flags: str = ""
+    whole_word: bool = False
+    doc_mode: str = ""
+    context_lines: int = 3
 
 
 def _missing_path_hint() -> str:
@@ -211,9 +238,125 @@ def _read_file_impl(
         return f"[error] read_file failed: {e}"
 
 
+def _normalise_path_batch(path: str | list[str]) -> tuple[list[str], str]:
+    """Normalize one path or a model-serialized 1-4 path batch."""
+    if isinstance(path, list):
+        raw_items = path
+    elif isinstance(path, str):
+        text = path.strip()
+        raw_items: list[object] = [path]
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                decoded = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                decoded = None
+            if isinstance(decoded, list):
+                raw_items = decoded
+    else:
+        return [], "[error] path must be a string or a list of 1-4 strings"
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, str):
+            return [], "[error] every batch path must be a string"
+        clean = item.strip()
+        if not clean:
+            continue
+        key = os.path.normcase(os.path.normpath(clean))
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(clean)
+
+    if not paths:
+        return [], "[error] path is required"
+    if len(paths) > _BATCH_MAX_FILES:
+        return [], f"[error] read_file accepts at most {_BATCH_MAX_FILES} files per call"
+    return paths, ""
+
+
+def _normalise_read_requests(
+    requests: list[ReadFileRequest] | list[dict[str, object]] | None,
+) -> tuple[list[ReadFileRequest], str]:
+    """Validate a 1-4 item per-file batch without collapsing duplicate paths."""
+    if not isinstance(requests, list):
+        return [], "[error] requests must be a list of 1-4 file request objects"
+    if not requests:
+        return [], "[error] requests must include at least one file request"
+    if len(requests) > _BATCH_MAX_FILES:
+        return [], f"[error] read_file accepts at most {_BATCH_MAX_FILES} requests per call"
+
+    normalised: list[ReadFileRequest] = []
+    for idx, item in enumerate(requests, start=1):
+        try:
+            request = item if isinstance(item, ReadFileRequest) else ReadFileRequest.model_validate(item)
+        except Exception as exc:
+            return [], f"[error] invalid requests[{idx}]: {exc}"
+        path = request.path.strip()
+        if not path:
+            return [], f"[error] requests[{idx}].path is required"
+        normalised.append(request.model_copy(update={"path": path}))
+    return normalised, ""
+
+
+def _request_read_args(request: ReadFileRequest) -> tuple[object, ...]:
+    """Return the historical _read_file_impl positional argument shape."""
+    return (
+        request.path, request.user_query, request.line_start, request.line_end,
+        request.page_start, request.page_end, request.contains, request.contains_any,
+        request.contains_all, request.regex, request.regex_flags, request.whole_word,
+        request.doc_mode, request.context_lines,
+    )
+
+
+def _has_shared_read_options(
+    user_query: str, line_start: int, line_end: int, page_start: int, page_end: int,
+    contains: str, contains_any: list[str] | None, contains_all: list[str] | None,
+    regex: str, regex_flags: str, whole_word: bool, doc_mode: str, context_lines: int,
+) -> bool:
+    """Prevent silently ignoring top-level options when requests is selected."""
+    return any((
+        user_query, line_start, line_end, page_start, page_end, contains, contains_any,
+        contains_all, regex, regex_flags, whole_word, doc_mode, context_lines != 3,
+    ))
+
+
+def _format_batch_results(paths: list[str], results: list[str], cap: int) -> str:
+    """Render input-ordered per-file blocks under one deterministic total cap."""
+    if cap <= 0:
+        return ""
+    chunks: list[str] = []
+    remaining = cap
+    trunc_note = "\n...[batch-truncated — read this file separately for more]"
+
+    for idx, (file_path, result) in enumerate(zip(paths, results)):
+        separator = "\n\n" if chunks else ""
+        if len(separator) >= remaining:
+            break
+        remaining -= len(separator)
+        left = len(paths) - idx
+        header = f"[file:{file_path}]\n"
+        block_budget = max(len(header), remaining // max(1, left))
+        body_budget = max(0, block_budget - len(header))
+        body = result or "[empty]"
+        if len(body) > body_budget:
+            keep = max(0, body_budget - len(trunc_note))
+            body = body[:keep].rstrip() + trunc_note if body_budget >= len(trunc_note) else body[:body_budget]
+        block = header + body
+        if len(block) > remaining:
+            block = block[:remaining]
+        chunks.append(separator + block)
+        remaining -= len(block)
+        if remaining <= 0:
+            break
+
+    return "".join(chunks)
+
+
 @tool
 def read_file(
-    path: str,
+    path: str | list[str] | None = None,
     user_query: str = "",
     line_start: int = 0,
     line_end: int = 0,
@@ -227,8 +370,19 @@ def read_file(
     whole_word: bool = False,
     doc_mode: str = "",
     context_lines: int = 3,
+    requests: list[ReadFileRequest] | None = None,
 ) -> str:
-    """Read file contents — plain text, code, PDF/Word/Excel documents, and audio/video.
+    """Read one file or up to four files in parallel.
+
+    ``path`` accepts a single path or a list of 2-4 paths. That compact batch
+    form deduplicates paths, applies the same filters to every file, preserves
+    input order, and caps the combined result. For independently filtered
+    concurrent reads, pass ``requests`` as a list of 1-4 request objects; do
+    not mix it with ``path`` or top-level read options. Per-file failures remain
+    local to their result block.
+
+    Plain-text, code, PDF/Word/Excel, and audio/video behavior for a single
+    path is unchanged.
 
     For plain-text/code files, pass line_start/line_end (1-indexed, inclusive — same
     numbering shown by the structure map below and by `rg -n` / `grep -n` style file:line output) to
@@ -292,11 +446,87 @@ def read_file(
     Pass user_query with what you're looking for so specific figures in a large
     document aren't sampled away.
     """
-    return _read_file_impl(
-        path, user_query, line_start, line_end, page_start, page_end,
-        contains, contains_any, contains_all, regex, regex_flags,
-        whole_word, doc_mode, context_lines,
-    )
+    if requests is not None:
+        if path is not None or _has_shared_read_options(
+            user_query, line_start, line_end, page_start, page_end, contains,
+            contains_any, contains_all, regex, regex_flags, whole_word, doc_mode,
+            context_lines,
+        ):
+            return "[error] requests cannot be combined with path or top-level read options"
+        entries, request_error = _normalise_read_requests(requests)
+        if request_error:
+            return request_error
+
+        progress(f"กำลังอ่าน {len(entries)} ไฟล์พร้อม filter แยกกัน")
+        results: list[str] = [""] * len(entries)
+        with ThreadPoolExecutor(max_workers=min(_BATCH_MAX_FILES, len(entries))) as executor:
+            futures = {}
+            for idx, request in enumerate(entries):
+                ctx = copy_context()
+                futures[executor.submit(ctx.run, _read_file_impl, *_request_read_args(request))] = idx
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as exc:
+                    results[idx] = f"[error] read_file failed: {exc}"
+        return _format_batch_results(
+            [request.path for request in entries], results, _BATCH_MAX_CHARS,
+        )
+
+    if path is None:
+        return "[error] path or requests is required"
+    paths, batch_error = _normalise_path_batch(path)
+    if batch_error:
+        return batch_error
+
+    # Preserve the historical single-file path when only one path is supplied.
+    if len(paths) == 1:
+        return _read_file_impl(
+            paths[0], user_query, line_start, line_end, page_start, page_end,
+            contains, contains_any, contains_all, regex, regex_flags,
+            whole_word, doc_mode, context_lines,
+        )
+
+    progress(f"กำลังอ่าน {len(paths)} ไฟล์พร้อมกัน")
+    results: list[str] = [""] * len(paths)
+    with ThreadPoolExecutor(max_workers=min(_BATCH_MAX_FILES, len(paths))) as executor:
+        futures = {}
+        for idx, file_path in enumerate(paths):
+            ctx = copy_context()
+            futures[executor.submit(
+                ctx.run,
+                _read_file_impl,
+                file_path,
+                user_query,
+                line_start,
+                line_end,
+                page_start,
+                page_end,
+                contains,
+                contains_any,
+                contains_all,
+                regex,
+                regex_flags,
+                whole_word,
+                doc_mode,
+                context_lines,
+            )] = idx
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                results[idx] = future.result()
+            except Exception as exc:
+                results[idx] = f"[error] read_file failed: {exc}"
+
+    return _format_batch_results(paths, results, _BATCH_MAX_CHARS)
+
+
+# Nested request validation happens before the @tool function body. Keep the
+# public tool contract string-based when a model sends an invalid nested object.
+read_file.handle_validation_error = lambda _exc: (
+    "[error] invalid read_file arguments — use only documented field names and types"
+)
 
 
 def _read_document(
