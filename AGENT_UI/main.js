@@ -1,11 +1,17 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 const { spawn, exec } = require('child_process')
 const http = require('http')
 const crypto = require('crypto')
 const { isInsideWorkspace } = require('./lib/workspace_guard')
-const { listenerPidFromLsof, modelFromCommand, classifyServerPresence } = require('./lib/runtime_model')
+const {
+  listenerPidFromLsof,
+  modelFromCommand,
+  classifyServerPresence,
+  requiresLargeModelWarning,
+} = require('./lib/runtime_model')
 
 // Static auth token (P2 fix) — generated once per launch, shared with the Python
 // server via env and with the renderer via IPC. The agent server requires it on
@@ -47,17 +53,16 @@ const _condaDir   = _findCondaEnvDir(_CONDA_ENV)
 const PYTHON = process.env.MLX_PYTHON || (_condaDir ? path.join(_condaDir, 'bin', 'python') : 'python3')
 const AGENT_PORT = 8765
 
-// Mirrors config.py's own override rule exactly (README's RAM<48GB guidance
-// tells users to set both together) — MODEL only overrides when BOTH
-// MLX_BASE_URL and V2_MODEL are set, otherwise always the production model.
-// A hardcoded 35B/port-8085 here would silently ignore that documented path
-// and try to load a model too big for the RAM this override exists for.
+// Mirrors config.py's override rule: V2_MODEL is authoritative only with a
+// non-default backend. Normal :8085 switching is owned by shared runtime config.
 const _DEFAULT_MLX_URL = 'http://localhost:8085/v1'
 const _MLX_BASE_URL = process.env.MLX_BASE_URL || _DEFAULT_MLX_URL
 const _V2_MODEL = process.env.V2_MODEL || ''
 const MLX_PORT = Number(new URL(_MLX_BASE_URL).port) || 8085
-const _DEFAULT_MODEL = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
-const _MODEL_CHOICES = new Set([_DEFAULT_MODEL, 'Qwen/Qwen3-14B-MLX-4bit'])
+const _DEFAULT_MODEL = 'Qwen/Qwen3-14B-MLX-4bit'
+const _HIGH_QUALITY_MODEL = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
+const _LOW_RAM_WARNING_BYTES = 24 * 1024 * 1024 * 1024
+const _MODEL_CHOICES = new Set([_DEFAULT_MODEL, _HIGH_QUALITY_MODEL])
 const _runtimeSettingsOverride = String(process.env.V2_RUNTIME_SETTINGS_PATH || '').trim()
 const _RUNTIME_SETTINGS_PATH = _runtimeSettingsOverride
   ? (path.isAbsolute(_runtimeSettingsOverride)
@@ -379,7 +384,7 @@ function startMLXMonitor() {
 
 // ── Startup sequence ───────────────────────────────────────────────────────────
 
-async function applyRuntimeModel(model) {
+async function applyRuntimeModel(model, confirmedLowRam = false) {
   const requested = String(model || '').trim()
   if (!_MODEL_CHOICES.has(requested)) {
     return { ok: false, error: `unsupported model: ${requested}` }
@@ -413,6 +418,25 @@ async function applyRuntimeModel(model) {
   }
   if (requested === activeModel && await checkMLXReady(MLX_PORT)) {
     return { ok: true, shared: false, model: activeModel }
+  }
+
+  const ramBytes = Number(os.totalmem() || 0)
+  if (
+    requiresLargeModelWarning({
+      model: requested,
+      highQualityModel: _HIGH_QUALITY_MODEL,
+      ramBytes,
+      thresholdBytes: _LOW_RAM_WARNING_BYTES,
+    })
+    && !confirmedLowRam
+  ) {
+    return {
+      ok: false,
+      confirmation_required: true,
+      model: requested,
+      ram_gb: Math.max(1, Math.round(ramBytes / (1024 ** 3))),
+      error: 'Qwen3.6 35B is a large download/model for this Mac; continue only if you accept high RAM/swap use',
+    }
   }
 
   const previous = activeModel
@@ -566,7 +590,9 @@ ipcMain.on('open-workspace', () => {
 })
 
 ipcMain.handle('get-token', () => AGENT_TOKEN)
-ipcMain.handle('apply-runtime-model', async (_e, model) => applyRuntimeModel(model))
+ipcMain.handle('apply-runtime-model', async (_e, model, confirmedLowRam) => (
+  applyRuntimeModel(model, !!confirmedLowRam)
+))
 
 // Compact mode: renderer toggles its CSS, but only the main process can resize
 // the BrowserWindow. Shrink to a floating mini-chat pinned above other windows;

@@ -4,9 +4,9 @@
 
 """config.py — ENDEAVOR_AGENT_V2 configuration
 
-default: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit @ :8085 via mlx_vlm.server (production)
-alternative: Qwen/Qwen3-14B-MLX-4bit for lower-memory Apple Silicon machines
-สลับด้วย env var — ไม่ต้องแก้ code
+default: Qwen/Qwen3-14B-MLX-4bit @ :8085 via mlx_vlm.server
+optional high-quality model: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit
+สลับด้วย shared runtime config หรือ env var — ไม่ต้องแก้ code
 """
 from __future__ import annotations
 import json
@@ -23,36 +23,37 @@ except ImportError:
     pass
 
 # ── Model + backend ───────────────────────────────────────────────────────
-_PROD_URL   = "http://localhost:8085/v1"
-_PROD_MODEL = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
-# Lower-memory alternative (text-only):
-# _PROD_MODEL = "Qwen/Qwen3-14B-MLX-4bit"
+_DEFAULT_URL = "http://localhost:8085/v1"
+DEFAULT_MODEL = "Qwen/Qwen3-14B-MLX-4bit"
+HIGH_QUALITY_MODEL = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
+LOW_RAM_WARNING_BYTES = 24 * 1024 * 1024 * 1024
 
-MLX_BASE_URL = os.getenv("MLX_BASE_URL", _PROD_URL)
-# MODEL ใช้ production model เสมอ ยกเว้นตอน dev ที่เปลี่ยน MLX_BASE_URL ด้วย
-# (ป้องกัน mlx_vlm.server โหลด model ผิดเมื่อ V2_MODEL ถูก override โดยไม่เปลี่ยน URL)
+MLX_BASE_URL = os.getenv("MLX_BASE_URL", _DEFAULT_URL)
+# Keep custom-backend behavior explicit: V2_MODEL becomes authoritative only
+# when MLX_BASE_URL also points away from the default local endpoint. Normal
+# 14B/35B switching on :8085 is owned by the shared runtime settings instead.
 _model_env = os.getenv("V2_MODEL")
-MODEL = _model_env if (_model_env and MLX_BASE_URL != _PROD_URL) else _PROD_MODEL
-if MLX_BASE_URL != _PROD_URL and not _model_env:
+MODEL = _model_env if (_model_env and MLX_BASE_URL != _DEFAULT_URL) else DEFAULT_MODEL
+if MLX_BASE_URL != _DEFAULT_URL and not _model_env:
     import sys
     print(
         f"[config] WARNING: MLX_BASE_URL overridden to {MLX_BASE_URL} but V2_MODEL is not set — "
-        f"requesting production model '{_PROD_MODEL}' from this non-default server.",
+        f"requesting default model '{DEFAULT_MODEL}' from this non-default server.",
         file=sys.stderr,
     )
 API_KEY      = os.getenv("MLX_API_KEY",  "x")  # mlx_vlm.server ใช้ --api-key ได้ แต่ ChatOpenAI ต้องมี non-empty
 
 # ── Runtime model + generation ────────────────────────────────────────────
 # The desktop UI may share an already-running :8085 with Agent MAX VLM during
-# development.  Runtime selection therefore belongs to the TH agent client;
+# development. Runtime selection therefore belongs to the TH agent client;
 # the Electron host only restarts :8085 when it started that server itself.
 MODEL_CHOICES = (
-    _PROD_MODEL,
-    "Qwen/Qwen3-14B-MLX-4bit",
+    DEFAULT_MODEL,
+    HIGH_QUALITY_MODEL,
 )
 MODEL_LABELS = {
-    _PROD_MODEL: "Qwen3.6 35B",
-    "Qwen/Qwen3-14B-MLX-4bit": "Qwen3 14B · text",
+    DEFAULT_MODEL: "Qwen3 14B · text",
+    HIGH_QUALITY_MODEL: "Qwen3.6 35B",
 }
 
 TEMPERATURE     = float(os.getenv("V2_TEMPERATURE",     "0.1"))
@@ -78,10 +79,29 @@ _RUNTIME_SETTINGS_PATH = (
 )
 _runtime_settings_lock = threading.Lock()
 _SHARED_MLX_MODEL = os.getenv("TH_SHARED_MLX_MODEL", "").strip()
-_ENV_MODEL_LOCKED = bool(_model_env and MLX_BASE_URL != _PROD_URL)
+_ENV_MODEL_LOCKED = bool(_model_env and MLX_BASE_URL != _DEFAULT_URL)
 _LOCKED_MODEL = _SHARED_MLX_MODEL or (MODEL if _ENV_MODEL_LOCKED else "")
 _current_model = _LOCKED_MODEL or MODEL
 _current_thinking_budget = THINKING_BUDGET
+
+
+def physical_memory_bytes() -> int:
+    """Best-effort physical RAM size for user-facing large-model warnings."""
+    try:
+        pages = int(os.sysconf("SC_PHYS_PAGES"))
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        total = pages * page_size
+        if total > 0:
+            return total
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    return 0
+
+
+def high_quality_model_warning_required(model: str, *, ram_bytes: int | None = None) -> bool:
+    """Warn (never block) before selecting 35B on machines below 24 GB RAM."""
+    total = physical_memory_bytes() if ram_bytes is None else int(ram_bytes)
+    return str(model or "").strip() == HIGH_QUALITY_MODEL and 0 < total < LOW_RAM_WARNING_BYTES
 
 
 def _runtime_payload(model: str, thinking_budget: int) -> dict:

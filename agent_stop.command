@@ -21,7 +21,7 @@ fi
 echo "=== ENDEAVOR_LOCAL_AGENT_TH — เคลียร์โปรแกรมที่ค้างอยู่ ==="
 echo
 
-# Mirrors config.py's MLX_BASE_URL override (README's RAM<48GB guidance) so
+# Mirrors config.py's MLX_BASE_URL override so
 # this kills whatever port the user actually configured, not just 8085.
 _DEFAULT_MLX_URL="http://localhost:8085/v1"
 _MLX_URL="${MLX_BASE_URL:-$_DEFAULT_MLX_URL}"

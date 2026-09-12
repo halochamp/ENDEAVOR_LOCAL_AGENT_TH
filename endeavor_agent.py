@@ -437,6 +437,20 @@ def _runtime_model_matches_active_server() -> tuple[bool, str]:
     return bool(active and active == config.get_model()), active
 
 
+def _confirm_high_quality_model_on_low_ram(model: str) -> bool:
+    """Ask before selecting 35B on <24 GB RAM; warning is never a hard block."""
+    if not config.high_quality_model_warning_required(model):
+        return True
+    ram_bytes = config.physical_memory_bytes()
+    ram_gb = max(1, round(ram_bytes / (1024 ** 3))) if ram_bytes else 0
+    shown = f"ประมาณ {ram_gb}GB" if ram_gb else "ต่ำกว่า 24GB"
+    print(f" {C_WARN}⚠ เครื่องนี้มี RAM {shown}; Qwen3.6 35B เป็นโมเดลขนาดใหญ่{R}")
+    print(f" {C_WARN}  การดาวน์โหลด/โหลดอาจใช้พื้นที่และ swap สูง แต่ยังเลือกใช้ได้{R}")
+    print(f" {C_META}  ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B ต่อหรือไม่? [y/N]{R}")
+    answer = (prompt_user() or "").strip().lower()
+    return answer in {"y", "yes", "ใช่", "ตกลง"}
+
+
 def _apply_cli_runtime_settings(model: str, thinking_budget: int) -> dict:
     """Persist the shared UI config; model changes require server lifecycle restart.
 
@@ -676,6 +690,9 @@ def main() -> None:
                             selected = options[idx]["value"]
                         except (ValueError, IndexError, KeyError, TypeError):
                             print(f" {C_WARN}⚠ ตัวเลือก model ไม่ถูกต้อง{R}\n")
+                            continue
+                        if not _confirm_high_quality_model_on_low_ram(selected):
+                            print(f" {C_META}ยกเลิกการเปลี่ยน model{R}\n")
                             continue
                         if _apply_runtime_selection(selected, config.get_thinking_budget()) == "restart":
                             restart_requested = True

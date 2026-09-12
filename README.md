@@ -66,7 +66,7 @@ bash install_library/install.sh
 # ขั้นที่ 2: เปิด MLX server (terminal แยก — เปิดทิ้งไว้ตลอด)
 conda activate mlx
 APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
-python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
+python -m mlx_vlm.server --model Qwen/Qwen3-14B-MLX-4bit --host 127.0.0.1 --port 8085
 
 # ขั้นที่ 3: รัน agent — เลือก UI ที่ต้องการ
 
@@ -81,6 +81,8 @@ cd AGENT_UI && npm install && npm start
 ```
 
 ถ้า run ไม่ได้เพราะ port ถูกใช้อยู่ (เช่น เปิด server ค้างจากรอบก่อน) ให้รัน `agent_stop.command` เพื่อเคลียร์ process ตามพอร์ตที่โปรเจกต์กำหนด แล้วค่อยเปิด `agent_start.command` ใหม่
+
+> การติดตั้ง **ไม่บังคับดาวน์โหลดทั้งสองโมเดล**: fresh install ใช้ `Qwen3-14B` เป็น default และจะดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. `Qwen3.6-35B` จะถูกดาวน์โหลด/โหลดเมื่อผู้ใช้เลือกเองเท่านั้น; ถ้า RAM <24GB ระบบจะเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
 
 > เพิ่งเคย clone ครั้งแรก หรืออยากดูทุกขั้นตอนแบบละเอียด (รวม `git clone`, config, ติดตั้งแบบไม่ใช้สคริปต์) → ดู [Setup](#setup)
 
@@ -220,7 +222,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | Layer | เทคโนโลยี | หน้าที่ |
 |---|---|---|
 | **LLM Runtime** | [MLX](https://github.com/ml-explore/mlx) | รัน Qwen แบบ quantized (4-bit) บน Apple Silicon GPU ผ่าน Metal |
-| **Model** | `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE, default) หรือ `Qwen/Qwen3-14B-MLX-4bit` | 35B เน้นคุณภาพสูง; 14B ลดข้อกำหนดด้าน RAM และช่วยให้คนทั่วไปเข้าถึง Local Agent ได้ง่ายขึ้น |
+| **Model** | `Qwen/Qwen3-14B-MLX-4bit` (default) หรือ `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | 14B เป็นค่าเริ่มต้นที่เข้าถึงง่ายกว่า; 35B เป็นตัวเลือกคุณภาพสูง |
 | **Agent Framework** | [LangGraph](https://github.com/langchain-ai/langgraph) `create_react_agent` | ReAct loop, state graph, checkpointing |
 | **LLM Client** | LangChain Core + `langchain-openai` | คุยกับ `mlx_vlm.server` ผ่าน OpenAI-compatible API |
 | **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | authenticated WebSocket/REST backend สำหรับ Electron และ custom clients |
@@ -391,15 +393,15 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 
 - macOS Apple Silicon (M1/M2/M3/M4/M5)
 - **Qwen3-14B 4-bit:** unified memory ประมาณ **24GB ขั้นต่ำเชิงปฏิบัติ**, **32GB+ แนะนำ**
-- **Qwen3.6-35B-A3B 4-bit (default):** แนะนำ **48GB+**
+- **Qwen3.6-35B-A3B 4-bit (optional high-quality):** โมเดลใหญ่กว่าและใช้ RAM/swap สูงกว่า; บนเครื่อง RAM <24GB ระบบจะเตือนก่อนเริ่ม download/load แต่ผู้ใช้ยังยืนยันทำต่อได้
 - ปริมาณ RAM ที่ใช้จริงขึ้นกับ context length, KV cache, tools และโปรแกรมอื่นที่เปิดพร้อมกัน ตัวเลขข้างต้นจึงเป็นแนวทางสำหรับการใช้งาน Agent ไม่ใช่เพียงการโหลด weights ให้สำเร็จ
 - Python 3.11 via conda (`mlx` env)
 - `mlx-vlm` installed (และติดตั้ง `mlx-lm` เป็น dependency ที่ server ใช้ร่วมกัน)
 - (optional) `computer` direct screenshot vision works without extra setup; System Settings → Privacy & Security → **Accessibility** access for the process running the agent adds richer element data — the tool tells you in its own output (`ax=permission_required`) if this is off, no crash either way
 
-> **หมายเหตุเรื่องโมเดล:** ค่า default และ production profile ของโปรเจกต์คือ **Qwen3.6-35B-A3B (MoE)** ซึ่งให้ headroom ด้าน reasoning, planning และ tool calling สูงกว่า และเป็นรุ่นที่แนะนำเมื่อเครื่องมี RAM เพียงพอ
+> **หมายเหตุเรื่องโมเดล:** ค่า default ของโปรเจกต์คือ **Qwen3-14B-MLX-4bit** เพื่อให้เริ่มใช้งานได้ง่ายขึ้น โดยจากการทดสอบ Agent สามารถทำงานด้าน text/tool calling หลักได้ครบ; `read_image` ใช้ full OCR fallback สำหรับ text-only model และ `computer` จะปิดอย่างชัดเจนเมื่อโมเดลไม่รองรับ vision
 >
-> สำหรับผู้ใช้ที่ต้องการเริ่มต้นบนเครื่องที่เข้าถึงง่ายกว่า โปรเจกต์รองรับ **Qwen3-14B-MLX-4bit** ด้วย โดยจากการทดสอบ Agent สามารถทำงานด้าน text/tool calling หลักได้ครบ เหมาะกับ Mac unified memory **24GB เป็นขั้นต่ำเชิงปฏิบัติ และ 32GB+ แนะนำ**; `read_image` ใช้ full OCR fallback สำหรับ text-only model และ `computer` จะปิดอย่างชัดเจนเมื่อโมเดลไม่รองรับ vision
+> **Qwen3.6-35B-A3B (MoE)** ยังเลือกใช้ได้เมื่ออยากได้ headroom ด้าน reasoning/planning/tool calling มากขึ้น. ถ้าเครื่องมี RAM ต่ำกว่า 24GB Electron/CLI จะเตือนก่อน download/load เท่านั้น ไม่ได้บล็อก — ผู้ใช้ยืนยันแล้วระบบจะทำต่อ
 >
 > โมเดลที่เล็กกว่านี้ (เช่น 7B/8B ลงไป) ไม่ใช่ target ที่แนะนำของโปรเจกต์ เพราะมีโอกาส tool-call ผิด, หลุด format หรือ reasoning ไม่พอสำหรับ workflow หลายขั้นมากขึ้น
 >
@@ -423,7 +425,7 @@ bash install_library/install.sh
 # 4. เปิด MLX server (terminal แยก)
 conda activate mlx
 APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
-python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
+python -m mlx_vlm.server --model Qwen/Qwen3-14B-MLX-4bit --host 127.0.0.1 --port 8085
 
 # 5. รัน agent — เลือก UI ที่ต้องการ
 
@@ -546,7 +548,7 @@ def my_tool(query: str) -> str:
 
 ### ใช้โมเดลอื่น
 
-⚠️ default ของ harness ทุกค่า (prompt, thinking budget, repetition penalty) tune สำหรับ **Qwen3.6-35B-A3B (MoE)** — เปลี่ยนโมเดลแล้วพฤติกรรม tool-calling อาจต่างไปและต้อง tune เพิ่มเอง ถ้า RAM ไม่พอสำหรับ 35B แนะนำ **Qwen3-14B** เป็นขั้นต่ำสำหรับ text/tool calling และ `read_image` OCR fallback; `computer` กับ true pixel understanding ต้องใช้ vision-capable model
+default runtime model คือ **Qwen3-14B-MLX-4bit**. หากต้องการคุณภาพสูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)** ได้จาก Electron Settings หรือ CLI; เครื่องที่มี RAM ต่ำกว่า 24GB จะได้รับคำเตือนก่อน download/load แต่ยังยืนยันใช้ 35B ได้. `read_image` บน 14B ใช้ OCR fallback และ `computer`/true pixel understanding ต้องใช้ vision-capable model
 
 วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` → **Model / Think Budget** ทั้งสองใช้ `workspace/runtime_settings.json` ร่วมกัน. Electron จะ restart model เฉพาะ server ที่ตัวเองเป็นเจ้าของ; CLI จะไม่ kill/restart server ที่กำลังรันอยู่และจะขอให้ restart อย่างชัดเจนเมื่อเลือก Model ใหม่
 

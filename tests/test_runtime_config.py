@@ -36,12 +36,40 @@ class SharedRuntimeConfigTests(unittest.TestCase):
 
     def test_labels_and_options_match_desktop_contract(self) -> None:
         settings = config.get_runtime_settings()
-        self.assertEqual(config.get_model_label(), "Qwen3.6 35B")
+        self.assertEqual(config.get_model_label(), "Qwen3 14B · text")
         self.assertEqual(config.get_thinking_budget_label(), "High")
         self.assertEqual(
             [(x["label"], x["value"]) for x in settings["thinking_options"]],
             [("Low", 256), ("Medium", 512), ("High", 1024), ("xhigh", 1536), ("Max", 2048)],
         )
+
+    def test_default_model_is_qwen3_14b(self) -> None:
+        self.assertEqual(config.DEFAULT_MODEL, "Qwen/Qwen3-14B-MLX-4bit")
+        self.assertEqual(config.MODEL_CHOICES[0], config.DEFAULT_MODEL)
+        self.assertEqual(config.MODEL_CHOICES[1], config.HIGH_QUALITY_MODEL)
+
+    def test_35b_warning_is_only_below_24gb(self) -> None:
+        gb = 1024 ** 3
+        self.assertTrue(config.high_quality_model_warning_required(
+            config.HIGH_QUALITY_MODEL, ram_bytes=16 * gb,
+        ))
+        self.assertFalse(config.high_quality_model_warning_required(
+            config.HIGH_QUALITY_MODEL, ram_bytes=24 * gb,
+        ))
+        self.assertFalse(config.high_quality_model_warning_required(
+            config.DEFAULT_MODEL, ram_bytes=16 * gb,
+        ))
+
+    def test_cli_35b_low_ram_warning_is_confirmable_not_blocked(self) -> None:
+        gb = 1024 ** 3
+        with patch.object(config, "high_quality_model_warning_required", return_value=True), \
+             patch.object(config, "physical_memory_bytes", return_value=16 * gb), \
+             patch.object(endeavor_agent, "prompt_user", return_value="y"):
+            self.assertTrue(endeavor_agent._confirm_high_quality_model_on_low_ram(config.HIGH_QUALITY_MODEL))
+        with patch.object(config, "high_quality_model_warning_required", return_value=True), \
+             patch.object(config, "physical_memory_bytes", return_value=16 * gb), \
+             patch.object(endeavor_agent, "prompt_user", return_value="n"):
+            self.assertFalse(endeavor_agent._confirm_high_quality_model_on_low_ram(config.HIGH_QUALITY_MODEL))
 
     def test_cli_budget_change_persists_shared_owner_file_without_restart(self) -> None:
         current = config.get_model()

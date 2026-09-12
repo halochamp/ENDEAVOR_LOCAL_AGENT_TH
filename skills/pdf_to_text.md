@@ -32,7 +32,7 @@ from tools._ocr import read_text as ocr_read
 PDF_PATH  = "<ใส่ path PDF>"
 MAX_PAGES = 50
 LLM_URL   = os.getenv("MLX_BASE_URL", "http://localhost:8085/v1") + "/chat/completions"
-LLM_MODEL = os.getenv("V2_MODEL", "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit")
+LLM_MODEL = os.getenv("V2_MODEL", "Qwen/Qwen3-14B-MLX-4bit")
 
 NATIVE_THRESHOLD = 50    # chars/page เฉลี่ย → ถือว่าเป็น text PDF
 

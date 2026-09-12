@@ -16,8 +16,9 @@ set -euo pipefail
 
 ENV_NAME="mlx"
 PY_VERSION="3.11"
-DEFAULT_MODEL="unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
-MIN_DEFAULT_MODEL_RAM_BYTES=$((48 * 1024 * 1024 * 1024))
+DEFAULT_MODEL="Qwen/Qwen3-14B-MLX-4bit"
+HIGH_QUALITY_MODEL="unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
+LOW_RAM_WARNING_BYTES=$((24 * 1024 * 1024 * 1024))
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -32,23 +33,14 @@ if [ "$(uname -m)" != "arm64" ]; then
 fi
 echo "macOS Apple Silicon — OK"
 
-# The production 35B model is not a practical default on a small Mac.  Allow
-# an explicit V2_MODEL override (in the shell or an existing .env) so users
-# can install a smaller model deliberately, but fail early instead of
-# downloading packages and then swapping/OOM-loading the default model.
+# Qwen3-14B is the out-of-box default. RAM never blocks installation. On Macs
+# below 24 GB we only warn that the optional 35B model is a large download/load;
+# Electron/CLI ask for confirmation before switching to it.
 RAM_BYTES="$(sysctl -n hw.memsize 2>/dev/null || true)"
-MODEL_OVERRIDE="${V2_MODEL:-}"
-if [[ -z "$MODEL_OVERRIDE" && -f "$PROJ_DIR/.env" ]] && \
-   grep -Eq '^[[:space:]]*V2_MODEL[[:space:]]*=' "$PROJ_DIR/.env"; then
-    MODEL_OVERRIDE="configured"
-fi
-if [[ -z "$MODEL_OVERRIDE" && "$RAM_BYTES" =~ ^[0-9]+$ ]] && \
-   (( RAM_BYTES < MIN_DEFAULT_MODEL_RAM_BYTES )); then
+if [[ "$RAM_BYTES" =~ ^[0-9]+$ ]] && (( RAM_BYTES < LOW_RAM_WARNING_BYTES )); then
     RAM_GB=$((RAM_BYTES / 1024 / 1024 / 1024))
-    echo "[error] โมเดลเริ่มต้น ${DEFAULT_MODEL} ต้องการ RAM อย่างน้อย 48GB; เครื่องนี้มีประมาณ ${RAM_GB}GB"
-    echo "        ตั้งค่า V2_MODEL และ MLX_BASE_URL ให้เป็นรุ่นเล็กกว่า แล้วรัน installer ใหม่ เช่น:"
-    echo "        export V2_MODEL=mlx-community/Qwen3-1.7B-4bit MLX_BASE_URL=http://localhost:8888/v1"
-    exit 1
+    echo "[warn] เครื่องนี้มี RAM ประมาณ ${RAM_GB}GB — default จะใช้ ${DEFAULT_MODEL}"
+    echo "       หากเลือก ${HIGH_QUALITY_MODEL} ภายหลัง ระบบจะเตือนก่อน download/load แต่ผู้ใช้ยังยืนยันทำต่อได้"
 fi
 
 echo ""
@@ -195,6 +187,6 @@ cat <<EOF
      ทั้ง CLI และ Electron ใช้ Model/Think Budget config กลางเดียวกัน
      ที่ workspace/runtime_settings.json (override ได้ด้วย V2_RUNTIME_SETTINGS_PATH)
 
-  หมายเหตุ: รุ่น 35B ต้องการ RAM >= 48GB
-  รันโมเดลเล็กกว่าได้ — ดู .env และแก้ V2_MODEL + MLX_BASE_URL
+  หมายเหตุ: default คือ Qwen3-14B
+  Qwen3.6-35B เป็นตัวเลือกคุณภาพสูง; ถ้า RAM <24GB ระบบจะเตือนก่อน download/load แต่ผู้ใช้ยังยืนยันทำต่อได้
 EOF

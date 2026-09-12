@@ -1263,6 +1263,21 @@ async function saveRuntimeSettings() {
     let switched
     try {
       switched = await window.electronAPI.applyRuntimeModel(requestedModel)
+      if (switched && switched.confirmation_required) {
+        const ramText = switched.ram_gb ? ` (RAM ประมาณ ${switched.ram_gb}GB)` : ''
+        const confirmed = window.confirm(
+          `เครื่องนี้มี RAM ต่ำกว่า 24GB${ramText}\n\n`
+          + 'Qwen3.6 35B เป็นโมเดลขนาดใหญ่ การดาวน์โหลด/โหลดโมเดลอาจใช้พื้นที่และ swap สูงมาก\n\n'
+          + 'ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B ต่อหรือไม่?'
+        )
+        if (!confirmed) {
+          runtimeSettings.switching = false
+          if (status) status.textContent = 'ยกเลิกการเปลี่ยนเป็น Qwen3.6 35B'
+          wsSend({ type: 'get_runtime_settings' })
+          return
+        }
+        switched = await window.electronAPI.applyRuntimeModel(requestedModel, true)
+      }
     } catch (err) {
       switched = { ok: false, error: String(err && err.message || err) }
     }

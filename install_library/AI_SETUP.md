@@ -18,14 +18,15 @@ the verification checks — each step gates the next.
 ```bash
 uname -s   # must be "Darwin"
 uname -m   # must be "arm64"
-sysctl hw.memsize   # must be >= 48 GB for the default 35B model; otherwise set V2_MODEL + MLX_BASE_URL first
+sysctl hw.memsize   # informational only; default is Qwen3-14B and RAM never blocks install
 command -v conda    # must exist — if missing, tell user to install Miniforge:
                      # https://github.com/conda-forge/miniforge
 ```
 
-If the platform/Python/conda checks fail, stop and explain what's missing. If RAM is
-below 48 GB, continue only after the user has deliberately configured a smaller model
-with both `V2_MODEL` and `MLX_BASE_URL`.
+If the platform/Python/conda checks fail, stop and explain what's missing. RAM does not
+block installation: Qwen3-14B is the default. If the user explicitly selects Qwen3.6-35B
+on a Mac below 24 GB, warn that download/load may use substantial disk/RAM/swap; continue
+only after the user confirms, because the warning is advisory rather than a hard block.
 
 ## 2. Install dependencies (one command, idempotent)
 
@@ -38,6 +39,7 @@ This script:
 - installs the hash-locked dependencies in `install_library/requirements.txt`
 - attempts to install the optional Playwright Chromium browser (the agent still installs if this download fails)
 - copies `.env.example` → `.env` if `.env` doesn't exist yet
+- does **not** pre-download both LLMs: Qwen3-14B is the default and model weights are fetched only when that model is actually started; Qwen3.6-35B is fetched only if the user explicitly selects it
 
 Safe to re-run — it skips steps that are already done (existing env, satisfied pip
 versions, already-downloaded chromium).
@@ -67,7 +69,7 @@ shortcuts. If only the optional Chromium download fails, re-run
 ```bash
 conda activate mlx
 APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
-python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
+python -m mlx_vlm.server --model Qwen/Qwen3-14B-MLX-4bit --host 127.0.0.1 --port 8085
 ```
 
 This is a **long-running foreground process**. Do not run it and then immediately try
@@ -115,7 +117,7 @@ by `V2_RUNTIME_SETTINGS_PATH`). There is no bundled browser HTML UI.
 | `[error] ไม่พบ conda` | Miniforge not installed | install Miniforge, restart shell |
 | install.sh exits at `[1/6]` | not Apple Silicon / not macOS | this project requires M1+ Mac |
 | agent says model offline | `mlx_vlm.server` not running or wrong port | check step 3, confirm port 8085 |
-| out of memory / swap thrashing | RAM < 48GB for 35B model | use a smaller model — see README "ใช้โมเดลอื่น" section, set `V2_MODEL` + `MLX_BASE_URL` |
+| out of memory / swap thrashing | selected model is too large for available memory | switch back to the default Qwen3-14B; Qwen3.6-35B remains optional and low-RAM confirmation is advisory |
 | `playwright install chromium` fails | network/proxy issue | retry; required only for `browse_url`/`scrape_table`/`browser_use` tools |
 | Thai text broken on plot (squares / floating vowels) | pyobjc not installed correctly | run `python -c "import Quartz, CoreText"` in the mlx env — if it fails, re-run `pip install pyobjc-framework-Quartz pyobjc-framework-CoreText` |
 | Thai text OK but font looks wrong | Thonburi missing or wrong font picked | install Noto Sans Thai via `brew install --cask font-noto-sans-thai` and rebuild font cache |

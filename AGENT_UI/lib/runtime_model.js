@@ -18,4 +18,15 @@ function classifyServerPresence({ pid = 0, model = '', apiReady = false } = {}) 
   return apiReady ? 'shared_ready' : 'shared_loading'
 }
 
-module.exports = { listenerPidFromLsof, modelFromCommand, classifyServerPresence }
+function requiresLargeModelWarning({ model = '', highQualityModel = '', ramBytes = 0, thresholdBytes = 0 } = {}) {
+  const ram = Number(ramBytes || 0)
+  const threshold = Number(thresholdBytes || 0)
+  return String(model || '') === String(highQualityModel || '') && ram > 0 && threshold > 0 && ram < threshold
+}
+
+module.exports = {
+  listenerPidFromLsof,
+  modelFromCommand,
+  classifyServerPresence,
+  requiresLargeModelWarning,
+}

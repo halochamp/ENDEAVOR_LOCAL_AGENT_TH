@@ -1,6 +1,11 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { listenerPidFromLsof, modelFromCommand, classifyServerPresence } = require('../lib/runtime_model')
+const {
+  listenerPidFromLsof,
+  modelFromCommand,
+  classifyServerPresence,
+  requiresLargeModelWarning,
+} = require('../lib/runtime_model')
 
 test('listenerPidFromLsof extracts listener pid', () => {
   assert.strictEqual(listenerPidFromLsof('p84733\n'), 84733)
@@ -47,4 +52,19 @@ test('classifyServerPresence protects loading and ready shared listeners', () =>
     classifyServerPresence({ pid: 84733, model: 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit', apiReady: true }),
     'shared_ready',
   )
+})
+
+test('requiresLargeModelWarning warns only for 35B below 24GB', () => {
+  const GB = 1024 ** 3
+  const high = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
+  const small = 'Qwen/Qwen3-14B-MLX-4bit'
+  assert.strictEqual(requiresLargeModelWarning({
+    model: high, highQualityModel: high, ramBytes: 16 * GB, thresholdBytes: 24 * GB,
+  }), true)
+  assert.strictEqual(requiresLargeModelWarning({
+    model: high, highQualityModel: high, ramBytes: 24 * GB, thresholdBytes: 24 * GB,
+  }), false)
+  assert.strictEqual(requiresLargeModelWarning({
+    model: small, highQualityModel: high, ramBytes: 16 * GB, thresholdBytes: 24 * GB,
+  }), false)
 })
