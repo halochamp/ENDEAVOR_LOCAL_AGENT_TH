@@ -34,7 +34,7 @@ let pendingTurnQuery = ''
 let waitingSummaryTimer = null
 let runtimeSettings = {
   model: '', thinking_budget: 1536, shared_server: false, model_locked: false,
-  switching: false, error: '', model_options: [], thinking_options: [],
+  switching: false, switch_state: 'idle', error: '', model_options: [], thinking_options: [],
 }
 
 const THINKING_SUMMARY_DELAY_MS = 6000
@@ -1176,6 +1176,7 @@ function applyRuntimeSettings(ev) {
     shared_server: !!ev.shared_server,
     model_locked: !!ev.model_locked,
     switching: !!ev.switching,
+    switch_state: String(ev.switch_state || (ev.switching ? 'switching' : runtimeSettings.switch_state || 'idle')),
     error: String(ev.error || ''),
     model_options: Array.isArray(ev.model_options) ? ev.model_options : runtimeSettings.model_options,
     thinking_options: Array.isArray(ev.thinking_options) ? ev.thinking_options : runtimeSettings.thinking_options,
@@ -1223,15 +1224,12 @@ function applyRuntimeSettings(ev) {
   }
   if (think) think.disabled = runtimeSettings.switching
   if (status) {
-    status.textContent = runtimeSettings.error
-      ? `⚠ ${runtimeSettings.error}`
-      : runtimeSettings.switching
-        ? 'switching…'
-        : runtimeSettings.shared_server
-          ? `shared :8085 · ${runtimeSettings.model}`
-          : runtimeSettings.model_locked
-            ? `env · ${runtimeSettings.model}`
-            : ''
+    status.textContent = runtimeStatusText(runtimeSettings.error, runtimeSettings.switch_state)
+      || (runtimeSettings.shared_server
+        ? `shared :8085 · ${runtimeSettings.model}`
+        : runtimeSettings.model_locked
+          ? `env · ${runtimeSettings.model}`
+          : '')
   }
   if (runtimeSettings.model) setModelLabel(runtimeSettings.model)
 }
@@ -1250,10 +1248,16 @@ async function saveRuntimeSettings() {
 
   const requestedModel = model.value
   const requestedBudget = Number(think.value)
-  if (status) status.textContent = 'applying…'
+  const modelChanged = requestedModel !== runtimeSettings.model
+  runtimeSettings.switch_state = modelChanged ? 'switching' : 'idle'
+  if (status) {
+    status.textContent = modelChanged
+      ? runtimeStatusText('', 'switching')
+      : '⚙ กำลังปรับ Think Budget…'
+  }
 
   if (
-    requestedModel !== runtimeSettings.model
+    modelChanged
     && window.electronAPI
     && window.electronAPI.applyRuntimeModel
   ) {
@@ -1272,6 +1276,7 @@ async function saveRuntimeSettings() {
         )
         if (!confirmed) {
           runtimeSettings.switching = false
+          runtimeSettings.switch_state = 'idle'
           if (status) status.textContent = 'ยกเลิกการเปลี่ยนเป็น Qwen3.6 35B'
           wsSend({ type: 'get_runtime_settings' })
           return
@@ -1283,10 +1288,13 @@ async function saveRuntimeSettings() {
     }
     runtimeSettings.switching = false
     if (!switched || !switched.ok) {
+      runtimeSettings.switch_state = 'error'
       if (status) status.textContent = `⚠ ${(switched && switched.error) || 'model switch failed'}`
       wsSend({ type: 'get_runtime_settings' })
       return
     }
+    runtimeSettings.switch_state = 'ready'
+    if (status) status.textContent = runtimeStatusText('', 'ready')
   }
 
   wsSend({

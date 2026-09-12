@@ -17,6 +17,7 @@ set -euo pipefail
 ENV_NAME="mlx"
 PY_VERSION="3.11"
 DEFAULT_MODEL="Qwen/Qwen3-14B-MLX-4bit"
+COMPACT_VLM_MODEL="mlx-community/Qwen3.5-9B-4bit"
 HIGH_QUALITY_MODEL="unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
 LOW_RAM_WARNING_BYTES=$((24 * 1024 * 1024 * 1024))
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,13 +34,14 @@ if [ "$(uname -m)" != "arm64" ]; then
 fi
 echo "macOS Apple Silicon — OK"
 
-# Qwen3-14B is the out-of-box default. RAM never blocks installation. On Macs
-# below 24 GB we only warn that the optional 35B model is a large download/load;
-# Electron/CLI ask for confirmation before switching to it.
+# Qwen3-14B is the out-of-box default. RAM never blocks installation. Macs with
+# 16 GB can select the compact Qwen3.5-9B VLM; below 24 GB we additionally warn
+# that the optional 35B model is a large download/load.
 RAM_BYTES="$(sysctl -n hw.memsize 2>/dev/null || true)"
 if [[ "$RAM_BYTES" =~ ^[0-9]+$ ]] && (( RAM_BYTES < LOW_RAM_WARNING_BYTES )); then
     RAM_GB=$((RAM_BYTES / 1024 / 1024 / 1024))
-    echo "[warn] เครื่องนี้มี RAM ประมาณ ${RAM_GB}GB — default จะใช้ ${DEFAULT_MODEL}"
+    echo "[warn] เครื่องนี้มี RAM ประมาณ ${RAM_GB}GB — default ยังเป็น ${DEFAULT_MODEL}"
+    echo "       เครื่อง 16GB สามารถเลือก ${COMPACT_VLM_MODEL} เพื่อใช้ Agent TH แบบ VLM ได้"
     echo "       หากเลือก ${HIGH_QUALITY_MODEL} ภายหลัง ระบบจะเตือนก่อน download/load แต่ผู้ใช้ยังยืนยันทำต่อได้"
 fi
 
@@ -188,5 +190,6 @@ cat <<EOF
      ที่ workspace/runtime_settings.json (override ได้ด้วย V2_RUNTIME_SETTINGS_PATH)
 
   หมายเหตุ: default คือ Qwen3-14B
+  เครื่อง 16GB เลือก Qwen3.5-9B-4bit (VLM) ได้จาก Model settings
   Qwen3.6-35B เป็นตัวเลือกคุณภาพสูง; ถ้า RAM <24GB ระบบจะเตือนก่อน download/load แต่ผู้ใช้ยังยืนยันทำต่อได้
 EOF

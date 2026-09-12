@@ -28,6 +28,15 @@ function selectValueAfterRefresh(currentValue, authoritativeValue, isFocused, op
   return isFocused && valid.has(current) ? current : authoritative
 }
 
+function runtimeStatusText(error, switchState) {
+  const problem = String(error ?? '').trim()
+  const state = String(switchState ?? 'idle')
+  if (problem) return `⚠ ${problem}`
+  if (state === 'switching') return '⏳ กำลังสลับโมเดล…'
+  if (state === 'ready') return '✓ สลับโมเดลเสร็จแล้ว · พร้อมใช้งาน'
+  return ''
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh }
+  module.exports = { mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh, runtimeStatusText }
 }

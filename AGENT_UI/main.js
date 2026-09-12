@@ -60,9 +60,10 @@ const _MLX_BASE_URL = process.env.MLX_BASE_URL || _DEFAULT_MLX_URL
 const _V2_MODEL = process.env.V2_MODEL || ''
 const MLX_PORT = Number(new URL(_MLX_BASE_URL).port) || 8085
 const _DEFAULT_MODEL = 'Qwen/Qwen3-14B-MLX-4bit'
+const _COMPACT_VLM_MODEL = 'mlx-community/Qwen3.5-9B-4bit'
 const _HIGH_QUALITY_MODEL = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
 const _LOW_RAM_WARNING_BYTES = 24 * 1024 * 1024 * 1024
-const _MODEL_CHOICES = new Set([_DEFAULT_MODEL, _HIGH_QUALITY_MODEL])
+const _MODEL_CHOICES = new Set([_DEFAULT_MODEL, _COMPACT_VLM_MODEL, _HIGH_QUALITY_MODEL])
 const _runtimeSettingsOverride = String(process.env.V2_RUNTIME_SETTINGS_PATH || '').trim()
 const _RUNTIME_SETTINGS_PATH = _runtimeSettingsOverride
   ? (path.isAbsolute(_runtimeSettingsOverride)

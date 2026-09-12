@@ -29,6 +29,10 @@ test('modelFromCommand parses patched launcher and equals syntax', () => {
     modelFromCommand('/opt/python scripts/run_vlm_server_patched.py --model=Qwen/Qwen3-14B-MLX-4bit --port 8085'),
     'Qwen/Qwen3-14B-MLX-4bit',
   )
+  assert.strictEqual(
+    modelFromCommand('/opt/python -m mlx_vlm.server --model=mlx-community/Qwen3.5-9B-4bit --port 8085'),
+    'mlx-community/Qwen3.5-9B-4bit',
+  )
 })
 
 test('modelFromCommand supports quoted model and fails closed without --model', () => {
@@ -58,6 +62,7 @@ test('requiresLargeModelWarning warns only for 35B below 24GB', () => {
   const GB = 1024 ** 3
   const high = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
   const small = 'Qwen/Qwen3-14B-MLX-4bit'
+  const compactVlm = 'mlx-community/Qwen3.5-9B-4bit'
   assert.strictEqual(requiresLargeModelWarning({
     model: high, highQualityModel: high, ramBytes: 16 * GB, thresholdBytes: 24 * GB,
   }), true)
@@ -66,5 +71,8 @@ test('requiresLargeModelWarning warns only for 35B below 24GB', () => {
   }), false)
   assert.strictEqual(requiresLargeModelWarning({
     model: small, highQualityModel: high, ramBytes: 16 * GB, thresholdBytes: 24 * GB,
+  }), false)
+  assert.strictEqual(requiresLargeModelWarning({
+    model: compactVlm, highQualityModel: high, ramBytes: 16 * GB, thresholdBytes: 24 * GB,
   }), false)
 })

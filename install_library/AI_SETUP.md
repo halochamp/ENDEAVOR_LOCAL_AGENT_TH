@@ -18,15 +18,16 @@ the verification checks — each step gates the next.
 ```bash
 uname -s   # must be "Darwin"
 uname -m   # must be "arm64"
-sysctl hw.memsize   # informational only; default is Qwen3-14B and RAM never blocks install
+sysctl hw.memsize   # informational only; default is Qwen3-14B, 16GB can select Qwen3.5-9B VLM
 command -v conda    # must exist — if missing, tell user to install Miniforge:
                      # https://github.com/conda-forge/miniforge
 ```
 
 If the platform/Python/conda checks fail, stop and explain what's missing. RAM does not
-block installation: Qwen3-14B is the default. If the user explicitly selects Qwen3.6-35B
-on a Mac below 24 GB, warn that download/load may use substantial disk/RAM/swap; continue
-only after the user confirms, because the warning is advisory rather than a hard block.
+block installation: Qwen3-14B is the default, while a 16 GB Mac can select
+`mlx-community/Qwen3.5-9B-4bit` for the compact VLM path. If the user explicitly selects
+Qwen3.6-35B on a Mac below 24 GB, warn that download/load may use substantial disk/RAM/swap;
+continue only after the user confirms, because the warning is advisory rather than a hard block.
 
 ## 2. Install dependencies (one command, idempotent)
 
@@ -39,7 +40,7 @@ This script:
 - installs the hash-locked dependencies in `install_library/requirements.txt`
 - attempts to install the optional Playwright Chromium browser (the agent still installs if this download fails)
 - copies `.env.example` → `.env` if `.env` doesn't exist yet
-- does **not** pre-download both LLMs: Qwen3-14B is the default and model weights are fetched only when that model is actually started; Qwen3.6-35B is fetched only if the user explicitly selects it
+- does **not** pre-download all model choices: Qwen3-14B is the default; Qwen3.5-9B VLM and Qwen3.6-35B are fetched only when the user actually selects/starts them
 
 Safe to re-run — it skips steps that are already done (existing env, satisfied pip
 versions, already-downloaded chromium).
@@ -117,7 +118,7 @@ by `V2_RUNTIME_SETTINGS_PATH`). There is no bundled browser HTML UI.
 | `[error] ไม่พบ conda` | Miniforge not installed | install Miniforge, restart shell |
 | install.sh exits at `[1/6]` | not Apple Silicon / not macOS | this project requires M1+ Mac |
 | agent says model offline | `mlx_vlm.server` not running or wrong port | check step 3, confirm port 8085 |
-| out of memory / swap thrashing | selected model is too large for available memory | switch back to the default Qwen3-14B; Qwen3.6-35B remains optional and low-RAM confirmation is advisory |
+| out of memory / swap thrashing | selected model is too large for available memory | on a 16GB Mac choose Qwen3.5-9B-4bit; Qwen3-14B remains the fresh default and Qwen3.6-35B remains optional |
 | `playwright install chromium` fails | network/proxy issue | retry; required only for `browse_url`/`scrape_table`/`browser_use` tools |
 | Thai text broken on plot (squares / floating vowels) | pyobjc not installed correctly | run `python -c "import Quartz, CoreText"` in the mlx env — if it fails, re-run `pip install pyobjc-framework-Quartz pyobjc-framework-CoreText` |
 | Thai text OK but font looks wrong | Thonburi missing or wrong font picked | install Noto Sans Thai via `brew install --cask font-noto-sans-thai` and rebuild font cache |
@@ -164,9 +165,9 @@ never kills/restarts an already-running MLX process: selecting another Model sav
 shared config and asks for a deliberate MLX restart/next Electron launch. A CLI launch
 also fails closed if the saved model does not match the local listener's real `--model`.
 The paired `V2_MODEL` + non-default `MLX_BASE_URL` environment override remains the
-advanced authoritative path and locks model selection. Qwen3-14B is the recommended
-lower-memory text/tool model; `read_image` uses full-OCR fallback, while `computer` and
-true pixel understanding require a vision-capable model.
+advanced authoritative path and locks model selection. Qwen3.5-9B-4bit is the compact
+vision-capable option for 16GB Macs; Qwen3-14B remains the default text/tool model and uses
+full-OCR fallback for `read_image`; Qwen3.6-35B remains the higher-quality vision-capable option.
 
 **Restarting / stopping servers** — if the agent seems stuck, offline, or the user
 wants a clean restart:
@@ -199,7 +200,7 @@ instead of re-reading the whole README:
 |---|---|
 | "ใช้งานยังไง" / how do I start | Run step 3 (MLX server) + step 4 (CLI or Electron) above |
 | "model offline" / agent ขึ้น offline | Step 3 server not running or wrong port — check `curl http://localhost:8085/v1/models` |
-| "เปลี่ยนโมเดล" / change model | Edit **both** `V2_MODEL` + `MLX_BASE_URL` (different port) in `.env` — changing only `V2_MODEL` is ignored. Restart `mlx_vlm.server` with new `--model --host 127.0.0.1 --port`. Min: Qwen3-14B for text/tool calling and `read_image` OCR fallback; use a vision-capable model for `computer` |
+| "เปลี่ยนโมเดล" / change model | ใช้ Electron Settings หรือ CLI `menu` → Model / Think Budget สำหรับ local `:8085`; advanced custom backend ค่อยตั้ง **ทั้ง** `V2_MODEL` + `MLX_BASE_URL`. Qwen3.5-9B-4bit เป็น compact VLM สำหรับ 16GB, Qwen3-14B เป็น default text/tool model, Qwen3.6-35B เป็น high-quality VLM |
 | "port ถูกใช้อยู่" / port in use | Run `bash agent_stop.command` from the project root, then repeat the relevant start step |
 | "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
 | "ลืม conversation เก่า" / load old chat | `/history` in CLI, or use History in Electron (loads from `logs/history.db`) |

@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh } = require('../lib/format')
+const { mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh, runtimeStatusText } = require('../lib/format')
 
 test('mlxLabel extracts port from URL', () => {
   assert.strictEqual(mlxLabel('http://localhost:8085/v1'), 'MLX :8085')
@@ -58,4 +58,11 @@ test('selectValueAfterRefresh rejects a focused value no longer present in optio
     selectValueAfterRefresh('999', '512', true, ['256', '512', '1024']),
     '512',
   )
+})
+
+test('runtimeStatusText exposes model switch lifecycle', () => {
+  assert.strictEqual(runtimeStatusText('', 'switching'), '⏳ กำลังสลับโมเดล…')
+  assert.strictEqual(runtimeStatusText('', 'ready'), '✓ สลับโมเดลเสร็จแล้ว · พร้อมใช้งาน')
+  assert.strictEqual(runtimeStatusText('', 'idle'), '')
+  assert.strictEqual(runtimeStatusText('boom', 'error'), '⚠ boom')
 })

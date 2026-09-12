@@ -1,9 +1,9 @@
 # ENDEAVOR_LOCAL_AGENT_TH
 
 **Local AI Agent ที่ออกแบบให้รองรับภาษาไทยโดยเฉพาะ ที่รันบนเครื่องของคุณเอง 100%**
-ไม่มี API key, ไม่มีค่า token รายเดือน, ไม่มีข้อมูลหลุดออกไปนอกเครื่อง — รองรับทั้ง **Qwen3.6-35B-A3B (MoE)** สำหรับคุณภาพสูง และ **Qwen3-14B** สำหรับเครื่องที่มี RAM น้อยกว่า ผ่าน **MLX** บน Apple Silicon และ orchestrate ด้วย **LangGraph ReAct Agent**
+ไม่มี API key, ไม่มีค่า token รายเดือน, ไม่มีข้อมูลหลุดออกไปนอกเครื่อง — รองรับ **Qwen3.5-9B-4bit (VLM)** สำหรับ Mac RAM 16GB, **Qwen3-14B** เป็นค่าเริ่มต้นสำหรับเครื่อง 24GB+, และ **Qwen3.6-35B-A3B (MoE)** สำหรับคุณภาพสูง ผ่าน **MLX** บน Apple Silicon และ orchestrate ด้วย **LangGraph ReAct Agent**
 
-เป้าหมายของโปรเจกต์คือทำให้ Local AI Agent ที่ใช้งานได้จริงเข้าถึงคนทั่วไปได้มากขึ้น: ถ้ามีเครื่องแรงสามารถใช้ 35B MoE เป็นรุ่นหลัก แต่ถ้ามี Mac ที่ RAM น้อยกว่านั้นก็สามารถเริ่มต้นด้วย 14B ได้ โดยยังคงความสามารถด้านภาษาไทย, reasoning และ tool calling หลัก ๆ ของ Agent ไว้
+เป้าหมายของโปรเจกต์คือทำให้ Local AI Agent ที่ใช้งานได้จริงเข้าถึงคนทั่วไปได้มากขึ้น: เครื่อง 16GB สามารถเลือก Qwen3.5 9B VLM, fresh install ยังเริ่มด้วย Qwen3-14B เป็นค่า default สำหรับเครื่องที่มี headroom มากกว่า และเครื่องแรงสามารถเลือก 35B MoE เพื่อคุณภาพ reasoning/tool calling สูงสุด
 
 ---
 
@@ -82,7 +82,7 @@ cd AGENT_UI && npm install && npm start
 
 ถ้า run ไม่ได้เพราะ port ถูกใช้อยู่ (เช่น เปิด server ค้างจากรอบก่อน) ให้รัน `agent_stop.command` เพื่อเคลียร์ process ตามพอร์ตที่โปรเจกต์กำหนด แล้วค่อยเปิด `agent_start.command` ใหม่
 
-> การติดตั้ง **ไม่บังคับดาวน์โหลดทั้งสองโมเดล**: fresh install ใช้ `Qwen3-14B` เป็น default และจะดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. `Qwen3.6-35B` จะถูกดาวน์โหลด/โหลดเมื่อผู้ใช้เลือกเองเท่านั้น; ถ้า RAM <24GB ระบบจะเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
+> การติดตั้ง **ไม่บังคับดาวน์โหลดทุกโมเดล**: fresh install ใช้ `Qwen3-14B` เป็น default และดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. ผู้ใช้สามารถเลือก `Qwen3.5-9B-4bit` สำหรับเครื่อง 16GB หรือ `Qwen3.6-35B` สำหรับคุณภาพสูงได้ภายหลัง; 35B บน RAM <24GB จะมีคำเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
 
 > เพิ่งเคย clone ครั้งแรก หรืออยากดูทุกขั้นตอนแบบละเอียด (รวม `git clone`, config, ติดตั้งแบบไม่ใช้สคริปต์) → ดู [Setup](#setup)
 
@@ -141,9 +141,9 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
   ```
 - กรณีปกติที่ `:8085` ว่าง แอปจะ spawn `mlx_vlm.server` และ `agent_server.py` ให้อัตโนมัติ คอย monitor และ restart เฉพาะ MLX server ที่แอปเปิดเอง
 - ถ้าพบ MLX listener อยู่บน `:8085` ก่อนแล้ว แอปจะ **adopt server เดิม** โดยอ่าน active model จาก `--model` ของ process ที่ถือ listenerจริง; `/v1/models` เป็น health/compatibility signal เท่านั้น ไม่ใช้เดา active model ถ้าระบุ process/model ไม่ได้จะ fail-closed และปล่อย external server untouched
-- Settings เลือก model และ Think Budget จาก config กลางเดียวกับ CLI; ใน shared-server mode ช่อง Model ล็อกตาม server จริง แต่ Think Budget ยังเปลี่ยนได้ต่อ request ใน standalone mode Electron สามารถสลับ 35B/14B และ restart เฉพาะ server ที่ตัวเองเป็นเจ้าของ
+- Settings เลือก model และ Think Budget จาก config กลางเดียวกับ CLI; ใน shared-server mode ช่อง Model ล็อกตาม server จริง แต่ Think Budget ยังเปลี่ยนได้ต่อ request ใน standalone mode Electron สามารถสลับ 9B/14B/35B และ restart เฉพาะ server ที่ตัวเองเป็นเจ้าของ พร้อมสถานะ `กำลังสลับโมเดล…` และ `สลับโมเดลเสร็จแล้ว · พร้อมใช้งาน` เมื่อ server ใหม่ตอบสนองแล้ว
 - ปิดแอป = ปิด `agent_server.py` และปิด MLX serverเฉพาะกรณีที่แอปเป็นคนเปิดเอง; external/shared `:8085` จะไม่ถูกแตะ
-- Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` ใช้ full OCR fallback อัตโนมัติ ส่วน `computer` และความเข้าใจ pixels โดยตรงต้องใช้โมเดล vision-capable
+- Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` ใช้ full OCR fallback อัตโนมัติ ส่วน `Qwen3.5-9B-4bit` และ Qwen3.6-35B เป็นตัวเลือก vision-capable สำหรับ direct image understanding / `computer`
 
 `agent_server.py` ยังคงเป็น authenticated WebSocket/REST **backend ของ Electron และ custom clients** แต่โปรเจกต์ไม่ bundle browser HTML UI แยกอีกต่อไป
 
@@ -226,7 +226,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | Layer | เทคโนโลยี | หน้าที่ |
 |---|---|---|
 | **LLM Runtime** | [MLX](https://github.com/ml-explore/mlx) | รัน Qwen แบบ quantized (4-bit) บน Apple Silicon GPU ผ่าน Metal |
-| **Model** | `Qwen/Qwen3-14B-MLX-4bit` (default) หรือ `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | 14B เป็นค่าเริ่มต้นที่เข้าถึงง่ายกว่า; 35B เป็นตัวเลือกคุณภาพสูง |
+| **Model** | `Qwen/Qwen3-14B-MLX-4bit` (default), `mlx-community/Qwen3.5-9B-4bit` (compact VLM), หรือ `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | 9B สำหรับเครื่อง 16GB, 14B เป็นค่าเริ่มต้น, 35B เป็นตัวเลือกคุณภาพสูง |
 | **Agent Framework** | [LangGraph](https://github.com/langchain-ai/langgraph) `create_react_agent` | ReAct loop, state graph, checkpointing |
 | **LLM Client** | LangChain Core + `langchain-openai` | คุยกับ `mlx_vlm.server` ผ่าน OpenAI-compatible API |
 | **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | authenticated WebSocket/REST backend สำหรับ Electron และ custom clients |
@@ -396,14 +396,15 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 ## Requirements
 
 - macOS Apple Silicon (M1/M2/M3/M4/M5)
-- **Qwen3-14B 4-bit:** unified memory ประมาณ **24GB ขั้นต่ำเชิงปฏิบัติ**, **32GB+ แนะนำ**
+- **Qwen3.5-9B 4-bit (compact VLM):** ใช้งาน Agent TH ได้บน unified memory **16GB** และรองรับ image input โดยตรง
+- **Qwen3-14B 4-bit (default):** unified memory ประมาณ **24GB ขั้นต่ำเชิงปฏิบัติ**, **32GB+ แนะนำ**
 - **Qwen3.6-35B-A3B 4-bit (optional high-quality):** โมเดลใหญ่กว่าและใช้ RAM/swap สูงกว่า; บนเครื่อง RAM <24GB ระบบจะเตือนก่อนเริ่ม download/load แต่ผู้ใช้ยังยืนยันทำต่อได้
 - ปริมาณ RAM ที่ใช้จริงขึ้นกับ context length, KV cache, tools และโปรแกรมอื่นที่เปิดพร้อมกัน ตัวเลขข้างต้นจึงเป็นแนวทางสำหรับการใช้งาน Agent ไม่ใช่เพียงการโหลด weights ให้สำเร็จ
 - Python 3.11 via conda (`mlx` env)
 - `mlx-vlm` installed (และติดตั้ง `mlx-lm` เป็น dependency ที่ server ใช้ร่วมกัน)
 - (optional) `computer` direct screenshot vision works without extra setup; System Settings → Privacy & Security → **Accessibility** access for the process running the agent adds richer element data — the tool tells you in its own output (`ax=permission_required`) if this is off, no crash either way
 
-> **หมายเหตุเรื่องโมเดล:** ค่า default ของโปรเจกต์คือ **Qwen3-14B-MLX-4bit** เพื่อให้เริ่มใช้งานได้ง่ายขึ้น โดยจากการทดสอบ Agent สามารถทำงานด้าน text/tool calling หลักได้ครบ; `read_image` ใช้ full OCR fallback สำหรับ text-only model และ `computer` จะปิดอย่างชัดเจนเมื่อโมเดลไม่รองรับ vision
+> **หมายเหตุเรื่องโมเดล:** ค่า default ของโปรเจกต์ยังเป็น **Qwen3-14B-MLX-4bit**. สำหรับ Mac unified memory **16GB** สามารถเลือก **Qwen3.5-9B-4bit** ซึ่งเป็น VLM และใช้ direct vision/computer ได้; ถ้าใช้ 14B text-only `read_image` จะ full OCR fallback และ `computer` จะ fail closed อย่างชัดเจน
 >
 > **Qwen3.6-35B-A3B (MoE)** ยังเลือกใช้ได้เมื่ออยากได้ headroom ด้าน reasoning/planning/tool calling มากขึ้น. ถ้าเครื่องมี RAM ต่ำกว่า 24GB Electron/CLI จะเตือนก่อน download/load เท่านั้น ไม่ได้บล็อก — ผู้ใช้ยืนยันแล้วระบบจะทำต่อ
 >
@@ -553,9 +554,9 @@ def my_tool(query: str) -> str:
 
 ### ใช้โมเดลอื่น
 
-default runtime model คือ **Qwen3-14B-MLX-4bit**. หากต้องการคุณภาพสูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)** ได้จาก Electron Settings หรือ CLI; เครื่องที่มี RAM ต่ำกว่า 24GB จะได้รับคำเตือนก่อน download/load แต่ยังยืนยันใช้ 35B ได้. `read_image` บน 14B ใช้ OCR fallback และ `computer`/true pixel understanding ต้องใช้ vision-capable model
+default runtime model คือ **Qwen3-14B-MLX-4bit**. เครื่อง unified memory **16GB** สามารถเลือก **Qwen3.5-9B-4bit (VLM)** ได้จาก Electron Settings หรือ CLI และถ้าต้องการคุณภาพ reasoning สูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)**; เครื่องที่มี RAM ต่ำกว่า 24GB จะได้รับคำเตือนก่อน download/load เฉพาะ 35B แต่ยังยืนยันใช้ได้. `read_image` บน 14B ใช้ OCR fallback ส่วน 9B/35B รองรับ direct vision ตาม capability probe
 
-วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` → **Model / Think Budget** ทั้งสองใช้ `workspace/runtime_settings.json` ร่วมกัน. Electron จะ restart model เฉพาะ server ที่ตัวเองเป็นเจ้าของ; CLI จะไม่ kill/restart server ที่กำลังรันอยู่และจะขอให้ restart อย่างชัดเจนเมื่อเลือก Model ใหม่
+วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` → **Model / Think Budget** ทั้งสองใช้ `workspace/runtime_settings.json` ร่วมกัน. Electron จะขึ้นสถานะ `กำลังสลับโมเดล…` ระหว่าง restart model ที่ตัวเองเป็นเจ้าของ และ `สลับโมเดลเสร็จแล้ว · พร้อมใช้งาน` หลัง listener/model ใหม่พร้อมจริง; CLI จะไม่ kill/restart server ที่กำลังรันอยู่และจะแจ้งชัดเจนว่า model ใหม่ยังรอ restart
 
 สำหรับ custom backend/port ให้ใช้ advanced override ซึ่งต้องตั้งคู่กันและจะล็อก Model ใน UI:
 

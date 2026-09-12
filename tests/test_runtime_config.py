@@ -43,10 +43,13 @@ class SharedRuntimeConfigTests(unittest.TestCase):
             [("Low", 256), ("Medium", 512), ("High", 1024), ("xhigh", 1536), ("Max", 2048)],
         )
 
-    def test_default_model_is_qwen3_14b(self) -> None:
+    def test_default_model_is_qwen3_14b_and_9b_vlm_is_selectable(self) -> None:
         self.assertEqual(config.DEFAULT_MODEL, "Qwen/Qwen3-14B-MLX-4bit")
+        self.assertEqual(config.COMPACT_VLM_MODEL, "mlx-community/Qwen3.5-9B-4bit")
         self.assertEqual(config.MODEL_CHOICES[0], config.DEFAULT_MODEL)
-        self.assertEqual(config.MODEL_CHOICES[1], config.HIGH_QUALITY_MODEL)
+        self.assertEqual(config.MODEL_CHOICES[1], config.COMPACT_VLM_MODEL)
+        self.assertEqual(config.MODEL_CHOICES[2], config.HIGH_QUALITY_MODEL)
+        self.assertEqual(config.MODEL_LABELS[config.COMPACT_VLM_MODEL], "Qwen3.5 9B · VLM")
 
     def test_35b_warning_is_only_below_24gb(self) -> None:
         gb = 1024 ** 3
@@ -58,6 +61,9 @@ class SharedRuntimeConfigTests(unittest.TestCase):
         ))
         self.assertFalse(config.high_quality_model_warning_required(
             config.DEFAULT_MODEL, ram_bytes=16 * gb,
+        ))
+        self.assertFalse(config.high_quality_model_warning_required(
+            config.COMPACT_VLM_MODEL, ram_bytes=16 * gb,
         ))
 
     def test_cli_35b_low_ram_warning_is_confirmable_not_blocked(self) -> None:

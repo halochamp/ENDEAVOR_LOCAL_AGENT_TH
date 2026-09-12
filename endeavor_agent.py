@@ -585,11 +585,18 @@ def main() -> None:
         )
 
     def _apply_runtime_selection(model: str, thinking_budget: int) -> str:
+        requested_model = str(model or "").strip()
+        model_change_requested = requested_model != config.get_model()
         if not _warm_llm_ready.is_set():
             print(" กำลังรอ model cache ก่อนเปลี่ยน runtime settings…")
             _warm_llm_ready.wait()
         try:
-            with Spinner("⚙️  กำลังบันทึก runtime settings…"):
+            spinner_text = (
+                "⏳  กำลังเตรียมเปลี่ยน Model…"
+                if model_change_requested
+                else "⚙️  กำลังปรับ Think Budget…"
+            )
+            with Spinner(spinner_text):
                 changed = _apply_cli_runtime_settings(model, thinking_budget)
         except Exception as exc:
             print(f" {C_WARN}⚠ เปลี่ยน runtime settings ไม่สำเร็จ: {exc}{R}\n")
@@ -597,8 +604,8 @@ def main() -> None:
         if changed.get("restart_required"):
             print(
                 f" {C_GREEN}✓ บันทึก Model แล้ว:{R} {config.get_model_label()}\n"
-                f" {C_META}CLI ไม่ได้เป็นเจ้าของ MLX process ที่กำลังรันอยู่ จึงไม่ kill/restart ให้เอง. "
-                f"ปิด session นี้แล้ว restart MLX/เปิด Electron ใหม่เพื่อใช้ model ที่เลือก.{R}\n"
+                f" {C_META}สถานะ: รอ restart MLX จึงจะพร้อมใช้งาน — CLI ไม่ได้เป็นเจ้าของ process ที่กำลังรันอยู่ "
+                f"จึงไม่ kill/restart server ภายนอกให้เอง. ปิด session นี้แล้ว restart MLX/เปิด Electron ใหม่.{R}\n"
             )
             return "restart"
         if changed.get("model_changed") or changed.get("thinking_budget_changed"):
