@@ -215,23 +215,40 @@ class Spinner:
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
-def print_header(model: str, tool_count: int, online: bool = True) -> None:
+def print_header(
+    model: str,
+    tool_count: int,
+    online: bool = True,
+    *,
+    thinking_budget: int | None = None,
+    thinking_label: str = "",
+) -> None:
     short = model.split("/")[-1]
     net = f"\033[38;5;82m● online{R}" if online else f"\033[38;5;196m● offline{R}"
-    # inner content width = WIDTH - 2  (one ║ each side)
     inner = WIDTH - 2
     bar = f" {C_DIM}{'═' * WIDTH}{R}"
-    # padding per line = inner - visible chars (excluding ANSI)
-    pad_title   = inner - 28                        # "  ENDEAVOR_LOCAL_AGENT_TH_CLI" = 28
-    pad_model   = max(0, inner - 9 - len(short))    # "  Model  " = 9
-    pad_power   = max(0, inner - 44)                # "  Powered by HaloChamp  champoomwat@gmail.com" = 44
-    pad_license = max(0, inner - 47)                # "  License  MIT + Commons Clause  ·  poomwat.com" = 47
+    _title_txt = "  ENDEAVOR_LOCAL_AGENT_TH_CLI"
+    _power_txt = "  Powered by HaloChamp  champoomwat@gmail.com"
+    _license_txt = "  License  MIT + Commons Clause  ·  poomwat.com"
+    pad_title = max(0, inner - len(_title_txt))
+    pad_model = max(0, inner - len("  Model  ") - len(short))
+    think_text = ""
+    if thinking_budget is not None:
+        label = thinking_label.strip()
+        think_text = f"  Think  {label + ' · ' if label else ''}{thinking_budget}"
+    pad_think = max(0, inner - len(think_text))
+    pad_power = max(0, inner - len(_power_txt))
+    pad_license = max(0, inner - len(_license_txt))
     print()
     print(bar)
     print(f" {C_DIM}║{R}  {BOLD}\033[38;5;220mENDEAVOR_LOCAL_AGENT_TH_CLI{R}"
           f"{C_DIM}{'':>{pad_title}}║{R}")
     print(f" {C_DIM}║{R}  {C_META}Model  {R}{BOLD}{C_AGENT}{short}{R}"
           f"{C_DIM}{'':>{pad_model}}║{R}")
+    if think_text:
+        print(f" {C_DIM}║{R}  {C_META}Think  {R}{BOLD}{C_AGENT}"
+              f"{thinking_label + ' · ' if thinking_label else ''}{thinking_budget}{R}"
+              f"{C_DIM}{'':>{pad_think}}║{R}")
     print(f" {C_DIM}║{R}  {C_META}Powered by {R}{C_HEADER}HaloChamp{R}"
           f"  {C_META}champoomwat@gmail.com{R}"
           f"{C_DIM}{'':>{pad_power}}║{R}")
@@ -366,7 +383,52 @@ def print_mode_menu() -> None:
     print(f"   {C_ORANGE}[1]{R} Build RAG Index")
     print(f"   {C_ORANGE}[2]{R} Skills")
     print(f"   {C_ORANGE}[3]{R} Special Commands")
+    print(f"   {C_ORANGE}[4]{R} Model / Think Budget")
     print(f"   {C_ORANGE}[q]{R} Quit")
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print()
+
+
+def print_runtime_settings_menu(settings: dict) -> None:
+    model = str(settings.get("model") or "")
+    model_label = next(
+        (str(item.get("label") or item.get("value") or "")
+         for item in settings.get("model_options", [])
+         if item.get("value") == model),
+        model.split("/")[-1],
+    )
+    budget = int(settings.get("thinking_budget") or 0)
+    budget_label = next(
+        (str(item.get("label") or "")
+         for item in settings.get("thinking_options", [])
+         if int(item.get("value") or 0) == budget),
+        str(budget),
+    )
+    lock_note = " · model locked" if settings.get("model_locked") else ""
+    print()
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print(f"   {BOLD}{C_HEADER}Model / Think Budget{R}")
+    print(f"   {C_META}Model:{R} {C_AGENT}{model_label}{R}{C_DIM}{lock_note}{R}")
+    print(f"   {C_META}Think:{R} {C_AGENT}{budget_label} · {budget}{R}")
+    print()
+    print(f"   {C_ORANGE}[1]{R} เปลี่ยน Model")
+    print(f"   {C_ORANGE}[2]{R} เปลี่ยน Think Budget")
+    print(f"   {C_ORANGE}[b]{R} Back")
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print()
+
+
+def print_runtime_choices(title: str, options: list[dict], current: object) -> None:
+    print()
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print(f"   {BOLD}{C_HEADER}{title}{R}")
+    for idx, item in enumerate(options, 1):
+        value = item.get("value")
+        label = str(item.get("label") or value or "")
+        suffix = f" {C_GREEN}✓ current{R}" if value == current else ""
+        detail = f" · {value}" if title == "Think Budget" else ""
+        print(f"   {C_ORANGE}[{idx}]{R} {label}{C_META}{detail}{R}{suffix}")
+    print(f"   {C_ORANGE}[b]{R} Back")
     print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
     print()
 

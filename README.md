@@ -34,7 +34,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 - [บทนำ](#บทนำ)
 - [เริ่มใช้งานเร็ว (Quick Start)](#เริ่มใช้งานเร็ว-quick-start)
 - [ENDEAVOR Agent ทำอะไรได้บ้าง?](#endeavor-agent-ทำอะไรได้บ้าง)
-- [UI ที่มีให้ (3 แบบ)](#ui-ที่มีให้-3-แบบ)
+- [UI ที่มีให้ (2 แบบ)](#ui-ที่มีให้-2-แบบ)
 - [หลักการทำงานของ Agent](#หลักการทำงานของ-agent)
 - [เทคโนโลยีที่ใช้](#เทคโนโลยีที่ใช้)
 - [Security](#security)
@@ -43,7 +43,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 - [Requirements](#requirements)
 - [Setup](#setup)
 - [Configuration (.env)](#configuration-env)
-- [ต่อ Web UI / Telegram ของตัวเอง](#ต่อ-web-ui--telegram-ของตัวเอง-agent_serverpy)
+- [ต่อ Custom Client / Telegram](#ต่อ-custom-client--telegram-agent_serverpy)
 - [Commands ใน CLI](#commands-ใน-cli)
 - [ต่อยอดได้ยังไง?](#ต่อยอดได้ยังไง)
 - [License](#license)
@@ -68,16 +68,16 @@ conda activate mlx
 APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
 python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
 
-# ขั้นที่ 3: รัน agent — เลือกแบบที่ต้องการ (terminal ใหม่)
+# ขั้นที่ 3: รัน agent — เลือก UI ที่ต้องการ
 
-# วิธีที่ 1: CLI แบบ activate เอง
+# แบบ CLI: activate เอง
 conda activate mlx && python endeavor_agent.py
 
-# วิธีที่ 2: CLI แบบ run.sh (ไม่ต้อง activate — สคริปต์จัดการให้)
+# แบบ CLI: run.sh (ไม่ต้อง activate — สคริปต์จัดการให้)
 bash run.sh
 
-# วิธีที่ 3: Web UI (VS Code-style — เปิด browser ที่ http://localhost:8765/ui)
-conda activate mlx && python agent_server.py
+# แบบ Electron Desktop: AGENT_UI จัดการ agent_server และ MLX lifecycle ให้
+cd AGENT_UI && npm install && npm start
 ```
 
 ถ้า run ไม่ได้เพราะ port ถูกใช้อยู่ (เช่น เปิด server ค้างจากรอบก่อน) ให้รัน `agent_stop.command` เพื่อเคลียร์ process ตามพอร์ตที่โปรเจกต์กำหนด แล้วค่อยเปิด `agent_start.command` ใหม่
@@ -116,54 +116,34 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 ---
 
-## UI ที่มีให้ (3 แบบ)
+## UI ที่มีให้ (2 แบบ)
 
-เลือกใช้ได้ทั้ง 3 แบบ — ทำงานเหมือนกัน ต่างกันที่หน้าตา ทุกแบบ**บอก user เสมอว่า agent กำลังทำอะไรอยู่** ไม่ใช่แค่รอคำตอบเฉย ๆ
+โปรเจกต์รองรับ **CLI + Electron Desktop** โดยทั้งสองฝั่งใช้ runtime config กลางเดียวกันสำหรับ Model และ Think Budget (`workspace/runtime_settings.json`, override ได้ด้วย `V2_RUNTIME_SETTINGS_PATH`) จึงไม่ต้องตั้งค่าซ้ำคนละ UI
 
 ### 1. CLI (`endeavor_agent.py`)
 
 - รันใน terminal — เบา เร็ว เหมาะกับงานที่ต้องทำซ้ำ ๆ หรือเปิดทิ้งไว้นาน ๆ
-- ระหว่าง agent ทำงาน จะเห็น **spinner 2 บรรทัด** ตลอดเวลา:
-  - บรรทัดบน: phase หลัก เช่น "กำลังคิด...", "กำลังเรียก tool..."
-  - บรรทัดล่าง (`⎿`): sub-status รายละเอียด tool ที่กำลังรัน เช่น `web_search("...")`, `read_file("data.csv")`
-- มี context status bar แสดงการใช้ context (token) แบบ real-time
+- ระหว่าง agent ทำงาน จะเห็น **spinner 2 บรรทัด** ตลอดเวลา พร้อม context status bar แบบ real-time
+- พิมพ์ `menu` → **Model / Think Budget** เพื่อเลือก model และระดับ Low 256 / Medium 512 / High 1024 / xhigh 1536 / Max 2048
+- Think Budget เปลี่ยนแล้วใช้กับ request ถัดไปได้ทันที และค่าจะถูก Electron อ่านต่อจาก config กลางเดียวกัน
+- หากเลือก **Model** ใหม่ขณะที่ CLI ใช้ MLX process ที่รันอยู่แล้ว CLI จะบันทึกค่ากลางแต่ **ไม่ kill/restart process ที่ตัวเองไม่ได้เป็นเจ้าของ**; ให้ restart MLX หรือเปิด Electron รอบถัดไปเพื่อ apply model ที่เลือก หากตอนเปิด CLI model ใน config ไม่ตรงกับ listener จริง ระบบจะ fail-closed แทนการเดาหรือฆ่า server
 
-### 2. Web UI — VS Code-style (`agent_server.py` + `chat.html`)
+### 2. AGENT_UI — Electron Desktop App
 
-- รัน `python agent_server.py` แล้วเปิด `http://localhost:8765/ui` — single-file HTML, dark theme คล้าย VS Code
-- Layout 3 ส่วน: icon sidebar (Workspace / Activity / History / Commands) | side panel | chat
-- **Workspace panel**: เรียกดูไฟล์ในโฟลเดอร์ทำงานเป็น tree — กดดูเนื้อหา (text/code แสดงเป็น code block, รูปภาพแสดง preview ในตัว), เปิดด้วยโปรแกรม default ของเครื่อง (✏️), หรือลบไฟล์ (🗑 กด 2 ครั้งเพื่อยืนยัน)
-- **Activity panel**: log การเรียก tool ทั้งหมดของ session แบบเรียงตามลำดับเวลา
-- **History panel**: ดูประวัติคำถาม-คำตอบที่เคยคุยไว้
-- **Commands panel**: เมนู `/clear`, `/compact`, `/history`, skill ต่าง ๆ (`/research`, `/pdf_to_text`) — กดเปิด/ปิดได้โดยไม่ต้องพิมพ์
-- แชทแบบ streaming token-by-token, รองรับ markdown, command autocomplete พิมพ์ `/` แล้วเลือกจาก dropdown
-- เมื่อเปิด skill mode (เช่น `/pdf_to_text`) ป้ายชื่อผู้ตอบในแชทจะเปลี่ยนเป็น `Agent | pdf_to_text` ให้เห็นชัดว่ากำลังอยู่ใน mode ไหน
-- **หยุดกลางคัน**: ปุ่ม ■ หยุด ระหว่าง agent กำลังทำงาน — ยกเลิก turn ที่รันอยู่ได้ทันที ไม่ต้องรอจบ
-- **แนบไฟล์/รูปภาพ**: ปุ่ม 📎 แนบไฟล์เข้ากับคำถามได้ — ไฟล์ถูกอัปโหลดเข้า `workspace/uploads/` แล้ว agent อ่านเองด้วย `read_file`/`read_image` ตามชนิดไฟล์ (โมเดล vision จะเห็นรูปโดยตรงก่อน; ถ้า backend/model เป็น text-only ระบบจะเปลี่ยนเป็น full OCR อัตโนมัติใน turn เดียว)
-
-### 3. AGENT_UI — Electron Desktop App
-
-- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง (ไม่ใช่ browser tab) หน้าตาเหมือน Web UI ทุกอย่าง
+- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง พร้อม workspace, activity, history, streaming chat, file attachment และ Settings
 - **ไม่ได้ bundle Electron ไว้ในรีโป** ต้อง `npm install` เองครั้งแรก:
   ```bash
   cd AGENT_UI
   npm install     # โหลด Electron + dependencies (~150MB, ครั้งเดียว)
   npm start
   ```
-- ต่างจาก 2 แบบข้างบนตรงที่**ไม่ต้องเปิด MLX server เองก่อน** — กรณีปกติที่ `:8085` ว่าง แอปจะ spawn `mlx_vlm.server` และ `agent_server.py` ให้อัตโนมัติตอนเปิด (เห็น log ความคืบหน้าบนหน้าจอ loading), คอย monitor และ restart เฉพาะ MLX server ที่แอปเปิดเอง
-- กรณีพิเศษถ้าเปิดแอปแล้วพบ MLX listener อยู่บน `:8085` ก่อนแล้ว แอปจะ **adopt server เดิม** โดยอ่าน active model จาก `--model` ของ process ที่ถือ listener จริง; `/v1/models` ใช้เป็น health/compatibility signal เท่านั้น ไม่ใช้เดา active model. ถ้าระบุ process/model ไม่ได้จะ fail-closed และปล่อย external server ไว้ untouched — เหมาะสำหรับ developer ที่ต้องการให้ Agent TH ใช้ model server ร่วมกับ Agent MAX VLM ในการทดสอบ
-- แถบ **Settings** ใน AGENT_UI เลือก model และ Think Budget ได้: Low 256 / Medium 512 / High 1024 / xhigh 1536 / Max 2048. ใน shared-server mode ช่อง Model จะล็อกตาม model ที่ `:8085` ใช้อยู่ แต่ Think Budget ยังเปลี่ยนได้ต่อ request; ใน standalone mode สามารถเลือก 35B/14B และแอปจะ restart เฉพาะ server ที่ตัวเองเป็นเจ้าของ
-- ปิดแอป = ปิด `agent_server.py` และปิด MLX server เฉพาะกรณีที่แอปเป็นคนเปิดเอง; external/shared `:8085` จะไม่ถูกแตะ
-- ใช้ conda env `mlx` เดียวกับที่ตั้งค่าไว้ตอน Setup ด้านล่าง (auto-detect ผ่าน `conda info`, override ได้ด้วย `MLX_CONDA_ENV`/`MLX_PYTHON`)
-- **เครื่องที่ RAM ไม่ถึงระดับเหมาะสมสำหรับ 35B:** อ่าน env `V2_MODEL`/`MLX_BASE_URL` เหมือนกับ `config.py` เป๊ะ (ต้องตั้งทั้งคู่พร้อมกัน ไม่งั้นยังใช้ 35B ซึ่งเป็น default) — แนะนำ **Qwen3-14B-MLX-4bit** เป็นรุ่นเริ่มต้นสำหรับ text/tool calling โดยประมาณ **24GB unified memory เป็นขั้นต่ำเชิงปฏิบัติ และ 32GB ขึ้นไปแนะนำ** เพื่อเหลือพื้นที่ให้ macOS, KV cache, context และ tools อื่น ๆ; 16GB ไม่แนะนำสำหรับการใช้งาน Agent ต่อเนื่อง แม้บาง workload อาจโหลดโมเดลได้ก็ตาม
-- Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` จะใช้ full OCR fallback อัตโนมัติ ส่วน `computer` และการเข้าใจ pixels โดยตรงต้องใช้โมเดล vision-capable
-  ```bash
-  export V2_MODEL="Qwen/Qwen3-14B-MLX-4bit" MLX_BASE_URL="http://localhost:8888/v1"
-  npm start
-  ```
-  (ตั้งก่อนเปิด `agent_start.command`/`npm start` ในเทอร์มินัลเดียวกัน หรือ export ถาวรไว้ใน `~/.zshrc`)
+- กรณีปกติที่ `:8085` ว่าง แอปจะ spawn `mlx_vlm.server` และ `agent_server.py` ให้อัตโนมัติ คอย monitor และ restart เฉพาะ MLX server ที่แอปเปิดเอง
+- ถ้าพบ MLX listener อยู่บน `:8085` ก่อนแล้ว แอปจะ **adopt server เดิม** โดยอ่าน active model จาก `--model` ของ process ที่ถือ listenerจริง; `/v1/models` เป็น health/compatibility signal เท่านั้น ไม่ใช้เดา active model ถ้าระบุ process/model ไม่ได้จะ fail-closed และปล่อย external server untouched
+- Settings เลือก model และ Think Budget จาก config กลางเดียวกับ CLI; ใน shared-server mode ช่อง Model ล็อกตาม server จริง แต่ Think Budget ยังเปลี่ยนได้ต่อ request ใน standalone mode Electron สามารถสลับ 35B/14B และ restart เฉพาะ server ที่ตัวเองเป็นเจ้าของ
+- ปิดแอป = ปิด `agent_server.py` และปิด MLX serverเฉพาะกรณีที่แอปเป็นคนเปิดเอง; external/shared `:8085` จะไม่ถูกแตะ
+- Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` ใช้ full OCR fallback อัตโนมัติ ส่วน `computer` และความเข้าใจ pixels โดยตรงต้องใช้โมเดล vision-capable
 
-ทั้ง 3 แบบเชื่อมต่อ MLX server ตัวเดียวกัน (`localhost:8085`) — เลือกใช้ตัวไหนก็ได้ ไม่ต้องรันพร้อมกัน (AGENT_UI เปิดพร้อม CLI/Web UI อื่นได้ ถ้า MLX server ตัวเดิมรันอยู่แล้วมันจะ adopt ไม่ restart ทับ)
+`agent_server.py` ยังคงเป็น authenticated WebSocket/REST **backend ของ Electron และ custom clients** แต่โปรเจกต์ไม่ bundle browser HTML UI แยกอีกต่อไป
 
 ---
 
@@ -211,7 +191,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | **`planner.py`** | LLM call เดียวจัดหมวด query เป็น simple/complex → ถ้า complex คืน step list ให้ `create_plan` ก่อนเริ่มทำงานจริง |
 | **`graph.py`** | ผูก agent เข้ากับ LangGraph state machine, จัดการ retry เมื่อ synthesis ล้มเหลว, deterministic intercept สำหรับ search/research intent |
 | **`llm.py`** | สร้าง `ChatOpenAI` client ชี้ไปที่ `mlx_vlm.server` (OpenAI-compatible API) |
-| **`runtime_common.py`** | infra ร่วมระหว่าง CLI กับ Web UI — memory store, liveness check, skill detection (single source of truth ตาม Dual-Path Prohibition) |
+| **`runtime_common.py`** | infra ร่วมระหว่าง CLI กับ Electron/backend — memory store, liveness check, skill detection (single source of truth ตาม Dual-Path Prohibition) |
 | **`awake_engine.py`** | daemon thread คอยเช็ค standing trigger ที่ตั้งไว้ผ่าน `awake` tool (file/every/times/once) — fire แล้วส่ง query เข้า agent เองโดยไม่ต้องมีคนพิมพ์ |
 
 ### Context & Memory Management
@@ -243,9 +223,9 @@ START → react (agent คุมเองทั้งหมด) → END
 | **Model** | `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE, default) หรือ `Qwen/Qwen3-14B-MLX-4bit` | 35B เน้นคุณภาพสูง; 14B ลดข้อกำหนดด้าน RAM และช่วยให้คนทั่วไปเข้าถึง Local Agent ได้ง่ายขึ้น |
 | **Agent Framework** | [LangGraph](https://github.com/langchain-ai/langgraph) `create_react_agent` | ReAct loop, state graph, checkpointing |
 | **LLM Client** | LangChain Core + `langchain-openai` | คุยกับ `mlx_vlm.server` ผ่าน OpenAI-compatible API |
-| **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | WebSocket (real-time streaming) + REST endpoints |
-| **Web UI** | `chat.html` (vanilla JS) + marked.js | VS Code-style chat UI พร้อม activity log, file viewer, streaming response |
-| **CLI** | `prompt_toolkit` + `rich` | interactive terminal, autocomplete, markdown rendering |
+| **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | authenticated WebSocket/REST backend สำหรับ Electron และ custom clients |
+| **Electron Desktop** | Electron + HTML/CSS/JS ใน `AGENT_UI/` | desktop chat UI, workspace/activity/history, runtime Settings |
+| **CLI** | `prompt_toolkit` + `rich` | interactive terminal, autocomplete, markdown rendering, runtime Settings |
 | **Web Search** | `ddgs` (DuckDuckGo) | ค้นหาข้อมูล real-time ไม่ต้องใช้ API key |
 | **Web Scraping** | `trafilatura`, `requests`, Jina Reader | ดึงเนื้อหาเว็บ → clean text |
 | **Browser Automation** | `playwright` + `browser-use` | ควบคุม browser จริงสำหรับเว็บ JS-heavy / SPA |
@@ -423,7 +403,7 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 >
 > โมเดลที่เล็กกว่านี้ (เช่น 7B/8B ลงไป) ไม่ใช่ target ที่แนะนำของโปรเจกต์ เพราะมีโอกาส tool-call ผิด, หลุด format หรือ reasoning ไม่พอสำหรับ workflow หลายขั้นมากขึ้น
 >
-> สลับโมเดลทำได้ผ่าน `config.py` หรือ env var `V2_MODEL` + `MLX_BASE_URL` (ดูหัวข้อ [Configuration](#configuration-env))
+> สลับโมเดลหลักผ่าน **Electron Settings** หรือ CLI `menu` → **Model / Think Budget** ซึ่งใช้ config กลางเดียวกัน; env var `V2_MODEL` + `MLX_BASE_URL` ยังเป็น advanced override ที่ล็อก model (ดูหัวข้อ [Configuration](#configuration-env))
 
 ---
 
@@ -445,17 +425,19 @@ conda activate mlx
 APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
 python -m mlx_vlm.server --model unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit --host 127.0.0.1 --port 8085
 
-# 5. รัน agent — เลือกแบบที่ต้องการ
-conda activate mlx
+# 5. รัน agent — เลือก UI ที่ต้องการ
 
-# แบบ CLI (วิธีที่ 1: activate เอง)
+# CLI (activate เอง)
+conda activate mlx
 python endeavor_agent.py
 
-# แบบ CLI (วิธีที่ 2: ไม่ต้อง activate — run.sh จัดการให้)
+# CLI (ไม่ต้อง activate — run.sh จัดการให้)
 bash run.sh
 
-# แบบ Web UI (เปิด browser ที่ http://localhost:8765/ui):
-python agent_server.py
+# Electron Desktop (จัดการ agent_server ให้เอง)
+cd AGENT_UI
+npm install   # ครั้งแรกเท่านั้น
+npm start
 ```
 
 > ติดตั้งเอง (ไม่ใช้สคริปต์): `pip install -r install_library/requirements.txt && playwright install chromium`
@@ -476,9 +458,10 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 |---|---|---|
 | LLM Backend | `MLX_BASE_URL`, `V2_MODEL`, `MLX_API_KEY` | เปลี่ยน server/โมเดล |
 | Generation | `V2_TEMPERATURE`, `V2_THINKING_BUDGET`, `V2_REPETITION_PENALTY`, `V2_RECURSION_LIMIT` | tuning การตอบ |
+| Runtime UI State | `V2_RUNTIME_SETTINGS_PATH` | optional path override สำหรับ Model/Think Budget config กลางของ CLI + Electron |
 | MLX Prefix Cache | `APC_ENABLED`, `APC_EXACT_CACHE_ENTRIES`, `APC_EXACT_PREFIX_GUARD_TOKENS` | ลด prefill/TTFT ของ prefix ที่ซ้ำกัน |
 | Context Window | `V2_CONTEXT_MAX_CHARS` | ขยาย/ลด session length |
-| Agent Server | `AGENT_SERVER_PORT`, `AGENT_SERVER_TOKEN`, `AGENT_AUTH_DISABLED` | ตั้งค่า web server |
+| Agent Server | `AGENT_SERVER_PORT`, `AGENT_SERVER_TOKEN`, `AGENT_AUTH_DISABLED` | ตั้งค่า authenticated backend สำหรับ Electron/custom clients |
 | Workspace & Logs | `V2_WORKSPACE`, `V2_LOG_DIR`, `V2_LOG_MAX_ENTRIES` | path สำหรับไฟล์งานและ log |
 | Web Tool Limits | `V2_WEB_SEARCH_MAX_RESULTS`, `V2_BROWSE_URL_MAX_CHARS`, ฯลฯ | จำกัดขนาดผลลัพธ์จาก web tools |
 | Web Cache | `V2_WEB_CACHE_MAX_ENTRIES`, `V2_WEB_CACHE_MAX_BYTES` | จัดการ cache เนื้อหาเว็บ |
@@ -488,11 +471,11 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 
 ---
 
-## ต่อ Web UI / Telegram ของตัวเอง (`agent_server.py`)
+## ต่อ Custom Client / Telegram (`agent_server.py`)
 
-ปกติ `python endeavor_agent.py` คือ CLI ล้วน — ไม่เปิด port อะไร ไม่เกี่ยวกับหัวข้อนี้เลย
+ปกติ `python endeavor_agent.py` คือ CLI ล้วน — ไม่เปิด port อะไร ส่วน Electron จะเปิด `agent_server.py` ให้เอง
 
-ถ้าอยากต่อ **web UI หรือ Telegram bot ของตัวเอง** มี `agent_server.py` ให้ — เป็น FastAPI server แยก process (รันคนละไฟล์ คนละคำสั่ง):
+ถ้าต้องการต่อ **custom client หรือ Telegram bot ของตัวเอง** สามารถรัน `agent_server.py` เป็น FastAPI backend แยก processได้:
 
 ```bash
 python agent_server.py   # เปิด WebSocket + REST บน http://127.0.0.1:8765
@@ -500,11 +483,9 @@ python agent_server.py   # เปิด WebSocket + REST บน http://127.0.0.1
 
 | Endpoint | ใช้ทำอะไร |
 |---|---|
-| `GET /ui` | เปิด Web UI (VS Code-style) — `chat.html` |
-| `GET /ui-token` | ดึง auth token สำหรับหน้า `/ui` (ใช้เฉพาะ same-origin) |
-| `ws://localhost:8765/ws` | real-time chat พร้อม token streaming (สำหรับ web UI) |
+| `ws://localhost:8765/ws` | real-time chat พร้อม token streaming (Electron/custom client) |
 | `POST /chat` | sync request/response (สำหรับ Telegram bot ฯลฯ) |
-| `POST /upload` | อัปโหลดไฟล์เข้า `workspace/uploads/` แล้วคืน hint text ไว้แปะเข้ากับ query ถัดไป (ใช้โดยปุ่ม 📎 ใน web UI) |
+| `POST /upload` | อัปโหลดไฟล์เข้า `workspace/uploads/` แล้วคืน hint text สำหรับ Electron/custom client |
 | `GET /status`, `/files`, `/file` | health check / อ่านไฟล์ workspace |
 
 **Auth (สำคัญ):** ทุก request ต้องมี token —
@@ -565,7 +546,11 @@ def my_tool(query: str) -> str:
 
 ### ใช้โมเดลอื่น
 
-⚠️ default ของ harness ทุกค่า (prompt, thinking budget, repetition penalty) tune สำหรับ **Qwen3.6-35B-A3B (MoE)** — เปลี่ยนโมเดลแล้วพฤติกรรม tool-calling อาจต่างไปและต้อง tune เพิ่มเอง ถ้า RAM ไม่พอสำหรับ 35B แนะนำ **Qwen3-14B** เป็นขั้นต่ำสำหรับ text/tool calling และ `read_image` OCR fallback; `computer` กับ true pixel understanding ต้องใช้ vision-capable model:
+⚠️ default ของ harness ทุกค่า (prompt, thinking budget, repetition penalty) tune สำหรับ **Qwen3.6-35B-A3B (MoE)** — เปลี่ยนโมเดลแล้วพฤติกรรม tool-calling อาจต่างไปและต้อง tune เพิ่มเอง ถ้า RAM ไม่พอสำหรับ 35B แนะนำ **Qwen3-14B** เป็นขั้นต่ำสำหรับ text/tool calling และ `read_image` OCR fallback; `computer` กับ true pixel understanding ต้องใช้ vision-capable model
+
+วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` → **Model / Think Budget** ทั้งสองใช้ `workspace/runtime_settings.json` ร่วมกัน. Electron จะ restart model เฉพาะ server ที่ตัวเองเป็นเจ้าของ; CLI จะไม่ kill/restart server ที่กำลังรันอยู่และจะขอให้ restart อย่างชัดเจนเมื่อเลือก Model ใหม่
+
+สำหรับ custom backend/port ให้ใช้ advanced override ซึ่งต้องตั้งคู่กันและจะล็อก Model ใน UI:
 
 ```bash
 export V2_MODEL="Qwen/Qwen3-14B-MLX-4bit"

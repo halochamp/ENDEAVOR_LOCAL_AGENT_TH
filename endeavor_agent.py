@@ -5,7 +5,7 @@
 """endeavor_agent.py — ENDEAVOR_AGENT_V2 interactive CLI
 
 รัน:  conda activate mlx && python endeavor_agent.py
-สลับ model: export V2_MODEL=... MLX_BASE_URL=...  (ดู config.py)
+Model + Think Budget ใช้ config กลางเดียวกับ Electron UI (ดู config.py)
 """
 from __future__ import annotations
 import sys
@@ -20,9 +20,12 @@ if sys.version_info[:2] != (3, 11):
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+import config
+import graph as _graph
+import planner as _planner
 from graph import build_graph, force_compact, rewarm_after_compact, summarize_history
 from react import get_system_prompt, ctx_stats as _ctx_stats
-from config import RECURSION_LIMIT, MLX_BASE_URL, CONTEXT_MAX_CHARS, get_model
+from config import RECURSION_LIMIT, MLX_BASE_URL, CONTEXT_MAX_CHARS
 from runtime_common import (
     mlx_up as _server_up, internet_up as _internet_up,
     parse_plan_steps as _parse_plan_steps,
@@ -37,15 +40,18 @@ from runtime_common import (
 )
 import atexit
 from tools import ALL_TOOLS, SKILL_TOOLS
+from tools import _summarize as _summarize_tool
 from tools._progress import set_callback as set_progress_callback, set_phase_callback, set_plan_callback
 from tools.web_cache import web_count_reset as _reset_web_counter
 from agent_log import AgentLogger
+from runtime_model import active_local_mlx_model
 from ui_cli import (
     Spinner, print_header, print_divider, print_user_prompt,
     print_tool_step, print_plan, print_synthesizing,
     print_agent_response, print_web_refs,
     extract_refs_from_search_result, prompt_user,
     print_mode_menu, print_special_commands, print_skill_help,
+    print_runtime_settings_menu, print_runtime_choices,
     print_startup_hint,
     setup_skill_completer, update_ctx_info, print_compact_notice,
     _SPINNER_LABELS,
@@ -412,10 +418,65 @@ def _is_load_cmd(q: str) -> bool:
     return q.strip().lower() in _LOAD_CMDS
 
 
+def _invalidate_runtime_llms() -> None:
+    _graph.invalidate_llm_cache()
+    _planner.invalidate_llm_cache()
+    _summarize_tool.invalidate_llm_cache()
+
+
+def _runtime_model_matches_active_server() -> tuple[bool, str]:
+    """Fail closed when the saved owner config disagrees with a local listener.
+
+    Explicit environment-locked custom backends remain authoritative and are
+    intentionally not process-inspected here.
+    """
+    runtime = config.get_runtime_settings()
+    if runtime.get("model_locked") and not runtime.get("shared_server"):
+        return True, config.get_model()
+    active = active_local_mlx_model(MLX_BASE_URL)
+    return bool(active and active == config.get_model()), active
+
+
+def _apply_cli_runtime_settings(model: str, thinking_budget: int) -> dict:
+    """Persist the shared UI config; model changes require server lifecycle restart.
+
+    The CLI does not take ownership of an already-running MLX process. Think
+    Budget changes can therefore apply live, while changing Model is persisted
+    for the next server/UI launch and the current CLI session exits cleanly.
+    """
+    old_model = config.get_model()
+    changed = config.set_runtime_settings(
+        model=str(model or "").strip(),
+        thinking_budget=int(thinking_budget),
+    )
+    model_changed = bool(changed.get("model_changed"))
+    if model_changed:
+        runtime = config.get_runtime_settings()
+        if runtime.get("model_locked") and not runtime.get("shared_server"):
+            return changed
+        active = active_local_mlx_model(MLX_BASE_URL)
+        if active != config.get_model():
+            return {
+                **changed,
+                "restart_required": True,
+                "active_model": active or old_model,
+            }
+    return changed
+
+
 def main() -> None:
     if not _server_up():
         print(f"[!] เชื่อม mlx_vlm.server ไม่ได้ที่ {MLX_BASE_URL}")
-        print(f"    เริ่ม server ก่อน: APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 python -m mlx_vlm.server --model {get_model()} --host 127.0.0.1 --port <port>")
+        print(f"    เริ่ม server ก่อน: APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 python -m mlx_vlm.server --model {config.get_model()} --host 127.0.0.1 --port <port>")
+        return
+
+    matches, active_model = _runtime_model_matches_active_server()
+    if not matches:
+        shown = active_model or "unknown"
+        print("[!] Runtime config กับ MLX server ไม่ตรงกัน")
+        print(f"    config: {config.get_model()}")
+        print(f"    active: {shown}")
+        print("    CLI จะไม่ restart/ฆ่า server ที่กำลังรันอยู่ — restart MLX หรือเปิด Electron ให้ apply model ที่เลือกก่อน\n")
         return
 
     online = _internet_up()
@@ -448,12 +509,24 @@ def main() -> None:
             app = build_graph(checkpointer=saver, memory=_load_memory_md(), tools=active_tools + new_extra)
         return new_skill, new_content
 
+    def _runtime_tools() -> list:
+        return active_tools + _get_skill_tools(_active_skill, online)
+
+    def _rebuild_for_runtime_change() -> None:
+        nonlocal app
+        _invalidate_runtime_llms()
+        app = build_graph(
+            checkpointer=saver,
+            memory=_load_memory_md(),
+            tools=_runtime_tools(),
+        )
+
     import threading as _threading
     # Pre-warm mlx_vlm.server prompt cache with [system_prompt] — runs in background so the
-    # user's real first turn hits a cached system segment instead of a cold ~16k prefill
-    # (V2-PF01: confirmed cross-session — fresh session's first turn measured 404 tokens
-    # when an identical system prompt was already cached). Disposable thread_id, purged after.
+    # user's real first turn hits a cached system segment instead of a cold ~16k prefill.
     _WARM_THREAD_ID = "__cache_warm__"
+    _warm_llm_ready = _threading.Event()
+
     def _warm_llm_cache():
         try:
             _purge_thread(_db_conn, _WARM_THREAD_ID)
@@ -464,16 +537,78 @@ def main() -> None:
         except Exception:
             pass
         finally:
-            _purge_thread(_db_conn, _WARM_THREAD_ID)
+            try:
+                _purge_thread(_db_conn, _WARM_THREAD_ID)
+            finally:
+                _warm_llm_ready.set()
+
     _threading.Thread(target=_warm_llm_cache, daemon=True).start()
 
-    print_header(get_model(), len(active_tools), online=online)
+    def _sync_runtime_config_from_disk() -> bool:
+        """Pick up Electron-written config before the next CLI action/turn."""
+        persisted = config.get_persisted_runtime_settings()
+        if persisted is None:
+            return False
+        runtime = config.get_runtime_settings()
+        if not runtime.get("model_locked"):
+            active = active_local_mlx_model(MLX_BASE_URL)
+            if not active or persisted.get("model") != active:
+                return False
+        if not config.refresh_runtime_settings_from_file():
+            return False
+        if not _warm_llm_ready.is_set():
+            _warm_llm_ready.wait()
+        _rebuild_for_runtime_change()
+        return True
+
+    def _print_runtime_header() -> None:
+        print_header(
+            config.get_model(),
+            len(active_tools),
+            online=online,
+            thinking_budget=config.get_thinking_budget(),
+            thinking_label=config.get_thinking_budget_label(),
+        )
+
+    def _apply_runtime_selection(model: str, thinking_budget: int) -> str:
+        if not _warm_llm_ready.is_set():
+            print(" กำลังรอ model cache ก่อนเปลี่ยน runtime settings…")
+            _warm_llm_ready.wait()
+        try:
+            with Spinner("⚙️  กำลังบันทึก runtime settings…"):
+                changed = _apply_cli_runtime_settings(model, thinking_budget)
+        except Exception as exc:
+            print(f" {C_WARN}⚠ เปลี่ยน runtime settings ไม่สำเร็จ: {exc}{R}\n")
+            return "error"
+        if changed.get("restart_required"):
+            print(
+                f" {C_GREEN}✓ บันทึก Model แล้ว:{R} {config.get_model_label()}\n"
+                f" {C_META}CLI ไม่ได้เป็นเจ้าของ MLX process ที่กำลังรันอยู่ จึงไม่ kill/restart ให้เอง. "
+                f"ปิด session นี้แล้ว restart MLX/เปิด Electron ใหม่เพื่อใช้ model ที่เลือก.{R}\n"
+            )
+            return "restart"
+        if changed.get("model_changed") or changed.get("thinking_budget_changed"):
+            _rebuild_for_runtime_change()
+        print(
+            f" {C_GREEN}✓ Runtime:{R} {config.get_model_label()} · "
+            f"Think {config.get_thinking_budget_label()} · {config.get_thinking_budget()}\n"
+        )
+        return "applied"
+
+    _print_runtime_header()
     print_startup_hint()
     _reg = _load_skill_registry()
     _hard_cmds = [c["name"] for c in _reg.get("builtin_cmds", [])]
     setup_skill_completer([s["name"] for s in _reg.get("skills", [])] + _hard_cmds)
+    restart_requested = False
 
     while True:
+        if _sync_runtime_config_from_disk():
+            print(
+                f" {C_META}↻ synced Electron runtime config:{R} "
+                f"{config.get_model_label()} · Think {config.get_thinking_budget_label()} · "
+                f"{config.get_thinking_budget()}\n"
+            )
         q = prompt_user(mode=_active_skill)
         if q is None:
             # Ctrl+D (EOF) — deliberate exit gesture, same as /exit at top level.
@@ -503,7 +638,7 @@ def main() -> None:
 
         if q.strip().lower() == "menu":
             print_mode_menu()
-            choice = prompt_user()
+            choice = prompt_user() or ""
             if choice == "1":
                 print("\n   ฟีเจอร์นี้ไม่รองรับในรุ่นนี้\n")
             elif choice == "2":
@@ -518,6 +653,56 @@ def main() -> None:
                         print(f" ไม่พบ skill '{_sn}'\n")
             elif choice == "3":
                 print_special_commands(_reg.get("builtin_cmds", []))
+            elif choice == "4":
+                while True:
+                    settings = config.get_runtime_settings()
+                    print_runtime_settings_menu(settings)
+                    sub = (prompt_user() or "").strip().lower()
+                    if sub in ("b", "back", "/exit"):
+                        break
+                    if sub == "1":
+                        if settings.get("model_locked"):
+                            print(f" {C_WARN}⚠ Model ถูกล็อกโดย shared server หรือ environment override{R}\n")
+                            continue
+                        options = settings.get("model_options", [])
+                        print_runtime_choices("Model", options, settings.get("model"))
+                        raw = (prompt_user() or "").strip().lower()
+                        if raw in ("b", "back", "/exit"):
+                            continue
+                        try:
+                            idx = int(raw) - 1
+                            if idx < 0:
+                                raise IndexError
+                            selected = options[idx]["value"]
+                        except (ValueError, IndexError, KeyError, TypeError):
+                            print(f" {C_WARN}⚠ ตัวเลือก model ไม่ถูกต้อง{R}\n")
+                            continue
+                        if _apply_runtime_selection(selected, config.get_thinking_budget()) == "restart":
+                            restart_requested = True
+                            break
+                    elif sub == "2":
+                        options = settings.get("thinking_options", [])
+                        print_runtime_choices("Think Budget", options, settings.get("thinking_budget"))
+                        raw = (prompt_user() or "").strip().lower()
+                        if raw in ("b", "back", "/exit"):
+                            continue
+                        try:
+                            idx = int(raw) - 1
+                            if idx < 0:
+                                raise IndexError
+                            selected = int(options[idx]["value"])
+                        except (ValueError, IndexError, KeyError, TypeError):
+                            print(f" {C_WARN}⚠ ตัวเลือก Think Budget ไม่ถูกต้อง{R}\n")
+                            continue
+                        _apply_runtime_selection(config.get_model(), selected)
+                    else:
+                        print(f" {C_WARN}⚠ เลือก 1, 2 หรือ b{R}\n")
+                _print_runtime_header()
+                if restart_requested:
+                    print(" Bye — runtime model selection saved.\n")
+                    if thread_id != _MEMORY_THREAD:
+                        _purge_thread(_db_conn, thread_id)
+                    break
             elif choice.lower() in ("q", "quit", "exit", "ออก", "บาย"):
                 print("\n Bye.\n")
                 if thread_id != _MEMORY_THREAD:

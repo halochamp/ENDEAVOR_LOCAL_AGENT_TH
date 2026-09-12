@@ -11,7 +11,7 @@ entry points cannot silently drift apart (Dual-Path Prohibition, CLAUDE.md §5).
 
 Each entry point still owns its own turn-execution loop, callback/event
 transport, and presentation (tool-detail truncation, printing vs. websocket
-push) — those differ by design for CLI vs. web UI and are NOT shared here.
+push) — those differ by design for CLI vs. the Electron/backend path and are NOT shared here.
 """
 from __future__ import annotations
 import json

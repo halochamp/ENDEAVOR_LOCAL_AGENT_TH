@@ -180,17 +180,20 @@ cat <<EOF
      APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \\
      python -m mlx_vlm.server --model ${EFFECTIVE_MODEL} --host ${EFFECTIVE_HOST} --port ${EFFECTIVE_PORT}
 
-  3. รัน agent — เลือกแบบที่ต้องการ:
+  3. รัน agent — เลือก UI ที่ต้องการ:
 
      CLI (ง่ายสุด):
        conda activate ${ENV_NAME}
        cd "${PROJ_DIR}"
        python endeavor_agent.py
 
-     Web UI (เปิด browser ที่ http://localhost:8765/ui):
-       conda activate ${ENV_NAME}
-       cd "${PROJ_DIR}"
-       python agent_server.py
+     Electron Desktop:
+       cd "${PROJ_DIR}/AGENT_UI"
+       npm install   # ครั้งแรกเท่านั้น
+       npm start
+
+     ทั้ง CLI และ Electron ใช้ Model/Think Budget config กลางเดียวกัน
+     ที่ workspace/runtime_settings.json (override ได้ด้วย V2_RUNTIME_SETTINGS_PATH)
 
   หมายเหตุ: รุ่น 35B ต้องการ RAM >= 48GB
   รันโมเดลเล็กกว่าได้ — ดู .env และแก้ V2_MODEL + MLX_BASE_URL

@@ -22,19 +22,19 @@ import stat
 import subprocess
 import sys
 import threading
-import urllib.parse
 import uuid
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from langchain_core.callbacks import BaseCallbackHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent_log import AgentLogger
 from awake_engine import AwakeEngine, Registry, drain_notices, restore_notices
+import config as _config
 from config import (
     MLX_BASE_URL, RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED,
     READ_FILE_MAX_BYTES, READ_FILE_AUDIO_VIDEO_MAX_BYTES,
@@ -44,6 +44,10 @@ import graph as _graph
 import planner as _planner
 from graph import build_graph, force_compact, rewarm_after_compact, summarize_history
 from react import get_system_prompt, ctx_stats as _ctx_stats
+from runtime_model import (
+    active_local_mlx_model as _active_local_mlx_model,
+    model_from_process_command as _model_from_process_command,
+)
 from runtime_common import (
     mlx_up as _mlx_up, internet_up as _internet_up,
     parse_plan_steps as _parse_plan_steps,
@@ -89,7 +93,7 @@ PORT = SERVER_PORT
 _JSON_GUARD_MAX_CHARS = 4000
 
 # ── Auth (static token on every request) ──────────────────────────────────────
-# A custom Electron/web UI generates a token and passes it via env AGENT_SERVER_TOKEN.
+# Electron generates a token and passes it via env AGENT_SERVER_TOKEN; explicit custom clients may provide one too.
 # Standalone runs (Telegram / headless) generate + persist a token file instead.
 # AGENT_AUTH_DISABLED=1 turns auth off for browser dev (opening a UI directly).
 _AUTH_DISABLED = AUTH_DISABLED
@@ -250,47 +254,9 @@ async def _ws_busy_guard(websocket: WebSocket, msg: str = "agent กำลัง
     return False
 
 
-def _model_from_process_command(command: str) -> str:
-    match = re.search(
-        r"(?:^|\s)--model(?:=|\s+)(?:\"([^\"]+)\"|'([^']+)'|([^\s]+))",
-        str(command or ""),
-    )
-    return (match.group(1) or match.group(2) or match.group(3)) if match else ""
-
-
 def _active_mlx_model() -> str:
-    """Resolve the model owned by the local listener from its ``--model`` argv.
-
-    ``/v1/models`` is intentionally not consulted here. Some MLX launchers
-    advertise many supported models (and even a one-item catalogue is not proof
-    of process ownership), so active-model discovery is process-first and
-    fail-closed. Remote/custom backends are handled by the explicit V2_MODEL
-    environment lock instead of attempting to inspect another machine.
-    """
-    try:
-        parsed = urllib.parse.urlparse(MLX_BASE_URL)
-        host = (parsed.hostname or "").lower()
-        if host not in {"localhost", "127.0.0.1", "::1"}:
-            return ""
-        port = int(parsed.port or 80)
-        found = subprocess.run(
-            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fp"],
-            capture_output=True, text=True, timeout=3, check=False,
-        )
-        pid = 0
-        for line in found.stdout.splitlines():
-            if line.startswith("p") and line[1:].isdigit():
-                pid = int(line[1:])
-                break
-        if not pid:
-            return ""
-        proc = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True, timeout=3, check=False,
-        )
-        return _model_from_process_command(proc.stdout.strip())
-    except Exception:
-        return ""
+    """Resolve active local model from the listener process, never /v1/models."""
+    return _active_local_mlx_model(MLX_BASE_URL)
 
 
 def _runtime_settings_payload(*, error: str = "") -> dict:
@@ -307,6 +273,33 @@ def _rebuild_runtime_llms() -> None:
     _planner.invalidate_llm_cache()
     _summarize_tool.invalidate_llm_cache()
     _state._rebuild_app(_state._get_skill_tools(_state.skill))
+
+
+def _sync_runtime_settings_from_owner_file_if_idle() -> bool:
+    """Adopt CLI-written shared settings before Desktop reads or starts a turn.
+
+    For an unlocked local backend, never adopt a persisted model that does not
+    match the listener's real ``--model``. This keeps cross-UI sync fail-closed
+    while still allowing Think Budget changes to propagate live.
+    """
+    if _busy.locked():
+        return False
+    persisted = _config.get_persisted_runtime_settings()
+    if persisted is None:
+        return False
+    runtime = get_runtime_settings()
+    if not runtime.get("model_locked"):
+        active = _active_mlx_model()
+        if not active or persisted.get("model") != active:
+            return False
+    if not _config.refresh_runtime_settings_from_file():
+        return False
+    _rebuild_runtime_llms()
+    log.info(
+        "runtime settings synced from shared config model=%s thinking_budget=%s",
+        get_model(), get_thinking_budget(),
+    )
+    return True
 
 
 async def _apply_runtime_settings(model: str, thinking_budget: int) -> dict:
@@ -933,19 +926,6 @@ api = FastAPI(title="ENDEAVOR Agent Server")
 # so neither needs CORS headers.
 
 
-@api.get("/ui")
-def get_ui():
-    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat.html")
-    return FileResponse(html_path, media_type="text/html")
-
-
-@api.get("/ui-token")
-def get_ui_token(request: Request):
-    if not _origin_ok(request.headers.get("origin")):
-        raise HTTPException(status_code=403, detail="forbidden origin")
-    return {"token": _AUTH_TOKEN, "auth_disabled": _AUTH_DISABLED}
-
-
 @api.get("/status", dependencies=[Depends(_require_token)])
 def get_status():
     return {
@@ -971,6 +951,7 @@ def get_file(path: str):
 @api.post("/chat", dependencies=[Depends(_require_token)])
 async def post_chat(body: dict):
     """Sync endpoint for Telegram / future clients."""
+    _sync_runtime_settings_from_owner_file_if_idle()
     query = body.get("query", "")
     session_id = body.get("session_id", "default")
     if not query:
@@ -1052,11 +1033,12 @@ def _attach_hint(rel_path: str) -> str:
 
 @api.post("/upload", dependencies=[Depends(_require_token)])
 async def post_upload(request: Request):
-    """Save a browser-uploaded file into workspace/uploads/ and return a text hint
-    the UI injects into the next query — TH has no Electron main process to hand the
-    model a real filesystem path (unlike a native file-picker bridge), so the
-    upload IS the attach mechanism here: bytes cross the wire once, land in workspace,
-    then read_file/read_image (already sandboxed to the workspace boundary) do the actual reading.
+    """Save a client-uploaded file into workspace/uploads/ and return a text hint.
+
+    The Electron renderer and any explicit custom client use this backend endpoint
+    as the attach mechanism: bytes cross the local loopback transport once, land in
+    workspace, then read_file/read_image (already sandboxed to that boundary) do
+    the actual reading. There is no bundled browser HTML UI.
 
     Takes raw Request rather than `file: UploadFile = File(...)` on purpose: FastAPI
     resolves File() params (i.e. parses the full multipart body into a spooled temp
@@ -1163,6 +1145,7 @@ async def ws_endpoint(websocket: WebSocket):
             msg_type = data.get("type")
 
             if msg_type == "query":
+                _sync_runtime_settings_from_owner_file_if_idle()
                 if await _ws_busy_guard(websocket): continue
                 async with _busy:
                     run_id = str(uuid.uuid4())[:8]
@@ -1423,9 +1406,11 @@ async def ws_endpoint(websocket: WebSocket):
                 await websocket.send_json({"type": "status", **get_status()})
 
             elif msg_type == "get_runtime_settings":
+                _sync_runtime_settings_from_owner_file_if_idle()
                 await websocket.send_json(_runtime_settings_payload())
 
             elif msg_type == "set_runtime_settings":
+                _sync_runtime_settings_from_owner_file_if_idle()
                 result = await _apply_runtime_settings(
                     str(data.get("model", "")),
                     data.get("thinking_budget", get_thinking_budget()),

@@ -67,9 +67,14 @@ THINKING_BUDGET_LEVELS = (
     ("Max", 2048),
 )
 _THINKING_BUDGET_VALUES = frozenset(value for _label, value in THINKING_BUDGET_LEVELS)
-_RUNTIME_SETTINGS_PATH = os.getenv(
-    "V2_RUNTIME_SETTINGS_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace", "runtime_settings.json"),
+_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+_runtime_settings_override = os.getenv("V2_RUNTIME_SETTINGS_PATH", "").strip()
+_RUNTIME_SETTINGS_PATH = (
+    _runtime_settings_override
+    if os.path.isabs(_runtime_settings_override)
+    else os.path.join(_PROJECT_DIR, _runtime_settings_override)
+    if _runtime_settings_override
+    else os.path.join(_PROJECT_DIR, "workspace", "runtime_settings.json")
 )
 _runtime_settings_lock = threading.Lock()
 _SHARED_MLX_MODEL = os.getenv("TH_SHARED_MLX_MODEL", "").strip()
@@ -117,6 +122,11 @@ def _read_runtime_settings_file() -> dict | None:
     return _runtime_payload(model, budget)
 
 
+def get_persisted_runtime_settings() -> dict | None:
+    """Return the validated shared UI config without changing live runtime state."""
+    return _read_runtime_settings_file()
+
+
 def refresh_runtime_settings_from_file() -> bool:
     global _current_model, _current_thinking_budget
     payload = _read_runtime_settings_file()
@@ -136,8 +146,21 @@ def get_model() -> str:
     return _current_model
 
 
+def get_model_label(model: str | None = None) -> str:
+    value = model or get_model()
+    return MODEL_LABELS.get(value, value.split("/")[-1])
+
+
 def get_thinking_budget() -> int:
     return _current_thinking_budget
+
+
+def get_thinking_budget_label(thinking_budget: int | None = None) -> str:
+    value = get_thinking_budget() if thinking_budget is None else int(thinking_budget)
+    for label, candidate in THINKING_BUDGET_LEVELS:
+        if candidate == value:
+            return label
+    return str(value)
 
 
 def get_runtime_settings() -> dict:

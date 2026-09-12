@@ -95,18 +95,18 @@ On first run it should print the banner with `N tools  ● online`. If it shows 
 model as offline, the server in step 3 isn't reachable — check the port and that step 3
 is still running.
 
-Web UI (if the user wants a browser-based chat interface instead of the CLI):
+Electron Desktop (the other supported front end):
 
 ```bash
-conda activate mlx
-cd <project_root>
-python agent_server.py
+cd <project_root>/AGENT_UI
+npm install   # first run only
+npm start
 ```
 
-Open `http://localhost:8765/ui` in a browser — `agent_server.py` serves both the
-WebSocket/REST backend and the `chat.html` frontend (VS Code-style UI) from the same
-process. Same auth contract as step 6 below (`.agent_token`), but the `/ui` page
-reads the token itself via `/ui-token`, so the user doesn't need to do anything extra.
+Electron starts the authenticated `agent_server.py` backend for itself and manages
+MLX lifecycle only when it owns that MLX process. CLI and Electron share the same
+Model/Think Budget config in `workspace/runtime_settings.json` (or the path supplied
+by `V2_RUNTIME_SETTINGS_PATH`). There is no bundled browser HTML UI.
 
 ## 5. Common issues
 
@@ -120,17 +120,16 @@ reads the token itself via `/ui-token`, so the user doesn't need to do anything 
 | Thai text broken on plot (squares / floating vowels) | pyobjc not installed correctly | run `python -c "import Quartz, CoreText"` in the mlx env — if it fails, re-run `pip install pyobjc-framework-Quartz pyobjc-framework-CoreText` |
 | Thai text OK but font looks wrong | Thonburi missing or wrong font picked | install Noto Sans Thai via `brew install --cask font-noto-sans-thai` and rebuild font cache |
 
-## 6. Optional: own web UI / Telegram bot backend
+## 6. Optional: custom client / Telegram bot backend
 
-Only if the user wants to build their **own** web UI or bot integration (separate from
-the bundled `/ui` web UI in step 4):
+Only if the user wants to build an explicit custom client or bot integration:
 
 ```bash
 python agent_server.py
 ```
 
 First run auto-generates `.agent_token` (chmod 0600). Every request needs this token —
-see README.md "ต่อ Web UI / Telegram ของตัวเอง" section for the auth contract.
+see README.md "ต่อ Custom Client / Telegram" section for the auth contract.
 
 ## 7. Helping a new user with day-to-day usage
 
@@ -155,17 +154,17 @@ paths) but only **writes/creates files inside `workspace/`**. If the user asks t
 agent to "save this file" or "create a script", point them to `workspace/` — that's
 where outputs land. See README.md "Security" section for the full read/write model.
 
-**Switching models** — if the user's Mac doesn't have enough RAM for the default
-35B model, see README.md "ใช้โมเดลอื่น". `config.py` only honors `V2_MODEL` if
-`MLX_BASE_URL` is ALSO changed from the default `http://localhost:8085/v1` — this is
-intentional (prevents `mlx_vlm.server` loading the wrong model silently). So set
-**both** `V2_MODEL` and `MLX_BASE_URL` (e.g. a different port) in `.env`, then start
-`APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 python -m mlx_vlm.server --model <new model> --host 127.0.0.1 --port <new port>`. Minimum recommended:
-Qwen3-14B. In this simple TH setup it is a text-only model: normal tool calling and
-`read_image` full-OCR fallback remain available, while `computer` and true pixel
-understanding require a vision-capable model. **Never silently swap models for the
-user without telling them** — model choice affects tool-calling reliability and
-image capabilities.
+**Switching models / Think Budget** — CLI (`menu` → Model / Think Budget) and
+Electron Settings use the same `workspace/runtime_settings.json`. Think Budget applies
+without restarting MLX. Electron may switch Model only when it owns the standalone
+server; if it adopted a pre-existing/shared server the Model control is locked. CLI
+never kills/restarts an already-running MLX process: selecting another Model saves the
+shared config and asks for a deliberate MLX restart/next Electron launch. A CLI launch
+also fails closed if the saved model does not match the local listener's real `--model`.
+The paired `V2_MODEL` + non-default `MLX_BASE_URL` environment override remains the
+advanced authoritative path and locks model selection. Qwen3-14B is the recommended
+lower-memory text/tool model; `read_image` uses full-OCR fallback, while `computer` and
+true pixel understanding require a vision-capable model.
 
 **Restarting / stopping servers** — if the agent seems stuck, offline, or the user
 wants a clean restart:
@@ -175,7 +174,7 @@ cd <project_root>
 bash agent_stop.command
 ```
 
-Then redo step 3 (and step 4 if using the Web UI).
+Then redo step 3; reopen CLI or Electron from step 4.
 
 **Where things are stored**:
 - `logs/history.db` — conversation history (SQLite, via LangGraph checkpointer)
@@ -196,16 +195,16 @@ instead of re-reading the whole README:
 
 | User asks | Answer |
 |---|---|
-| "ใช้งานยังไง" / how do I start | Run step 3 (MLX server) + step 4 (CLI or Web UI) above |
+| "ใช้งานยังไง" / how do I start | Run step 3 (MLX server) + step 4 (CLI or Electron) above |
 | "model offline" / agent ขึ้น offline | Step 3 server not running or wrong port — check `curl http://localhost:8085/v1/models` |
 | "เปลี่ยนโมเดล" / change model | Edit **both** `V2_MODEL` + `MLX_BASE_URL` (different port) in `.env` — changing only `V2_MODEL` is ignored. Restart `mlx_vlm.server` with new `--model --host 127.0.0.1 --port`. Min: Qwen3-14B for text/tool calling and `read_image` OCR fallback; use a vision-capable model for `computer` |
 | "port ถูกใช้อยู่" / port in use | Run `bash agent_stop.command` from the project root, then repeat the relevant start step |
 | "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
-| "ลืม conversation เก่า" / load old chat | `/history` in CLI, or just reopen the Web UI (loads from `logs/history.db`) |
+| "ลืม conversation เก่า" / load old chat | `/history` in CLI, or use History in Electron (loads from `logs/history.db`) |
 | "ปลอดภัยไหม" / is my data safe | Yes — model runs 100% locally via MLX, no cloud LLM calls. See README "Security" |
 | "[BLOCKED] ..." error | Expected — path guard blocked read/write outside `workspace/` or to a protected system path. Not a bug |
 | "ทำ tool/skill ใหม่ยังไง" / add a tool | README "ต่อยอดได้ยังไง?" section |
-| "ต่อ web UI ของตัวเอง" / build own UI | README "ต่อ Web UI / Telegram ของตัวเอง" + step 6 above (`.agent_token` auth) |
+| "ต่อ client ของตัวเอง" / build own client | README "ต่อ Custom Client / Telegram" + step 6 above (`.agent_token` auth) |
 
 For anything not covered here, read `../README.md` — it has full detail on tools,
 architecture, config, and security model.

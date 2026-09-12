@@ -11,16 +11,17 @@ Read order:
 
 ## Core architecture
 
-The project is a local Thai-capable agent built around a local MLX model and LangGraph/ReAct orchestration, with multiple front ends sharing runtime infrastructure.
+The project is a local Thai-capable agent built around a local MLX model and LangGraph/ReAct orchestration, with two supported front ends sharing runtime infrastructure: CLI and Electron desktop.
 
 Important components documented by the project include:
 
 - `react.py` / planner logic — model/tool reasoning and planning;
 - `graph.py` — LangGraph state/routing/retry behavior;
 - `llm.py` — local OpenAI-compatible MLX client;
-- `runtime_common.py` — shared runtime behavior used by CLI/Web paths;
-- `agent_server.py` — authenticated WebSocket/REST server;
-- `endeavor_agent.py` — CLI path;
+- `runtime_common.py` — shared runtime behavior used by CLI and the Electron backend path;
+- `agent_server.py` — authenticated WebSocket/REST backend for Electron and explicit custom clients;
+- `endeavor_agent.py` — CLI front end;
+- `AGENT_UI/` — Electron desktop front end;
 - `awake_engine.py` — standing-trigger execution;
 - `workspace/`, logs/history/memory — runtime state.
 
@@ -83,4 +84,4 @@ Do not commit `.agent_token`, `.env`, logs, history DBs, memory files, workspace
 
 Full workflow: [`AGENT_PROCEDURE.md`](AGENT_PROCEDURE.md).
 
-**Mental model:** one local agent runtime, multiple front ends, shared infrastructure, explicit auth/sandbox boundaries, model-specific behavior.
+**Mental model:** one local agent runtime, two supported front ends (CLI + Electron), one shared runtime config, explicit auth/sandbox boundaries, model-specific behavior.

@@ -58,7 +58,12 @@ const _V2_MODEL = process.env.V2_MODEL || ''
 const MLX_PORT = Number(new URL(_MLX_BASE_URL).port) || 8085
 const _DEFAULT_MODEL = 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit'
 const _MODEL_CHOICES = new Set([_DEFAULT_MODEL, 'Qwen/Qwen3-14B-MLX-4bit'])
-const _RUNTIME_SETTINGS_PATH = path.join(PROJECT_DIR, 'workspace', 'runtime_settings.json')
+const _runtimeSettingsOverride = String(process.env.V2_RUNTIME_SETTINGS_PATH || '').trim()
+const _RUNTIME_SETTINGS_PATH = _runtimeSettingsOverride
+  ? (path.isAbsolute(_runtimeSettingsOverride)
+      ? _runtimeSettingsOverride
+      : path.join(PROJECT_DIR, _runtimeSettingsOverride))
+  : path.join(PROJECT_DIR, 'workspace', 'runtime_settings.json')
 
 function _persistedModel() {
   try {
