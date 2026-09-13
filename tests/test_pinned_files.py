@@ -19,8 +19,11 @@ from tools.read_image import read_image as read_image_tool
 
 
 class PinnedFilesTests(unittest.TestCase):
-    def test_backend_validates_dedupes_and_reports_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as td, patch.object(srv, "WORKSPACE", td):
+    def test_backend_uses_read_file_policy_dedupes_and_reports_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            # TemporaryDirectory is outside the configured Agent Workspace, so
+            # accepting this file proves Pin no longer imposes a Workspace-only
+            # boundary when read_file policy allows the path.
             good = Path(td) / "good.txt"
             good.write_text("hello", encoding="utf-8")
             real = os.path.realpath(good)
@@ -34,15 +37,20 @@ class PinnedFilesTests(unittest.TestCase):
             self.assertEqual(len(failures), 1)
             self.assertIn("ไม่พบไฟล์", failures[0]["reason"])
 
-            traversal = str(Path(td) / "nested" / ".." / "good.txt")
-            valid, failures = srv._pinned_file_paths([traversal])
-            self.assertEqual(valid, [])
-            self.assertTrue(any("traversal" in item["reason"] for item in failures))
+            alias = Path(td) / "alias.txt"
+            alias.symlink_to(good)
+            valid, failures = srv._pinned_file_paths([str(alias), real])
+            self.assertEqual(valid, [real])
+            self.assertEqual(failures, [])
 
-            outside = os.path.realpath(__file__)
-            valid, failures = srv._pinned_file_paths([outside])
+            with patch.object(
+                srv, "_resolve_read_path",
+                side_effect=PermissionError("[BLOCKED] protected path: /etc/"),
+            ):
+                valid, failures = srv._pinned_file_paths(["/etc/passwd"])
             self.assertEqual(valid, [])
-            self.assertTrue(any("นอก Workspace" in item["reason"] for item in failures))
+            self.assertEqual(len(failures), 1)
+            self.assertIn("[BLOCKED] protected path", failures[0]["reason"])
 
             with self.assertRaises(ValueError):
                 srv._pinned_file_paths([real] * 11)

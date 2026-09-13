@@ -30,7 +30,11 @@ test('Electron wiring keeps Pin persistent on normal queries and telemetry below
   assert.match(renderer, /function sendClear\(\)[\s\S]*cmd: '\/clear'/)
   assert.doesNotMatch(renderer.match(/function sendClear\(\)[\s\S]*?\n\}/)?.[0] || '', /pinnedFiles\s*=/)
   assert.match(main, /ipcMain\.handle\('show-pin-dialog'/)
-  assert.match(main, /isInsideWorkspace\(selected, WORKSPACE_DIR\)/)
+  const pinHandler = main.match(/ipcMain\.handle\('show-pin-dialog'[\s\S]*?\n\}\)/)?.[0] || ''
+  assert.match(pinHandler, /title: 'เลือกไฟล์เพื่อ Pin'/)
+  assert.match(pinHandler, /realpathSync\(selected\)/)
+  assert.doesNotMatch(pinHandler, /isInsideWorkspace|WORKSPACE_DIR|defaultPath/,
+    'Pin picker must follow backend read_file policy instead of a Workspace-only boundary')
   assert.match(preload, /showPinDialog: \(\) => ipcRenderer\.invoke\('show-pin-dialog'\)/)
   assert.doesNotMatch(`${html}\n${renderer}\n${format}`, /Agent Lite|Agent MAX VLM|Server Monitor|Shared MAX/)
 })

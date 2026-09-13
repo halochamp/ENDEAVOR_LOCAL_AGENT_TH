@@ -867,7 +867,7 @@ async function handlePinFiles() {
   const filePaths = result && Array.isArray(result.paths) ? result.paths : []
   if (filePaths.length > 0) addPinnedFiles(filePaths)
   if (result && result.rejected > 0) {
-    addSystem(`📌 Pin ได้เฉพาะไฟล์ใน Workspace — ข้าม ${result.rejected} ไฟล์`)
+    addSystem(`📌 ข้าม ${result.rejected} ไฟล์ที่เลือกไม่ได้`)
   }
 }
 

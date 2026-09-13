@@ -15,7 +15,6 @@ const AGENT_TOKEN = crypto.randomBytes(32).toString('base64url')
 // The TH backend lives directly at the repo root (this folder's parent).
 const PROJECT_DIR = path.join(__dirname, '..')
 const AGENT_DIR = PROJECT_DIR
-const WORKSPACE_DIR = process.env.V2_WORKSPACE || path.join(AGENT_DIR, 'workspace')
 
 // Resolve the conda 'mlx' env directory portably — works on any machine/path.
 // Priority: explicit env var > conda info --json (any install) > common locations > bare binary.
@@ -439,23 +438,19 @@ ipcMain.handle('show-open-dialog', async () => {
   return canceled ? null : (filePaths[0] || null)
 })
 
-// Persistent Pin selection is intentionally restricted to the Agent Workspace.
-// Renderer state is per Electron launch only; the Python backend still revalidates
-// every path on every normal query turn before any read occurs.
+// Pin selection may come from anywhere the user can browse. Renderer state is
+// per Electron launch only; the Python backend is the policy authority and
+// revalidates each path with the same protected-path guard as read_file on every
+// normal query turn before any read occurs.
 ipcMain.handle('show-pin-dialog', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
-    title: 'เลือกไฟล์ใน Workspace เพื่อ Pin',
-    defaultPath: WORKSPACE_DIR,
+    title: 'เลือกไฟล์เพื่อ Pin',
     properties: ['openFile', 'multiSelections'],
   })
   if (canceled) return { paths: [], rejected: 0 }
   const paths = []
   let rejected = 0
   for (const selected of filePaths) {
-    if (!isInsideWorkspace(selected, WORKSPACE_DIR)) {
-      rejected += 1
-      continue
-    }
     try {
       const real = fs.realpathSync(selected)
       const info = fs.statSync(real)

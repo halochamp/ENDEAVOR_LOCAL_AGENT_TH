@@ -89,7 +89,11 @@ from tools._progress import (
     set_run_callbacks,
     ToolCancelled,
 )
-from tools._safety import resolve_path as _resolve_write_path, check_path as _check_write_path
+from tools._safety import (
+    resolve_path as _resolve_write_path,
+    check_path as _check_write_path,
+    resolve_read_path as _resolve_read_path,
+)
 from tools._transcribe import _AUDIO_EXT, _VIDEO_EXT
 from tools.read_image import _KNOWN_IMG_EXTS
 from tools.web_cache import web_count_reset as _reset_web_counter
@@ -1654,7 +1658,13 @@ def _augment_query_with_workspace_mentions(content: str, raw_mentions: object) -
 
 
 def _pinned_file_paths(raw_pins: object) -> tuple[list[str], list[dict[str, str]]]:
-    """Validate structured Pin paths against the real Workspace on every turn."""
+    """Validate Pin paths with the same read-path policy used by ``read_file``.
+
+    Pins may point anywhere the read tools are allowed to read. The shared
+    ``resolve_read_path`` guard remains the single policy authority for protected
+    system/credential locations; this function only adds Pin protocol limits,
+    canonical identity dedupe, and per-turn existence/readability checks.
+    """
     if raw_pins in (None, []):
         return [], []
     if not isinstance(raw_pins, list):
@@ -1662,38 +1672,38 @@ def _pinned_file_paths(raw_pins: object) -> tuple[list[str], list[dict[str, str]
     if len(raw_pins) > _PINNED_FILE_PER_TURN_MAX:
         raise ValueError(f"Pin ได้สูงสุด {_PINNED_FILE_PER_TURN_MAX} ไฟล์")
 
-    root = os.path.realpath(WORKSPACE)
     resolved: list[str] = []
     failures: list[dict[str, str]] = []
     seen: set[str] = set()
+    seen_inputs: set[str] = set()
     for item in raw_pins:
         if not isinstance(item, str):
             raise ValueError("pinned file path must be a string")
         supplied = item.strip()
-        if not supplied or not os.path.isabs(supplied):
-            failures.append({"path": supplied or "<empty>", "reason": "path ไม่ใช่ canonical absolute path"})
+        if not supplied:
+            failures.append({"path": "<empty>", "reason": "path ว่าง"})
             continue
-        if ".." in Path(supplied).parts:
-            failures.append({"path": supplied, "reason": "path traversal ถูกปฏิเสธ"})
+        input_key = os.path.normcase(os.path.normpath(os.path.expanduser(supplied)))
+        if input_key in seen_inputs:
             continue
-        real = os.path.realpath(supplied)
+        seen_inputs.add(input_key)
+        try:
+            readable_path = _resolve_read_path(supplied)
+        except PermissionError as exc:
+            failures.append({"path": supplied, "reason": str(exc)})
+            continue
+        real = os.path.realpath(readable_path)
         if real in seen:
             continue
         seen.add(real)
-        if os.path.normpath(supplied) != real:
-            failures.append({"path": supplied, "reason": "path ไม่เป็น canonical real path (traversal/symlink alias ถูกปฏิเสธ)"})
-            continue
-        if not (real == root or real.startswith(root + os.sep)):
-            failures.append({"path": supplied, "reason": "path อยู่นอก Workspace"})
-            continue
         if not os.path.exists(real):
-            failures.append({"path": supplied, "reason": "ไม่พบไฟล์ (อาจถูกย้ายหรือลบ)"})
+            failures.append({"path": real, "reason": "ไม่พบไฟล์ (อาจถูกย้ายหรือลบ)"})
             continue
         if not os.path.isfile(real):
-            failures.append({"path": supplied, "reason": "path ไม่ใช่ไฟล์"})
+            failures.append({"path": real, "reason": "path ไม่ใช่ไฟล์"})
             continue
         if not os.access(real, os.R_OK):
-            failures.append({"path": supplied, "reason": "ไฟล์อ่านไม่ได้"})
+            failures.append({"path": real, "reason": "ไฟล์อ่านไม่ได้"})
             continue
         resolved.append(real)
     return resolved, failures
