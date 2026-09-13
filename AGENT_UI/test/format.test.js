@@ -70,14 +70,14 @@ test('runtimeStatusText exposes runtime switch lifecycle', () => {
   assert.strictEqual(runtimeStatusText('boom', 'error'), '⚠ boom')
 })
 
-test('modelServerStatusText distinguishes standalone and shared MAX', () => {
+test('modelServerStatusText distinguishes local and external server states', () => {
   assert.strictEqual(modelServerStatusText({
     state: 'ready', healthy: true, loaded_model: 'Qwen/Qwen3-14B-MLX-4bit',
   }), 'พร้อม · Qwen3-14B-MLX-4bit')
   assert.strictEqual(modelServerStatusText({
     state: 'shared_ready', healthy: true, loaded_model: 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit',
   }), 'Shared พร้อม · Qwen3.6-35B-A3B-UD-MLX-4bit')
-  assert.strictEqual(modelServerStatusText({ state: 'shared_offline' }), 'Shared MAX offline')
+  assert.strictEqual(modelServerStatusText({ state: 'shared_offline' }), 'External server offline')
 })
 
 test('system telemetry formats portable CPU GPU RAM TOK and network on one line', () => {

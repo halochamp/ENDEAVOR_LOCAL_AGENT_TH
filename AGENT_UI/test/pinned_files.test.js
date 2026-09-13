@@ -17,6 +17,7 @@ test('Electron wiring keeps Pin persistent on normal queries and telemetry below
   const root = path.join(__dirname, '..')
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8')
   const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')
+  const format = fs.readFileSync(path.join(root, 'lib', 'format.js'), 'utf8')
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
   const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
 
@@ -31,4 +32,5 @@ test('Electron wiring keeps Pin persistent on normal queries and telemetry below
   assert.match(main, /ipcMain\.handle\('show-pin-dialog'/)
   assert.match(main, /isInsideWorkspace\(selected, WORKSPACE_DIR\)/)
   assert.match(preload, /showPinDialog: \(\) => ipcRenderer\.invoke\('show-pin-dialog'\)/)
+  assert.doesNotMatch(`${html}\n${renderer}\n${format}`, /Agent Lite|Agent MAX VLM|Server Monitor|Shared MAX/)
 })

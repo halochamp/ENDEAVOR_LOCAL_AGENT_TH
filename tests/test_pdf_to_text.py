@@ -60,7 +60,7 @@ class PdfToTextTests(unittest.TestCase):
         self.assertEqual(result["stats"]["rewritten"], 0)
 
     def test_thai_format_cleanup_ports_agent_lite_deterministic_repairs(self) -> None:
-        # OCR can emit SARA AM before a tone mark; Agent Lite deterministically
+        # OCR can emit SARA AM before a tone mark; deterministic cleanup
         # reorders those existing code points without guessing a word.
         self.assertEqual(pdf_to_text._clean_text("นำ้"), "น้ำ")
         # Spaces inserted directly before Thai combining marks are formatting

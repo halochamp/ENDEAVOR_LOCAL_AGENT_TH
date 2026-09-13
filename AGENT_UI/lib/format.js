@@ -48,7 +48,7 @@ function modelServerStatusText(server) {
   const problem = String(s.error || '').trim()
   if (state === 'shared_ready' && s.healthy) return `Shared พร้อม · ${shortModelName(s.loaded_model || s.selected_model)}`
   if (state === 'ready' && s.healthy) return `พร้อม · ${shortModelName(s.loaded_model || s.selected_model)}`
-  if (state === 'shared_offline') return 'Shared MAX offline'
+  if (state === 'shared_offline') return 'External server offline'
   if (state === 'stopped') return s.desired_state === 'running' ? 'หยุดอยู่ · รอ Watchdog' : 'ปิดอยู่'
   if (state === 'foreign') return 'Port ถูกใช้งานโดย process อื่น'
   if (problem) return `⚠ ${problem}`

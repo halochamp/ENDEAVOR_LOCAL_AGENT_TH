@@ -1504,7 +1504,7 @@ function applyRuntimeSettings(ev) {
   if (model) {
     model.disabled = locked || runtimeSettings.model_locked
     model.title = runtimeSettings.shared_server
-      ? `Shared MAX :${runtimeSettings.server_port} — model ถูกกำหนดโดย MAX VLM`
+      ? `External server :${runtimeSettings.server_port} — model ถูกกำหนดโดย server ที่เชื่อมต่อ`
       : runtimeSettings.runtime_locked
         ? 'Runtime ถูกล็อกด้วย V2_MODEL + MLX_BASE_URL'
         : 'Model'
@@ -1514,7 +1514,7 @@ function applyRuntimeSettings(ev) {
   if (status) {
     status.textContent = runtimeStatusText(runtimeSettings.error, runtimeSettings.switch_state)
       || (runtimeSettings.shared_server
-        ? `shared MAX :${runtimeSettings.server_port} · ${runtimeSettings.model}`
+        ? `external :${runtimeSettings.server_port} · ${runtimeSettings.model}`
         : runtimeSettings.runtime_locked
           ? `env · ${runtimeSettings.model}`
           : `standalone :${runtimeSettings.server_port}`)
@@ -1554,7 +1554,7 @@ function saveRuntimeSettings() {
   if (status) {
     if (mode.value !== runtimeSettings.server_mode) {
       status.textContent = mode.value === 'shared_max'
-        ? `⏳ กำลังเชื่อม Shared MAX :${nextPort}…`
+        ? `⏳ กำลังเชื่อม External server :${nextPort}…`
         : `⏳ กำลังกลับเป็น Standalone :${nextPort}…`
     } else if (model.value !== runtimeSettings.model) {
       status.textContent = '⏳ กำลังสลับโมเดล…'
@@ -1588,7 +1588,7 @@ function applyModelServerStatus(ev) {
   if (text) text.textContent = modelServerStatusText(modelServerSettings)
   if (title) {
     title.textContent = shared
-      ? `Shared MAX Test Server · :${Number(modelServerSettings.port || runtimeSettings.server_port || 8085)}`
+      ? `External Model Server · :${Number(modelServerSettings.port || runtimeSettings.server_port || 8085)}`
       : `Model Server · :${Number(modelServerSettings.port || runtimeSettings.server_port || 8085)}`
   }
   if (watchdog) {
@@ -1597,8 +1597,8 @@ function applyModelServerStatus(ev) {
   }
   if (help) {
     help.textContent = shared
-      ? 'Shared MAX เป็น read-only: Agent TH ใช้ model ที่ MAX VLM โหลดอยู่ได้ แต่จะไม่ Start/Stop/Reset/Watchdog หรือเปลี่ยน model ของ server นี้.'
-      : 'Standalone: Agent TH เป็นเจ้าของ model server, port และ Watchdog เองโดยตรง ไม่ต้องพึ่ง Server Monitor.'
+      ? 'Read-only: ใช้ model ที่ server ภายนอกกำลังโหลดอยู่ได้ โดยไม่ Start/Stop/Reset/Watchdog หรือเปลี่ยน model ของ server นั้น.'
+      : 'Standalone: แอปดูแล model server, port และ Watchdog ภายในเอง.'
   }
   if (error) {
     const problem = String(modelServerSettings.error || '')

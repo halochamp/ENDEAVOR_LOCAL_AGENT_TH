@@ -89,7 +89,7 @@ def _ensure_server_alive(timeout: int = 240, interval: int = 3) -> bool:
     except Exception as exc:
         mode = config.get_server_mode()
         if mode == "shared_max":
-            print(f"\n❌ Shared MAX test server ใช้งานไม่ได้: {exc}\n")
+            print(f"\n❌ External model server ใช้งานไม่ได้: {exc}\n")
         else:
             print(f"\n❌ เตรียม model server ของ Agent TH ไม่สำเร็จ: {exc}\n")
         return False
@@ -473,7 +473,7 @@ def _apply_cli_runtime_settings(
 
     if runtime.get("shared_server"):
         if requested != old_model:
-            raise ValueError("shared MAX test server locks Model to the model MAX is serving")
+            raise ValueError("external server is read-only; Model is controlled by the connected server")
         if requested_port != old_port:
             shared = shared_max_server_status(port=requested_port)
             if not shared.get("healthy"):
@@ -531,7 +531,7 @@ def main() -> None:
         shared = auto_attach_max_test_server_if_present()
         if shared is not None:
             print(
-                f"[shared] ใช้ Agent MAX VLM test server แบบ read-only "
+                f"[external] ใช้ model server ภายนอกแบบ read-only "
                 f":{config.get_server_port()} · {config.get_model_label()}"
             )
         if not _ensure_server_alive():
@@ -780,7 +780,7 @@ def main() -> None:
                             continue
                         _apply_runtime_selection(config.get_model(), selected)
                     elif sub == "3":
-                        mode_label = "Shared MAX" if settings.get("shared_server") else "Standalone"
+                        mode_label = "External" if settings.get("shared_server") else "Standalone"
                         print(
                             f" {C_META}{mode_label} Model Server Port ปัจจุบัน :{config.get_server_port()} "
                             f"· ใส่ 1024–65535 หรือ b เพื่อย้อนกลับ{R}"

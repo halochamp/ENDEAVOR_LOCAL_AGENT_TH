@@ -187,7 +187,7 @@ class SharedRuntimeConfigTests(unittest.TestCase):
             server_mode="shared_max",
             server_port=8085,
         )
-        with self.assertRaisesRegex(ValueError, "shared MAX"):
+        with self.assertRaisesRegex(ValueError, "external server"):
             endeavor_agent._apply_cli_runtime_settings(config.DEFAULT_MODEL, 512)
 
     def test_cli_shared_port_change_verifies_max_and_never_mutates_server(self) -> None:

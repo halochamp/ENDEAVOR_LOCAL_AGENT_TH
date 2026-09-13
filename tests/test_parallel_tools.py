@@ -1,4 +1,4 @@
-"""CPU-only regressions for MAX VLM parallel tools and loop guards."""
+"""CPU-only regressions for Agent TH parallel tools and loop guards."""
 from __future__ import annotations
 
 import importlib

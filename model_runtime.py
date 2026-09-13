@@ -315,7 +315,7 @@ def _write_control_unlocked(*, watchdog_enabled: bool, desired_state: str) -> di
 
 def set_model_server_watchdog(enabled: bool) -> dict:
     if config.get_server_mode() == "shared_max":
-        raise RuntimeError("shared MAX test server is read-only; TH watchdog is disabled")
+        raise RuntimeError("external model server is read-only; watchdog is disabled")
     with _switch_lock():
         current = get_model_server_control_settings()
         return _write_control_unlocked(
@@ -360,7 +360,7 @@ def shared_max_server_status(*, port: int | None = None) -> dict:
         return result
     result["owned"] = _is_max_shared_server(command, port=target_port)
     if not result["owned"]:
-        result.update(state="foreign", error=f":{target_port} is not an Agent MAX VLM test server")
+        result.update(state="foreign", error=f":{target_port} is not a compatible external model server")
         return result
     try:
         health = probe_model_health(port=target_port)
@@ -373,7 +373,7 @@ def shared_max_server_status(*, port: int | None = None) -> dict:
     result["healthy"] = health.get("status") == "healthy" and loaded in config.MODEL_CHOICES
     result["state"] = "shared_ready" if result["healthy"] else "unhealthy"
     if not result["healthy"]:
-        result["error"] = f"shared MAX model {loaded!r} is unsupported by Agent TH"
+        result["error"] = f"external server model {loaded!r} is unsupported"
     return result
 
 
@@ -477,7 +477,7 @@ def reconcile_runtime_server(timeout: float = _DEFAULT_SWITCH_TIMEOUT) -> dict:
     if config.get_server_mode() == "shared_max":
         status = model_server_status()
         if not status.get("healthy"):
-            raise RuntimeError(status.get("error") or "shared MAX test server is unavailable")
+            raise RuntimeError(status.get("error") or "external model server is unavailable")
         return status
     with _switch_lock():
         control = get_model_server_control_settings()
@@ -490,7 +490,7 @@ def reconcile_runtime_server(timeout: float = _DEFAULT_SWITCH_TIMEOUT) -> dict:
 
 def start_owner_model_server(timeout: float = _DEFAULT_SWITCH_TIMEOUT) -> dict:
     if config.get_server_mode() == "shared_max":
-        raise RuntimeError("shared MAX test server is read-only; start it from Agent MAX VLM")
+        raise RuntimeError("external model server is read-only; lifecycle controls are unavailable")
     with _switch_lock():
         control = get_model_server_control_settings()
         _write_control_unlocked(
@@ -502,7 +502,7 @@ def start_owner_model_server(timeout: float = _DEFAULT_SWITCH_TIMEOUT) -> dict:
 
 def stop_owner_model_server() -> dict:
     if config.get_server_mode() == "shared_max":
-        raise RuntimeError("shared MAX test server is read-only; Agent TH will not stop it")
+        raise RuntimeError("external model server is read-only; stop is unavailable")
     with _switch_lock():
         control = get_model_server_control_settings()
         _write_control_unlocked(
@@ -518,7 +518,7 @@ def restart_owner_model_server(
     previous_port: int | None = None,
 ) -> dict:
     if config.get_server_mode() == "shared_max":
-        raise RuntimeError("shared MAX test server is read-only; Agent TH will not reset it")
+        raise RuntimeError("external model server is read-only; reset is unavailable")
     with _switch_lock():
         control = get_model_server_control_settings()
         _write_control_unlocked(

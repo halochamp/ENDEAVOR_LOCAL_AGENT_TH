@@ -769,7 +769,7 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
             <span>Watchdog</span>
             <input id="model-server-watchdog" type="checkbox" checked>
           </label>
-          <div class="settings-help" id="model-server-help">Standalone: Agent TH ดูแล model server เองโดยตรง. Shared MAX: ใช้ server ทดสอบของ Agent MAX VLM แบบ read-only (default :8085) และ TH จะไม่ Start/Stop/Reset หรือเปลี่ยน model ของ MAX.</div>
+          <div class="settings-help" id="model-server-help">Standalone: ดูแล model server ภายในแอปโดยตรง. External server: เชื่อมต่อ model server ภายนอกแบบ read-only (default :8085) โดยไม่ Start/Stop/Reset หรือเปลี่ยน model ของ server นั้น.</div>
           <div class="settings-actions">
             <button class="btn btn-primary" id="model-server-start-btn">Start</button>
             <button class="btn btn-ghost" id="model-server-stop-btn">Stop</button>
@@ -809,7 +809,7 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       <button class="btn btn-ghost" id="btn-pin" title="Pin ไฟล์เป็น context ต่อเนื่อง">📌</button>
       <button class="btn btn-ghost" id="btn-clear">Clear</button>
     </div>
-    <div id="telemetry-bar" title="Local host telemetry · ไม่พึ่ง Server Monitor">
+    <div id="telemetry-bar" title="Local host telemetry">
       <span id="telemetry-text">CPU — · GPU — · RAM — · TOK — · NET …</span>
     </div>
   </div>

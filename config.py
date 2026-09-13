@@ -35,8 +35,8 @@ HIGH_QUALITY_MODEL = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
 LOW_RAM_WARNING_BYTES = 24 * 1024 * 1024 * 1024
 SERVER_MODES = ("standalone", "shared_max")
 SERVER_MODE_LABELS = {
-    "standalone": "Standalone · Agent TH owns server",
-    "shared_max": "Shared MAX test server · read-only",
+    "standalone": "Standalone · managed locally",
+    "shared_max": "External server · read-only",
 }
 
 # Explicit MLX_BASE_URL + V2_MODEL remains a development/custom-backend override.
@@ -223,7 +223,7 @@ def adopt_shared_model(model: str) -> bool:
     global _current_model
     model = str(model or "").strip()
     if model not in MODEL_CHOICES:
-        raise ValueError(f"unsupported shared MAX model: {model}")
+        raise ValueError(f"unsupported external server model: {model}")
     changed = model != _current_model
     _current_model = model
     return changed
@@ -273,7 +273,7 @@ def get_runtime_settings() -> dict:
     elif get_server_mode() == "shared_max":
         model_options = [{
             "value": get_model(),
-            "label": f"Shared MAX · {MODEL_LABELS.get(get_model(), get_model())}",
+            "label": f"External · {MODEL_LABELS.get(get_model(), get_model())}",
         }]
     else:
         model_options = [
