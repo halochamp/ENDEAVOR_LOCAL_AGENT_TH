@@ -13,15 +13,18 @@ GET        http://localhost:8765/file   — read file (?path=...)
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import json
 import logging
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
 import threading
+import time
 import uuid
 
 import uvicorn
@@ -89,6 +92,41 @@ from tools.web_cache import web_count_reset as _reset_web_counter
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
+
+# Desktop telemetry is intentionally self-contained in this public project.
+# psutil is part of the documented install set, but keep collection fail-soft so
+# the Agent remains usable even in a minimal/custom environment.
+try:
+    import psutil as _psutil
+    _HAS_PSUTIL = True
+    _psutil.cpu_percent(interval=None)  # prime the non-blocking CPU baseline
+    _SYSTEM_RAM_TOTAL = int(_psutil.virtual_memory().total)
+except Exception:
+    _psutil = None
+    _HAS_PSUTIL = False
+    _SYSTEM_RAM_TOTAL = 0
+
+try:
+    _SYSTEM_TELEMETRY_INTERVAL_SECONDS = max(
+        1.0, float(os.getenv("V2_SYSTEM_TELEMETRY_INTERVAL_SECONDS", "5")),
+    )
+except (TypeError, ValueError):
+    _SYSTEM_TELEMETRY_INTERVAL_SECONDS = 5.0
+try:
+    _SYSTEM_TELEMETRY_PUBLISH_SECONDS = max(
+        0.25, float(os.getenv("V2_SYSTEM_TELEMETRY_PUBLISH_SECONDS", "1")),
+    )
+except (TypeError, ValueError):
+    _SYSTEM_TELEMETRY_PUBLISH_SECONDS = 1.0
+
+_system_net_prev: tuple[int, int, float] | None = None
+_system_net_lock = threading.Lock()
+_system_telemetry_task: asyncio.Task | None = None
+
+_GENERATION_RATE_WINDOW_SECONDS = 5.0
+_generation_token_times: deque[float] = deque()
+_generation_active_runs: set[str] = set()
+_generation_token_lock = threading.Lock()
 
 _WEB_TOOLS = {
     "web_search", "browse_url", "browser_use", "recall_web",
@@ -575,6 +613,241 @@ async def _model_server_watchdog_loop() -> None:
             log.exception("Agent TH model-server watchdog iteration failed")
 
 
+def _generation_run_start(run_id) -> None:
+    key = str(run_id or "default")
+    with _generation_token_lock:
+        if not _generation_active_runs:
+            _generation_token_times.clear()
+        _generation_active_runs.add(key)
+
+
+def _generation_run_end(run_id) -> None:
+    key = str(run_id or "default")
+    with _generation_token_lock:
+        _generation_active_runs.discard(key)
+
+
+def _generation_run_cleanup(run_ids) -> None:
+    with _generation_token_lock:
+        for run_id in run_ids:
+            _generation_active_runs.discard(str(run_id or "default"))
+
+
+def _mark_generation_token(now: float | None = None) -> None:
+    stamp = time.monotonic() if now is None else float(now)
+    cutoff = stamp - _GENERATION_RATE_WINDOW_SECONDS
+    with _generation_token_lock:
+        _generation_token_times.append(stamp)
+        while _generation_token_times and _generation_token_times[0] < cutoff:
+            _generation_token_times.popleft()
+
+
+def _generation_tokens_per_second(now: float | None = None) -> float:
+    """Return the current model's real streamed-token rate over a rolling 5s window.
+
+    The meter counts generation callbacks, not characters and not a model-specific
+    tokenizer. mlx/OpenAI-compatible streaming emits one callback for each output
+    token/chunk produced by the active model; reasoning/tool-call chunks are counted
+    too when the callback carries generation payload. No model ID is assumed.
+    """
+    stamp = time.monotonic() if now is None else float(now)
+    cutoff = stamp - _GENERATION_RATE_WINDOW_SECONDS
+    with _generation_token_lock:
+        while _generation_token_times and _generation_token_times[0] < cutoff:
+            _generation_token_times.popleft()
+        if not _generation_active_runs:
+            return 0.0
+        return len(_generation_token_times) / _GENERATION_RATE_WINDOW_SECONDS
+
+
+def _callback_has_generation_payload(token: str, kwargs: dict) -> bool:
+    if token:
+        return True
+    chunk = kwargs.get("chunk")
+    message = getattr(chunk, "message", None)
+    if message is None:
+        return False
+    content = getattr(message, "content", None)
+    if content:
+        return True
+    extra = getattr(message, "additional_kwargs", None) or {}
+    if extra.get("reasoning_content") or extra.get("reasoning"):
+        return True
+    return bool(
+        getattr(message, "tool_call_chunks", None)
+        or getattr(message, "tool_calls", None)
+    )
+
+
+def _portable_ram_used_bytes() -> int | None:
+    """Best-effort host RAM usage without machine-specific constants.
+
+    On macOS, ``vm_stat`` includes unified-memory pressure that ``psutil.used``
+    may under-report for MLX/Metal workloads. Other platforms fall back to the
+    portable psutil value. Every executable is capability-discovered at runtime;
+    no private path or host identity is assumed.
+    """
+    if sys.platform == "darwin":
+        vm_stat = shutil.which("vm_stat")
+        if vm_stat:
+            try:
+                out = subprocess.check_output([vm_stat], text=True, timeout=2)
+                page_size = 4096
+                match = re.search(r"page size of (\d+) bytes", out)
+                if match:
+                    page_size = int(match.group(1))
+
+                def pages(pattern: str) -> int:
+                    m = re.search(pattern, out)
+                    return int(m.group(1).replace(",", "").replace(".", "")) if m else 0
+
+                anonymous = pages(r"Anonymous pages:\s+([\d,.]+)")
+                wired = pages(r"Pages wired down:\s+([\d,.]+)")
+                occupied = pages(r"Pages occupied by compressor:\s+([\d,.]+)")
+                free = pages(r"Pages free:\s+([\d,.]+)")
+                speculative = pages(r"Pages speculative:\s+([\d,.]+)")
+                active = pages(r"Pages active:\s+([\d,.]+)")
+                inactive = pages(r"Pages inactive:\s+([\d,.]+)")
+                throttled = pages(r"Pages throttled:\s+([\d,.]+)")
+                total_pages = _SYSTEM_RAM_TOTAL // page_size if _SYSTEM_RAM_TOTAL else 0
+                accounted = free + speculative + active + inactive + wired + occupied + throttled
+                unaccounted = max(0, total_pages - accounted)
+                return (anonymous + wired + occupied + unaccounted) * page_size
+            except Exception:
+                pass
+    if _HAS_PSUTIL and _psutil is not None:
+        try:
+            return int(_psutil.virtual_memory().used)
+        except Exception:
+            pass
+    return None
+
+
+def _portable_gpu_percent() -> float | None:
+    """Best-effort GPU utilisation using only locally available platform tools.
+
+    Apple Silicon uses ``ioreg`` when present; NVIDIA hosts use ``nvidia-smi``.
+    Unsupported systems simply report ``None`` so this public UI degrades to
+    ``GPU —`` instead of assuming a particular machine or external monitor.
+    """
+    if sys.platform == "darwin":
+        ioreg = shutil.which("ioreg")
+        if ioreg:
+            for cls in ("AGXAccelerator", "IOAccelerator"):
+                try:
+                    out = subprocess.check_output(
+                        [ioreg, "-r", "-c", cls], text=True, timeout=2,
+                    )
+                    m = re.search(r'"Device Utilization %"\s*=\s*(\d+(?:\.\d+)?)', out)
+                    if m:
+                        return float(m.group(1))
+                except Exception:
+                    continue
+
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi:
+        try:
+            out = subprocess.check_output(
+                [
+                    nvidia_smi,
+                    "--query-gpu=utilization.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                text=True,
+                timeout=2,
+            )
+            values = [float(line.strip()) for line in out.splitlines() if line.strip()]
+            if values:
+                return max(values)
+        except Exception:
+            pass
+    return None
+
+
+def _collect_system_telemetry() -> dict:
+    """Collect one portable host-telemetry snapshot for the Electron status bar."""
+    global _system_net_prev
+    data = {
+        "type": "system_telemetry",
+        "cpu_percent": None,
+        "gpu_percent": None,
+        "ram_percent": None,
+        "ram_used_bytes": None,
+        "ram_total_bytes": _SYSTEM_RAM_TOTAL or None,
+        "network_up_bytes_per_second": None,
+        "network_down_bytes_per_second": None,
+        "tokens_per_second_5s": _generation_tokens_per_second(),
+    }
+    if _HAS_PSUTIL and _psutil is not None:
+        try:
+            data["cpu_percent"] = float(_psutil.cpu_percent(interval=None))
+            vm = _psutil.virtual_memory()
+            used = _portable_ram_used_bytes()
+            total = int(_SYSTEM_RAM_TOTAL or getattr(vm, "total", 0) or 0)
+            data["ram_used_bytes"] = used
+            data["ram_total_bytes"] = total or None
+            if used is not None and total > 0:
+                data["ram_percent"] = used / total * 100
+            else:
+                data["ram_percent"] = float(getattr(vm, "percent", 0.0))
+        except Exception:
+            pass
+
+        try:
+            nio = _psutil.net_io_counters()
+            now = time.monotonic()
+            with _system_net_lock:
+                if _system_net_prev is not None:
+                    previous_up, previous_down, previous_at = _system_net_prev
+                    dt = now - previous_at
+                    delta_up = int(nio.bytes_sent) - previous_up
+                    delta_down = int(nio.bytes_recv) - previous_down
+                    if dt > 0 and delta_up >= 0 and delta_down >= 0:
+                        data["network_up_bytes_per_second"] = delta_up / dt
+                        data["network_down_bytes_per_second"] = delta_down / dt
+                _system_net_prev = (int(nio.bytes_sent), int(nio.bytes_recv), now)
+        except Exception:
+            pass
+
+    data["gpu_percent"] = _portable_gpu_percent()
+    return data
+
+
+async def _system_telemetry_loop() -> None:
+    """Publish desktop telemetry cheaply while keeping generation rate responsive."""
+    cached: dict | None = None
+    next_system_sample_at = 0.0
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            await asyncio.sleep(_SYSTEM_TELEMETRY_PUBLISH_SECONDS)
+            target = _active_ws
+            if target is None or _ws_transport(target) != "desktop":
+                continue
+
+            now = loop.time()
+            if cached is None or now >= next_system_sample_at:
+                cached = await asyncio.to_thread(_collect_system_telemetry)
+                next_system_sample_at = now + _SYSTEM_TELEMETRY_INTERVAL_SECONDS
+            else:
+                cached = {
+                    **cached,
+                    "tokens_per_second_5s": _generation_tokens_per_second(),
+                }
+
+            if _active_ws is not target:
+                continue
+            try:
+                await target.send_json(cached)
+            except Exception:
+                # Connection cleanup remains owned by ws_endpoint's reader/finally.
+                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("System telemetry iteration failed")
+
+
 # ── Agent Awake — host wiring ──────────────────────────────────────────────────
 # This server owns ONE shared conversation thread (_state.thread_id) across
 # every /chat and /ws caller. An awake-fired turn is deliberately run on that
@@ -588,6 +861,16 @@ async def _model_server_watchdog_loop() -> None:
 # single-session design elsewhere — no multi-connection fan-out).
 _active_ws: WebSocket | None = None
 _active_ws_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _ws_transport(websocket: WebSocket | None) -> str:
+    if websocket is None:
+        return ""
+    try:
+        return str(websocket.query_params.get("transport") or "").strip().lower()
+    except Exception:
+        return ""
+
 
 # Ceiling for one fired turn's total wall time. Nobody is watching a fired
 # turn — post_chat/ws_endpoint have no such timeout because a human notices a
@@ -906,6 +1189,7 @@ class _WSCallback(BaseCallbackHandler):
         self._log = logger
         self._tid = turn_id
         self._cancel = cancel_event
+        self._generation_runs: set[str] = set()
         # Buffer tokens per LLM run_id. Only flushed to client after on_llm_end
         # confirms no tool calls — prevents pre-tool deliberation tokens from leaking.
         self._run_buffers: dict = {}     # str(run_id) -> int (token count)
@@ -924,12 +1208,17 @@ class _WSCallback(BaseCallbackHandler):
         self._timer.cancel()
 
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
+        run_key = str(run_id or "default")
+        self._generation_runs.add(run_key)
+        _generation_run_start(run_key)
         self._timer.start()
         if self._timer.had_tool:
             self._put({"type": "synthesis_start"})
 
     def on_llm_new_token(self, token: str, **kwargs) -> None:
         self._check_cancel()
+        if _callback_has_generation_payload(token, kwargs):
+            _mark_generation_token()
         if not token:
             return
         run_key = str(kwargs.get("run_id", "default"))
@@ -972,6 +1261,8 @@ class _WSCallback(BaseCallbackHandler):
     def on_llm_end(self, response, *, run_id, **kwargs):
         self._timer.cancel()
         run_key = str(run_id) if run_id else "default"
+        _generation_run_end(run_key)
+        self._generation_runs.discard(run_key)
         token_count = self._run_buffers.pop(run_key, 0)
         self._run_json_depth.pop(run_key, None)
         self._run_json_done.pop(run_key, None)
@@ -988,6 +1279,8 @@ class _WSCallback(BaseCallbackHandler):
     def on_llm_error(self, error, *, run_id, **kwargs):
         self._timer.cancel()
         run_key = str(run_id) if run_id else "default"
+        _generation_run_end(run_key)
+        self._generation_runs.discard(run_key)
         token_count = self._run_buffers.pop(run_key, 0)
         self._run_json_depth.pop(run_key, None)
         self._run_json_done.pop(run_key, None)
@@ -1071,6 +1364,8 @@ def _run_agent_sync(
         log.exception("agent error")
         loop.call_soon_threadsafe(q.put_nowait, {"type": "error", "msg": str(e)})
     finally:
+        _generation_run_cleanup(cb._generation_runs)
+        cb._generation_runs.clear()
         try:
             _state.logger.flush()
         except Exception:
@@ -1727,8 +2022,8 @@ async def ws_endpoint(websocket: WebSocket):
 
 @api.on_event("startup")
 async def _start_awake_engine() -> None:
-    """Start standalone model ownership/watchdog, then Awake on the live loop."""
-    global _awake_loop, _awake_engine, _awake_queue, _awake_worker_task, _model_watchdog_task
+    """Start standalone model ownership/watchdog, telemetry, then Awake."""
+    global _awake_loop, _awake_engine, _awake_queue, _awake_worker_task, _model_watchdog_task, _system_telemetry_task
     _awake_loop = asyncio.get_running_loop()
 
     runtime = get_runtime_settings()
@@ -1751,6 +2046,7 @@ async def _start_awake_engine() -> None:
             log.error("Model server startup reconcile failed: %s", exc)
         _model_watchdog_task = asyncio.create_task(_model_server_watchdog_loop())
 
+    _system_telemetry_task = asyncio.create_task(_system_telemetry_loop())
     _awake_queue = asyncio.Queue()
     _awake_worker_task = asyncio.create_task(_awake_queue_worker())
     _awake_engine = AwakeEngine(fire=_awake_fire, registry=Registry(), owner="agent_server")
@@ -1760,7 +2056,7 @@ async def _start_awake_engine() -> None:
 
 @api.on_event("shutdown")
 async def _stop_awake_engine() -> None:
-    global _awake_worker_task, _model_watchdog_task
+    global _awake_worker_task, _model_watchdog_task, _system_telemetry_task
     if _awake_engine is not None:
         _awake_engine.stop()
     if _awake_worker_task is not None:
@@ -1769,6 +2065,9 @@ async def _stop_awake_engine() -> None:
     if _model_watchdog_task is not None:
         _model_watchdog_task.cancel()
         _model_watchdog_task = None
+    if _system_telemetry_task is not None:
+        _system_telemetry_task.cancel()
+        _system_telemetry_task = None
     # A pending coalesced fire left in _awake_pending would coalesce-skip
     # every future fire for that watch_id forever (the guard checks
     # `if watch_id in _awake_pending`) — clear it so a restart starts clean.

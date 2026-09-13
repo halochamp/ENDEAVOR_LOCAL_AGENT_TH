@@ -389,24 +389,18 @@ body {
 .web-refs a { color: var(--link); font-size: 11px; text-decoration: none; word-break: break-all; }
 .web-refs a:hover { text-decoration: underline; color: var(--link-hover); }
 
-/* ── Phase bar ─────────────────────────────────────────── */
-#phase-bar {
+/* ── Standalone system telemetry bar ───────────────────── */
+#telemetry-bar {
   padding: 5px 14px; background: var(--bg2);
   border-top: 1px solid var(--border);
   font-size: 11px; color: var(--text-faint);
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center;
   flex-shrink: 0; font-family: var(--mono);
-  transition: color 0.2s;
+  min-width: 0;
 }
-#phase-bar.active { color: var(--accent); }
-.mini-spinner {
-  width: 9px; height: 9px;
-  border: 2px solid var(--bg3); border-top-color: var(--accent);
-  border-radius: 50%; animation: spin 0.7s linear infinite;
-  flex-shrink: 0; display: none;
+#telemetry-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-#phase-bar.active .mini-spinner { display: block; }
-@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── Context bar ───────────────────────────────────────── */
 #ctx-bar {
@@ -570,7 +564,7 @@ body.compact #header { padding-right: 10px; gap: 6px; }
 body.compact #btn-compact { color: var(--accent); border-color: var(--accent); }
 body.compact #messages { padding: 10px; gap: 10px; }
 body.compact .msg { max-width: 94%; }
-body.compact #phase-bar { padding: 4px 10px; font-size: 10px; }
+body.compact #telemetry-bar { padding: 4px 10px; font-size: 10px; }
 body.compact #input-area { padding: 8px 10px; }
 body.compact #input { min-height: 30px; font-size: 12px; }
 body.compact .btn { padding: 5px 10px; font-size: 11px; }
@@ -701,9 +695,8 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
   <!-- Chat -->
   <div id="chat-panel">
     <div id="messages"></div>
-    <div id="phase-bar">
-      <div class="mini-spinner"></div>
-      <span id="phase-text">พร้อม</span>
+    <div id="telemetry-bar" title="Local host telemetry · ไม่พึ่ง Server Monitor">
+      <span id="telemetry-text">CPU — · GPU — · RAM — · NET … · TOK —</span>
     </div>
     <div id="ctx-bar">
       <span id="ctx-pct">0%</span>

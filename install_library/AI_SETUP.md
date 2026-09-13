@@ -106,7 +106,14 @@ npm start
 Electron starts the authenticated `agent_server.py` backend for itself; Python
 `model_runtime.py` owns the MLX lifecycle, not Electron. CLI and Electron share the same
 Model / Think Budget / Server Mode / Port state in `workspace/runtime_settings.json`
-(or the path supplied by `V2_RUNTIME_SETTINGS_PATH`). There is no bundled browser HTML UI.
+(or the path supplied by `V2_RUNTIME_SETTINGS_PATH`). The text bar above the composer is
+standalone host telemetry (`CPU · GPU · RAM · NET · TOK`) collected by Agent TH itself; it does
+not require Server Monitor or a developer-machine path. CPU/RAM/network use `psutil`, GPU
+is capability-detected from local platform tools when available and otherwise displays `—`.
+`TOK` is the rolling five-second token/sec average from actual LLM streaming-generation callbacks;
+it is model-agnostic, does not estimate from characters, and returns `0.0 t/s` when no LLM run is
+actively generating. Telemetry events are scoped to the Electron WebSocket (`transport=desktop`)
+so generic custom clients are not forced to consume desktop-only status frames. There is no bundled browser HTML UI.
 
 ## 5. Common issues
 

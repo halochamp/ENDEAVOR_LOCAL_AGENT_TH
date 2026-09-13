@@ -20,7 +20,7 @@ Important components documented by the project include:
 - `llm.py` — local OpenAI-compatible MLX client;
 - `runtime_common.py` — shared turn/runtime behavior used by CLI and the Electron backend path;
 - `model_runtime.py` — shared model-server owner state/lifecycle for Standalone mode, plus the read-only Shared MAX boundary;
-- `agent_server.py` — authenticated WebSocket/REST backend for Electron and explicit custom clients;
+- `agent_server.py` — authenticated WebSocket/REST backend for Electron and explicit custom clients; also publishes self-contained host telemetry (CPU/GPU/RAM/network plus a model-agnostic rolling 5s generation token/sec meter) without any private Server Monitor dependency or machine-specific path;
 - `endeavor_agent.py` — CLI front end;
 - `AGENT_UI/` — Electron desktop front end;
 - `awake_engine.py` — standing-trigger execution;

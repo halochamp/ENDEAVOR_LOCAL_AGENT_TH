@@ -1,6 +1,6 @@
 /* renderer.js — WebSocket client + UI logic */
 
-const WS_URL = 'ws://localhost:8765/ws'
+const WS_URL = 'ws://localhost:8765/ws?transport=desktop'
 const MAX_ACTIVITY = 500
 
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
@@ -187,6 +187,9 @@ function handleEvent(ev) {
   switch (ev.type) {
     case 'status':
       applyStatus(ev)
+      break
+    case 'system_telemetry':
+      applySystemTelemetry(ev)
       break
     case 'runtime_settings':
       applyRuntimeSettings(ev)
@@ -428,17 +431,19 @@ function updateSkillBadge(skill) {
   else b.style.display = 'none'
 }
 
-// ── Phase bar ──────────────────────────────────────────────────────────────────
+// ── System telemetry / turn phase ──────────────────────────────────────────────
 
-function setPhase(label, active) {
-  // While a cancel is pending, keep the "stopping…" notice pinned — don't let late
-  // phase events from the still-draining turn overwrite it. A terminal transition
-  // (active === false: done/error/cancelled) clears the lock and updates normally.
+function applySystemTelemetry(ev) {
+  const text = document.getElementById('telemetry-text')
+  if (text) text.textContent = systemTelemetryText(ev)
+}
+
+function setPhase(_label, active) {
+  // Full-mode turn progress already lives inside the thinking bubble. Keep only
+  // the cancellation-state guard here; the bar above the composer is reserved
+  // for host telemetry so chat progress is never duplicated there.
   if (cancelPending && active) return
   if (!active) cancelPending = false
-  const bar = document.getElementById('phase-bar')
-  document.getElementById('phase-text').textContent = label
-  bar.classList.toggle('active', active)
 }
 
 // ── Activity ───────────────────────────────────────────────────────────────────
@@ -771,9 +776,9 @@ function sendCancel() {
   wsSend({ type: 'command', cmd: 'cancel', run_id: currentRunId })
   // Cancel is not instant — the running turn only stops once it reaches the next
   // checkpoint, which can take a moment (mid token-gen or mid web_search). Without
-  // feedback the click feels like nothing happened. Acknowledge it immediately:
-  // the phase bar is always visible, the thinking label updates when present, and
-  // the button is disabled so a frustrated user can't spam more cancels.
+  // feedback the click feels like nothing happened. Acknowledge it immediately
+  // in the thinking bubble and disable the button so a frustrated user can't spam
+  // more cancels. The bar above the composer is reserved for host telemetry.
   setPhase('กำลังหยุด… รอสักครู่', true)
   clearWaitingSummary()
   updateThinkingLabel('กำลังหยุด…')

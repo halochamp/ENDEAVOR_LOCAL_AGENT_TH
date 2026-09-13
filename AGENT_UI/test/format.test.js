@@ -2,7 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert')
 const {
   mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh,
-  runtimeStatusText, modelServerStatusText,
+  runtimeStatusText, modelServerStatusText, byteRateText, systemTelemetryText,
 } = require('../lib/format')
 
 test('mlxLabel extracts port from URL', () => {
@@ -78,4 +78,22 @@ test('modelServerStatusText distinguishes standalone and shared MAX', () => {
     state: 'shared_ready', healthy: true, loaded_model: 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit',
   }), 'Shared พร้อม · Qwen3.6-35B-A3B-UD-MLX-4bit')
   assert.strictEqual(modelServerStatusText({ state: 'shared_offline' }), 'Shared MAX offline')
+})
+
+test('system telemetry formats portable CPU GPU RAM and network on one line', () => {
+  const line = systemTelemetryText({
+    cpu_percent: 12.34,
+    gpu_percent: 75,
+    ram_used_bytes: 24 * 1024 ** 3,
+    ram_total_bytes: 48 * 1024 ** 3,
+    network_up_bytes_per_second: 1536,
+    network_down_bytes_per_second: 2 * 1024 ** 2,
+    tokens_per_second_5s: 42.64,
+  })
+  assert.strictEqual(
+    line,
+    'CPU 12.3% · GPU 75% · RAM 24.0/48 GB · NET ↑1.5 KB/s ↓2.0 MB/s · TOK 42.6 t/s',
+  )
+  assert.strictEqual(byteRateText(null), '—')
+  assert.strictEqual(systemTelemetryText({}), 'CPU — · GPU — · RAM — · NET … · TOK —')
 })

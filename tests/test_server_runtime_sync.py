@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("AGENT_SERVER_TOKEN", "test-runtime-sync-token")
 
@@ -158,6 +158,101 @@ class ServerRuntimeSyncTests(unittest.TestCase):
         }):
             result = asyncio.run(srv._apply_model_server_action("stop"))
         self.assertIn("read-only", result["error"])
+
+    def test_generation_rate_is_actual_stream_callback_count_over_rolling_five_seconds(self) -> None:
+        with srv._generation_token_lock:
+            old_times = list(srv._generation_token_times)
+            old_runs = set(srv._generation_active_runs)
+            srv._generation_token_times.clear()
+            srv._generation_active_runs.clear()
+        try:
+            srv._generation_run_start("run-a")
+            for i in range(25):
+                srv._mark_generation_token(now=96.0 + (i * 0.16))
+            self.assertEqual(srv._generation_tokens_per_second(now=100.0), 5.0)
+            srv._generation_run_end("run-a")
+            self.assertEqual(srv._generation_tokens_per_second(now=100.0), 0.0)
+        finally:
+            with srv._generation_token_lock:
+                srv._generation_token_times.clear()
+                srv._generation_token_times.extend(old_times)
+                srv._generation_active_runs.clear()
+                srv._generation_active_runs.update(old_runs)
+
+    def test_generation_meter_counts_reasoning_or_tool_chunks_without_model_specific_tokenizer(self) -> None:
+        reasoning = MagicMock()
+        reasoning.message.content = ""
+        reasoning.message.additional_kwargs = {"reasoning_content": "คิด"}
+        reasoning.message.tool_call_chunks = []
+        reasoning.message.tool_calls = []
+        tool = MagicMock()
+        tool.message.content = ""
+        tool.message.additional_kwargs = {}
+        tool.message.tool_call_chunks = [{"args": "{}"}]
+        tool.message.tool_calls = []
+        empty = MagicMock()
+        empty.message.content = ""
+        empty.message.additional_kwargs = {}
+        empty.message.tool_call_chunks = []
+        empty.message.tool_calls = []
+        self.assertTrue(srv._callback_has_generation_payload("x", {}))
+        self.assertTrue(srv._callback_has_generation_payload("", {"chunk": reasoning}))
+        self.assertTrue(srv._callback_has_generation_payload("", {"chunk": tool}))
+        self.assertFalse(srv._callback_has_generation_payload("", {"chunk": empty}))
+
+    def test_system_telemetry_is_self_contained_and_portable(self) -> None:
+        old_has_psutil = srv._HAS_PSUTIL
+        old_ram_total = srv._SYSTEM_RAM_TOTAL
+        old_net_prev = srv._system_net_prev
+        fake_psutil = MagicMock()
+        fake_psutil.cpu_percent.return_value = 12.5
+        fake_psutil.virtual_memory.return_value = MagicMock(
+            used=20 * (1024 ** 3), total=48 * (1024 ** 3), percent=41.7,
+        )
+        fake_psutil.net_io_counters.return_value = MagicMock(
+            bytes_sent=3_000, bytes_recv=6_000,
+        )
+        try:
+            srv._HAS_PSUTIL = True
+            srv._SYSTEM_RAM_TOTAL = 48 * (1024 ** 3)
+            srv._system_net_prev = (1_000, 2_000, 100.0)
+            with patch.object(srv, "_psutil", fake_psutil), \
+                 patch.object(srv, "_portable_ram_used_bytes", return_value=24 * (1024 ** 3)), \
+                 patch.object(srv, "_portable_gpu_percent", return_value=75.0), \
+                 patch.object(srv.time, "monotonic", return_value=102.0):
+                sample = srv._collect_system_telemetry()
+        finally:
+            srv._HAS_PSUTIL = old_has_psutil
+            srv._SYSTEM_RAM_TOTAL = old_ram_total
+            srv._system_net_prev = old_net_prev
+
+        self.assertEqual(sample["type"], "system_telemetry")
+        self.assertEqual(sample["cpu_percent"], 12.5)
+        self.assertEqual(sample["gpu_percent"], 75.0)
+        self.assertEqual(sample["ram_used_bytes"], 24 * (1024 ** 3))
+        self.assertEqual(sample["ram_total_bytes"], 48 * (1024 ** 3))
+        self.assertEqual(sample["network_up_bytes_per_second"], 1_000.0)
+        self.assertEqual(sample["network_down_bytes_per_second"], 2_000.0)
+        self.assertEqual(sample["tokens_per_second_5s"], 0.0)
+
+    def test_telemetry_does_not_depend_on_private_monitor_or_machine_paths(self) -> None:
+        source = Path(srv.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("SERVER_MONITOR", source)
+        self.assertNotIn("/Users/", source)
+        with patch.object(srv.shutil, "which", return_value=None):
+            self.assertIsNone(srv._portable_gpu_percent())
+
+    def test_telemetry_is_scoped_to_explicit_desktop_transport(self) -> None:
+        desktop = MagicMock()
+        desktop.query_params = {"transport": "desktop"}
+        custom = MagicMock()
+        custom.query_params = {}
+        self.assertEqual(srv._ws_transport(desktop), "desktop")
+        self.assertEqual(srv._ws_transport(custom), "")
+        renderer = (Path(srv.__file__).resolve().parent / "AGENT_UI" / "renderer.js").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn("/ws?transport=desktop", renderer)
 
     def test_bundled_browser_ui_routes_are_retired(self) -> None:
         paths = {getattr(route, "path", "") for route in srv.api.routes}
