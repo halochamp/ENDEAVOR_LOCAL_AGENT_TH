@@ -86,6 +86,23 @@ class ModelRuntimeOwnershipTests(unittest.TestCase):
         self.assertEqual(config.get_model(), max_model)
         kill.assert_not_called()
 
+    def test_shared_status_accepts_lightweight_2b_when_max_owns_it(self) -> None:
+        config._current_server_mode = "shared_max"
+        max_model = config.LIGHT_VLM_MODEL
+        max_cmd = (
+            "/opt/python /tmp/ENDEAVOR_LOCAL_AGENT_MAX_VLM/scripts/"
+            f"run_vlm_server_patched.py --model {max_model} --port 8085"
+        )
+        with mock.patch.object(runtime, "_listener_pids", return_value=[123]), \
+             mock.patch.object(runtime, "_process_command", return_value=max_cmd), \
+             mock.patch.object(runtime, "probe_model_health", return_value={
+                 "status": "healthy", "loaded_model": max_model,
+             }):
+            status = runtime.model_server_status()
+        self.assertEqual(status["state"], "shared_ready")
+        self.assertTrue(status["healthy"])
+        self.assertEqual(config.get_model(), max_model)
+
     def test_shared_mode_refuses_start_stop_reset_and_watchdog(self) -> None:
         config._current_server_mode = "shared_max"
         with mock.patch.object(runtime, "_listener_pids") as listeners, \

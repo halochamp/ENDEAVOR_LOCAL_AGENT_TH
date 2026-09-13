@@ -18,13 +18,14 @@ the verification checks — each step gates the next.
 ```bash
 uname -s   # must be "Darwin"
 uname -m   # must be "arm64"
-sysctl hw.memsize   # informational only; default is Qwen3-14B, 16GB can select Qwen3.5-9B VLM
+sysctl hw.memsize   # informational only; default is Qwen3-14B; 2B is test-only; 16GB can select Qwen3.5-9B VLM
 command -v conda    # must exist — if missing, tell user to install Miniforge:
                      # https://github.com/conda-forge/miniforge
 ```
 
 If the platform/Python/conda checks fail, stop and explain what's missing. RAM does not
-block installation: Qwen3-14B is the default, while a 16 GB Mac can select
+block installation: Qwen3-14B is the default, `mlx-community/Qwen3.5-2B-OptiQ-4bit`
+is available as a lightweight test/diagnostic VLM, while a 16 GB Mac can select
 `mlx-community/Qwen3.5-9B-4bit` for the compact VLM path. If the user explicitly selects
 Qwen3.6-35B on a Mac below 24 GB, warn that download/load may use substantial disk/RAM/swap;
 continue only after the user confirms, because the warning is advisory rather than a hard block.
@@ -40,7 +41,7 @@ This script:
 - installs the hash-locked dependencies in `install_library/requirements.txt`
 - attempts to install the optional Playwright Chromium browser (the agent still installs if this download fails)
 - copies `.env.example` → `.env` if `.env` doesn't exist yet
-- does **not** pre-download all model choices: Qwen3-14B is the default; Qwen3.5-9B VLM and Qwen3.6-35B are fetched only when the user actually selects/starts them
+- does **not** pre-download all model choices: Qwen3-14B is the default; Qwen3.5-2B test VLM, Qwen3.5-9B VLM and Qwen3.6-35B are fetched only when the user actually selects/starts them
 
 Safe to re-run — it skips steps that are already done (existing env, satisfied pip
 versions, already-downloaded chromium).
@@ -122,7 +123,7 @@ so generic custom clients are not forced to consume desktop-only status frames. 
 | `[error] ไม่พบ conda` | Miniforge not installed | install Miniforge, restart shell |
 | install.sh exits at `[1/6]` | not Apple Silicon / not macOS | this project requires M1+ Mac |
 | agent says model offline | Standalone owner failed to start, or Shared MAX server is offline/wrong port | check Settings / `python model_runtime.py status`; Shared MAX must already be running |
-| out of memory / swap thrashing | selected model is too large for available memory | on a 16GB Mac choose Qwen3.5-9B-4bit; Qwen3-14B remains the fresh default and Qwen3.6-35B remains optional |
+| out of memory / swap thrashing | selected model is too large for available memory | use Qwen3.5-2B-OptiQ-4bit for lightweight testing/diagnostic; on a 16GB Mac choose Qwen3.5-9B-4bit for normal compact use; Qwen3-14B remains the fresh default and Qwen3.6-35B remains optional |
 | `playwright install chromium` fails | network/proxy issue | retry; required only for `browse_url`/`scrape_table`/`browser_use` tools |
 | Thai text broken on plot (squares / floating vowels) | pyobjc not installed correctly | run `python -c "import Quartz, CoreText"` in the mlx env — if it fails, re-run `pip install pyobjc-framework-Quartz pyobjc-framework-CoreText` |
 | Thai text OK but font looks wrong | Thonburi missing or wrong font picked | install Noto Sans Thai via `brew install --cask font-noto-sans-thai` and rebuild font cache |
@@ -171,8 +172,9 @@ verified Agent MAX VLM test server: the Model follows MAX's loaded model, Think 
 remains TH-owned, and lifecycle/model controls cannot mutate MAX. Returning to Standalone
 restores TH's previous standalone model instead of keeping MAX's shared model. The paired
 `V2_MODEL` + non-default `MLX_BASE_URL` environment override remains the advanced
-custom-backend path and locks runtime selection. Qwen3.5-9B-4bit is the compact
-vision-capable option for 16GB Macs; Qwen3-14B remains the default text/tool model and uses
+custom-backend path and locks runtime selection. Qwen3.5-2B-OptiQ-4bit is the lightweight
+test/diagnostic VLM, Qwen3.5-9B-4bit is the compact vision-capable option for 16GB Macs;
+Qwen3-14B remains the default text/tool model and uses
 full-OCR fallback for `read_image`; Qwen3.6-35B remains the higher-quality vision-capable option.
 
 **Restarting / stopping servers** — if the agent seems stuck, offline, or the user
@@ -207,7 +209,7 @@ instead of re-reading the whole README:
 |---|---|
 | "ใช้งานยังไง" / how do I start | Open CLI or Electron; TH manages its Standalone model server automatically. Shared MAX requires MAX VLM's test server to already be running |
 | "model offline" / agent ขึ้น offline | Check Settings or `python model_runtime.py status`; in Shared MAX, recover MAX VLM separately |
-| "เปลี่ยนโมเดล/port" / change model or port | ใช้ Electron Settings หรือ CLI `menu` → Model / Think Budget / Port; ทั้งคู่เขียน owner config เดียวกัน. Standalone เปลี่ยน model/port ได้เอง, Shared MAX ล็อก model ตาม MAX และ CLI เปลี่ยนได้เฉพาะ shared test-server port หลัง verify MAX server. Qwen3.5-9B เป็น compact VLM, Qwen3-14B เป็น default, Qwen3.6-35B เป็น high-quality VLM |
+| "เปลี่ยนโมเดล/port" / change model or port | ใช้ Electron Settings หรือ CLI `menu` → Model / Think Budget / Port; ทั้งคู่เขียน owner config เดียวกัน. Standalone เปลี่ยน model/port ได้เอง, Shared MAX ล็อก model ตาม MAX และ CLI เปลี่ยนได้เฉพาะ shared test-server port หลัง verify MAX server. Qwen3.5-2B เป็น test VLM, Qwen3.5-9B เป็น compact VLM, Qwen3-14B เป็น default, Qwen3.6-35B เป็น high-quality VLM |
 | "port ถูกใช้อยู่" / port in use | Choose another Standalone port, or stop only the TH-owned server. A foreign/MAX listener is never killed automatically |
 | "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
 | "ลืม conversation เก่า" / load old chat | `/history` in CLI, or use History in Electron (loads from `logs/history.db`) |

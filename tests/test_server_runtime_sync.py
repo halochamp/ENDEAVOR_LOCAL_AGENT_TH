@@ -65,6 +65,7 @@ class ServerRuntimeSyncTests(unittest.TestCase):
     def test_runtime_payload_exposes_vlm_labels_consistently(self) -> None:
         payload = srv._runtime_settings_payload()
         labels = {item["value"]: item["label"] for item in payload["model_options"]}
+        self.assertEqual(labels[srv._config.LIGHT_VLM_MODEL], "Qwen3.5 2B · VLM")
         self.assertEqual(labels[srv._config.COMPACT_VLM_MODEL], "Qwen3.5 9B · VLM")
         self.assertEqual(labels[srv._config.HIGH_QUALITY_MODEL], "Qwen3.6 35B · VLM")
 

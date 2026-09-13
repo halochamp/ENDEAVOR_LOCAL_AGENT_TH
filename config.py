@@ -5,6 +5,7 @@
 """config.py — ENDEAVOR_AGENT_V2 configuration
 
 default: Qwen/Qwen3-14B-MLX-4bit @ :8085 via mlx_vlm.server
+lightweight test VLM: mlx-community/Qwen3.5-2B-OptiQ-4bit
 compact VLM option: mlx-community/Qwen3.5-9B-4bit
 optional high-quality model: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit
 สลับด้วย shared runtime config หรือ env var — ไม่ต้องแก้ code
@@ -28,6 +29,7 @@ _DEFAULT_SERVER_PORT = 8085
 _SHARED_MAX_TEST_PORT = 8085
 _DEFAULT_URL = f"http://localhost:{_DEFAULT_SERVER_PORT}/v1"
 DEFAULT_MODEL = "Qwen/Qwen3-14B-MLX-4bit"
+LIGHT_VLM_MODEL = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
 COMPACT_VLM_MODEL = "mlx-community/Qwen3.5-9B-4bit"
 HIGH_QUALITY_MODEL = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
 LOW_RAM_WARNING_BYTES = 24 * 1024 * 1024 * 1024
@@ -60,11 +62,13 @@ API_KEY      = os.getenv("MLX_API_KEY",  "x")  # mlx_vlm.server ใช้ --api-
 # :8085) without taking process/model ownership from MAX VLM.
 MODEL_CHOICES = (
     DEFAULT_MODEL,
+    LIGHT_VLM_MODEL,
     COMPACT_VLM_MODEL,
     HIGH_QUALITY_MODEL,
 )
 MODEL_LABELS = {
     DEFAULT_MODEL: "Qwen3 14B · text",
+    LIGHT_VLM_MODEL: "Qwen3.5 2B · VLM",
     COMPACT_VLM_MODEL: "Qwen3.5 9B · VLM",
     HIGH_QUALITY_MODEL: "Qwen3.6 35B · VLM",
 }

@@ -1,9 +1,9 @@
 # ENDEAVOR_LOCAL_AGENT_TH
 
 **Local AI Agent ที่ออกแบบให้รองรับภาษาไทยโดยเฉพาะ ที่รันบนเครื่องของคุณเอง 100%**
-ไม่มี API key, ไม่มีค่า token รายเดือน, ไม่มีข้อมูลหลุดออกไปนอกเครื่อง — รองรับ **Qwen3.5-9B-4bit (VLM)** สำหรับ Mac RAM 16GB, **Qwen3-14B** เป็นค่าเริ่มต้นสำหรับเครื่อง 24GB+, และ **Qwen3.6-35B-A3B (MoE)** สำหรับคุณภาพสูง ผ่าน **MLX** บน Apple Silicon และ orchestrate ด้วย **LangGraph ReAct Agent**
+ไม่มี API key, ไม่มีค่า token รายเดือน, ไม่มีข้อมูลหลุดออกไปนอกเครื่อง — มี **Qwen3.5-2B-OptiQ-4bit (VLM)** เป็น lightweight test model, รองรับ **Qwen3.5-9B-4bit (VLM)** สำหรับ Mac RAM 16GB, **Qwen3-14B** เป็นค่าเริ่มต้นสำหรับเครื่อง 24GB+, และ **Qwen3.6-35B-A3B (MoE)** สำหรับคุณภาพสูง ผ่าน **MLX** บน Apple Silicon และ orchestrate ด้วย **LangGraph ReAct Agent**
 
-เป้าหมายของโปรเจกต์คือทำให้ Local AI Agent ที่ใช้งานได้จริงเข้าถึงคนทั่วไปได้มากขึ้น: เครื่อง 16GB สามารถเลือก Qwen3.5 9B VLM, fresh install ยังเริ่มด้วย Qwen3-14B เป็นค่า default สำหรับเครื่องที่มี headroom มากกว่า และเครื่องแรงสามารถเลือก 35B MoE เพื่อคุณภาพ reasoning/tool calling สูงสุด
+เป้าหมายของโปรเจกต์คือทำให้ Local AI Agent ที่ใช้งานได้จริงเข้าถึงคนทั่วไปได้มากขึ้น: 2B มีไว้สำหรับทดลอง/diagnostic บนเครื่องทรัพยากรจำกัด, เครื่อง 16GB สามารถเลือก Qwen3.5 9B VLM, fresh install ยังเริ่มด้วย Qwen3-14B เป็นค่า default สำหรับเครื่องที่มี headroom มากกว่า และเครื่องแรงสามารถเลือก 35B MoE เพื่อคุณภาพ reasoning/tool calling สูงสุด
 
 ---
 
@@ -77,7 +77,7 @@ cd AGENT_UI && npm install && npm start
 
 ค่าเริ่มต้นคือ **Standalone** ที่ port `8085`. ถ้า `:8085` ถูก Agent MAX VLM ครอบครองด้วย patched launcher ที่ตรวจยืนยันได้ Agent TH จะเข้า **Shared MAX test server** แบบ read-only อัตโนมัติ: ใช้ model ที่ MAX โหลดอยู่ได้ แต่ไม่ Start/Stop/Reset/Watchdog หรือเปลี่ยน model ของ MAX. Listener อื่นที่ไม่ใช่ MAX จะไม่ถูก adopt หรือ kill
 
-> การติดตั้ง **ไม่บังคับดาวน์โหลดทุกโมเดล**: fresh install ใช้ `Qwen3-14B` เป็น default และดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. ผู้ใช้สามารถเลือก `Qwen3.5-9B-4bit` สำหรับเครื่อง 16GB หรือ `Qwen3.6-35B` สำหรับคุณภาพสูงได้ภายหลัง; 35B บน RAM <24GB จะมีคำเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
+> การติดตั้ง **ไม่บังคับดาวน์โหลดทุกโมเดล**: fresh install ใช้ `Qwen3-14B` เป็น default และดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. ผู้ใช้สามารถเลือก `Qwen3.5-2B-OptiQ-4bit` สำหรับการทดสอบเบา ๆ, `Qwen3.5-9B-4bit` สำหรับเครื่อง 16GB หรือ `Qwen3.6-35B` สำหรับคุณภาพสูงได้ภายหลัง; 35B บน RAM <24GB จะมีคำเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
 
 > เพิ่งเคย clone ครั้งแรก หรืออยากดูทุกขั้นตอนแบบละเอียด (รวม `git clone`, config, ติดตั้งแบบไม่ใช้สคริปต์) → ดู [Setup](#setup)
 
@@ -141,7 +141,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 - `Shared MAX test server`: ตรวจ process signature ของ Agent MAX VLM + `/health` ก่อน attach; Model ถูกล็อกตาม MAX และ Start/Stop/Reset/Watchdog ถูกปิดทั้งหมด. Generic external listener จะไม่ถูก adopt
 - ถ้าเปิด TH ขณะที่ MAX VLM ครอบครอง port ที่ TH ตั้งไว้ (default `:8085`) และตรวจยืนยันว่าเป็น MAX จริง TH จะ auto-attach read-only; ถ้า MAX ย้าย port ผู้ใช้ตั้ง Shared MAX port ตามได้
 - ปิด Electron = ปิดเฉพาะ `agent_server.py`; model server standalone ยังคงอยู่ตาม durable owner intent. ใช้ Stop ใน Settings หรือ `agent_stop.command` เมื่อต้องการปิด TH model server
-- Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` ใช้ full OCR fallback อัตโนมัติ ส่วน `Qwen3.5-9B-4bit` และ Qwen3.6-35B เป็นตัวเลือก vision-capable สำหรับ direct image understanding / `computer`
+- Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` ใช้ full OCR fallback อัตโนมัติ ส่วน `Qwen3.5-2B-OptiQ-4bit`, `Qwen3.5-9B-4bit` และ Qwen3.6-35B เป็นตัวเลือก vision-capable สำหรับ direct image understanding / `computer`; 2B มีไว้สำหรับ testing/diagnostic มากกว่าคุณภาพงาน production
 
 `agent_server.py` ยังคงเป็น authenticated WebSocket/REST **backend ของ Electron และ custom clients** แต่โปรเจกต์ไม่ bundle browser HTML UI แยกอีกต่อไป
 
@@ -224,7 +224,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | Layer | เทคโนโลยี | หน้าที่ |
 |---|---|---|
 | **LLM Runtime** | [MLX](https://github.com/ml-explore/mlx) | รัน Qwen แบบ quantized (4-bit) บน Apple Silicon GPU ผ่าน Metal |
-| **Model** | `Qwen/Qwen3-14B-MLX-4bit` (default), `mlx-community/Qwen3.5-9B-4bit` (compact VLM), หรือ `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | 9B สำหรับเครื่อง 16GB, 14B เป็นค่าเริ่มต้น, 35B เป็นตัวเลือกคุณภาพสูง |
+| **Model** | `Qwen/Qwen3-14B-MLX-4bit` (default), `mlx-community/Qwen3.5-2B-OptiQ-4bit` (test VLM), `mlx-community/Qwen3.5-9B-4bit` (compact VLM), หรือ `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | 2B สำหรับทดสอบ, 9B สำหรับเครื่อง 16GB, 14B เป็นค่าเริ่มต้น, 35B เป็นตัวเลือกคุณภาพสูง |
 | **Agent Framework** | [LangGraph](https://github.com/langchain-ai/langgraph) `create_react_agent` | ReAct loop, state graph, checkpointing |
 | **LLM Client** | LangChain Core + `langchain-openai` | คุยกับ `mlx_vlm.server` ผ่าน OpenAI-compatible API |
 | **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | authenticated WebSocket/REST backend สำหรับ Electron และ custom clients |
@@ -394,6 +394,7 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 ## Requirements
 
 - macOS Apple Silicon (M1/M2/M3/M4/M5)
+- **Qwen3.5-2B-OptiQ 4-bit (lightweight test VLM):** ตัวเลือกสำหรับทดสอบ agent/runtime และเครื่องทรัพยากรจำกัด; รองรับ image input โดยตรง แต่ไม่ใช่ quality target หลักของโปรเจกต์
 - **Qwen3.5-9B 4-bit (compact VLM):** ใช้งาน Agent TH ได้บน unified memory **16GB** และรองรับ image input โดยตรง
 - **Qwen3-14B 4-bit (default):** unified memory ประมาณ **24GB ขั้นต่ำเชิงปฏิบัติ**, **32GB+ แนะนำ**
 - **Qwen3.6-35B-A3B 4-bit (optional high-quality):** โมเดลใหญ่กว่าและใช้ RAM/swap สูงกว่า; บนเครื่อง RAM <24GB ระบบจะเตือนก่อนเริ่ม download/load แต่ผู้ใช้ยังยืนยันทำต่อได้
@@ -402,11 +403,11 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 - `mlx-vlm` installed (และติดตั้ง `mlx-lm` เป็น dependency ที่ server ใช้ร่วมกัน)
 - (optional) `computer` direct screenshot vision works without extra setup; System Settings → Privacy & Security → **Accessibility** access for the process running the agent adds richer element data — the tool tells you in its own output (`ax=permission_required`) if this is off, no crash either way
 
-> **หมายเหตุเรื่องโมเดล:** ค่า default ของโปรเจกต์ยังเป็น **Qwen3-14B-MLX-4bit**. สำหรับ Mac unified memory **16GB** สามารถเลือก **Qwen3.5-9B-4bit** ซึ่งเป็น VLM และใช้ direct vision/computer ได้; ถ้าใช้ 14B text-only `read_image` จะ full OCR fallback และ `computer` จะ fail closed อย่างชัดเจน
+> **หมายเหตุเรื่องโมเดล:** ค่า default ของโปรเจกต์ยังเป็น **Qwen3-14B-MLX-4bit**. มี **Qwen3.5-2B-OptiQ-4bit** สำหรับ testing/diagnostic และเครื่องทรัพยากรจำกัด; สำหรับ Mac unified memory **16GB** สามารถเลือก **Qwen3.5-9B-4bit** ซึ่งเป็น VLM และใช้ direct vision/computer ได้; ถ้าใช้ 14B text-only `read_image` จะ full OCR fallback และ `computer` จะ fail closed อย่างชัดเจน
 >
 > **Qwen3.6-35B-A3B (MoE)** ยังเลือกใช้ได้เมื่ออยากได้ headroom ด้าน reasoning/planning/tool calling มากขึ้น. ถ้าเครื่องมี RAM ต่ำกว่า 24GB Electron/CLI จะเตือนก่อน download/load เท่านั้น ไม่ได้บล็อก — ผู้ใช้ยืนยันแล้วระบบจะทำต่อ
 >
-> โมเดลที่เล็กกว่านี้ (เช่น 7B/8B ลงไป) ไม่ใช่ target ที่แนะนำของโปรเจกต์ เพราะมีโอกาส tool-call ผิด, หลุด format หรือ reasoning ไม่พอสำหรับ workflow หลายขั้นมากขึ้น
+> โมเดลเล็กระดับ 2B ไม่ใช่ target ที่แนะนำสำหรับงานจริงของโปรเจกต์ เพราะมีโอกาส tool-call ผิด, หลุด format หรือ reasoning ไม่พอสำหรับ workflow หลายขั้นมากขึ้น; ตัวเลือก 2B ถูกใส่ไว้โดยตั้งใจเพื่อการทดสอบและ diagnostic
 >
 > CLI `menu` และ Electron Settings ใช้ owner config เดียวกันสำหรับ **Model / Think Budget / Model Server Port**; เปลี่ยน Port จากฝั่งใดอีกฝั่งจะอ่านค่าต่อได้ทันที. Electron Settings ยังมี **Server Mode / Watchdog / Start / Stop / Reset** เพิ่มเติม. `Standalone` เป็นค่า default, ส่วน `Shared MAX` ใช้ server ทดสอบของ Agent MAX VLM แบบ read-only. env var `V2_MODEL` + `MLX_BASE_URL` ยังเป็น advanced override ที่ล็อก runtime (ดูหัวข้อ [Configuration](#configuration-env))
 
@@ -547,7 +548,7 @@ def my_tool(query: str) -> str:
 
 ### ใช้โมเดลอื่น
 
-default runtime model คือ **Qwen3-14B-MLX-4bit**. เครื่อง unified memory **16GB** สามารถเลือก **Qwen3.5-9B-4bit (VLM)** ได้จาก Electron Settings หรือ CLI และถ้าต้องการคุณภาพ reasoning สูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)**; เครื่องที่มี RAM ต่ำกว่า 24GB จะได้รับคำเตือนก่อน download/load เฉพาะ 35B แต่ยังยืนยันใช้ได้. `read_image` บน 14B ใช้ OCR fallback ส่วน 9B/35B รองรับ direct vision ตาม capability probe
+default runtime model คือ **Qwen3-14B-MLX-4bit**. สามารถเลือก **Qwen3.5-2B-OptiQ-4bit (VLM)** สำหรับ testing/diagnostic, เครื่อง unified memory **16GB** สามารถเลือก **Qwen3.5-9B-4bit (VLM)** และถ้าต้องการคุณภาพ reasoning สูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)**; เครื่องที่มี RAM ต่ำกว่า 24GB จะได้รับคำเตือนก่อน download/load เฉพาะ 35B แต่ยังยืนยันใช้ได้. `read_image` บน 14B ใช้ OCR fallback ส่วน 2B/9B/35B รองรับ direct vision ตาม capability probe
 
 วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` โดยใช้ `workspace/runtime_settings.json` ร่วมกัน. ใน `Standalone` Agent TH เป็น owner ของ model server และสามารถ restart model/ย้าย port ของตัวเองได้; Settings มี Watchdog + Start/Stop/Reset. ใน `Shared MAX` TH เป็น client read-only: Model ล็อกตาม MAX VLM, Think Budget ยังเป็นของ TH และ lifecycle controls ถูกปิด. เมื่อกลับจาก Shared MAX ระบบคืน **standalone model เดิมของ TH** ไม่เอา model ของ MAX มาทับค่าที่เคยเลือกไว้
 

@@ -52,6 +52,7 @@ class SharedRuntimeConfigTests(unittest.TestCase):
     def test_labels_options_and_default_server_contract(self) -> None:
         settings = config.get_runtime_settings()
         self.assertEqual(config.get_model_label(), "Qwen3 14B · text")
+        self.assertEqual(config.MODEL_LABELS[config.LIGHT_VLM_MODEL], "Qwen3.5 2B · VLM")
         self.assertEqual(config.MODEL_LABELS[config.COMPACT_VLM_MODEL], "Qwen3.5 9B · VLM")
         self.assertEqual(config.MODEL_LABELS[config.HIGH_QUALITY_MODEL], "Qwen3.6 35B · VLM")
         self.assertEqual(config.get_thinking_budget_label(), "High")
@@ -67,12 +68,14 @@ class SharedRuntimeConfigTests(unittest.TestCase):
             [("Low", 256), ("Medium", 512), ("High", 1024), ("xhigh", 1536), ("Max", 2048)],
         )
 
-    def test_default_model_is_qwen3_14b_and_9b_vlm_is_selectable(self) -> None:
+    def test_default_model_is_qwen3_14b_and_2b_9b_vlms_are_selectable(self) -> None:
         self.assertEqual(config.DEFAULT_MODEL, "Qwen/Qwen3-14B-MLX-4bit")
+        self.assertEqual(config.LIGHT_VLM_MODEL, "mlx-community/Qwen3.5-2B-OptiQ-4bit")
         self.assertEqual(config.COMPACT_VLM_MODEL, "mlx-community/Qwen3.5-9B-4bit")
         self.assertEqual(config.MODEL_CHOICES[0], config.DEFAULT_MODEL)
-        self.assertEqual(config.MODEL_CHOICES[1], config.COMPACT_VLM_MODEL)
-        self.assertEqual(config.MODEL_CHOICES[2], config.HIGH_QUALITY_MODEL)
+        self.assertEqual(config.MODEL_CHOICES[1], config.LIGHT_VLM_MODEL)
+        self.assertEqual(config.MODEL_CHOICES[2], config.COMPACT_VLM_MODEL)
+        self.assertEqual(config.MODEL_CHOICES[3], config.HIGH_QUALITY_MODEL)
 
     def test_runtime_port_moves_endpoint_and_persists_owner_state(self) -> None:
         changed = config.set_runtime_settings(
