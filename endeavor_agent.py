@@ -5,7 +5,7 @@
 """endeavor_agent.py — ENDEAVOR_AGENT_V2 interactive CLI
 
 รัน:  conda activate mlx && python endeavor_agent.py
-Model + Think Budget ใช้ config กลางเดียวกับ Electron UI (ดู config.py)
+Model + Think Budget + Server Mode + Model Server Port ใช้ config กลางเดียวกับ Electron UI (ดู config.py)
 """
 from __future__ import annotations
 import sys
@@ -29,7 +29,10 @@ from config import RECURSION_LIMIT, CONTEXT_MAX_CHARS
 from model_runtime import (
     reconcile_runtime_server,
     restart_owner_model_server,
+    start_owner_model_server,
+    stop_model_server as _stop_owned_model_server,
     model_server_status,
+    shared_max_server_status,
     auto_attach_max_test_server_if_present,
     get_model_server_control_settings,
 )
@@ -447,42 +450,78 @@ def _confirm_high_quality_model_on_low_ram(model: str) -> bool:
     ram_bytes = config.physical_memory_bytes()
     ram_gb = max(1, round(ram_bytes / (1024 ** 3))) if ram_bytes else 0
     shown = f"ประมาณ {ram_gb}GB" if ram_gb else "ต่ำกว่า 24GB"
-    print(f" {C_WARN}⚠ เครื่องนี้มี RAM {shown}; Qwen3.6 35B เป็นโมเดลขนาดใหญ่{R}")
+    print(f" {C_WARN}⚠ เครื่องนี้มี RAM {shown}; Qwen3.6 35B · VLM เป็นโมเดลขนาดใหญ่{R}")
     print(f" {C_WARN}  การดาวน์โหลด/โหลดอาจใช้พื้นที่และ swap สูง แต่ยังเลือกใช้ได้{R}")
-    print(f" {C_META}  ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B ต่อหรือไม่? [y/N]{R}")
+    print(f" {C_META}  ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B · VLM ต่อหรือไม่? [y/N]{R}")
     answer = (prompt_user() or "").strip().lower()
     return answer in {"y", "yes", "ใช่", "ตกลง"}
 
 
-def _apply_cli_runtime_settings(model: str, thinking_budget: int) -> dict:
-    """Apply CLI model/budget while respecting standalone vs shared MAX ownership."""
+def _apply_cli_runtime_settings(
+    model: str,
+    thinking_budget: int,
+    server_port: int | None = None,
+) -> dict:
+    """Apply CLI state through the same owner config used by Electron Settings."""
     runtime = config.get_runtime_settings()
     requested = str(model or "").strip()
-    if runtime.get("shared_server") and requested != config.get_model():
-        raise ValueError("shared MAX test server locks Model to the model MAX is serving")
-
     old_model = config.get_model()
+    old_budget = config.get_thinking_budget()
+    old_mode = config.get_server_mode()
+    old_port = config.get_server_port()
+    requested_port = old_port if server_port is None else int(server_port)
+
+    if runtime.get("shared_server"):
+        if requested != old_model:
+            raise ValueError("shared MAX test server locks Model to the model MAX is serving")
+        if requested_port != old_port:
+            shared = shared_max_server_status(port=requested_port)
+            if not shared.get("healthy"):
+                raise RuntimeError(shared.get("error") or "MAX test server is unavailable")
+            requested = str(shared.get("loaded_model") or "")
+        changed = config.set_runtime_settings(
+            model=requested,
+            thinking_budget=int(thinking_budget),
+            server_mode="shared_max",
+            server_port=requested_port,
+        )
+        config.adopt_shared_model(requested)
+        return changed
+
     changed = config.set_runtime_settings(
         model=requested,
         thinking_budget=int(thinking_budget),
-        server_mode=config.get_server_mode(),
-        server_port=config.get_server_port(),
+        server_mode="standalone",
+        server_port=requested_port,
     )
-    if (
-        changed.get("model_changed")
-        and config.get_server_mode() == "standalone"
-        and get_model_server_control_settings().get("desired_state") == "running"
-    ):
+    server_changed = bool(changed.get("model_changed") or changed.get("server_port_changed"))
+    if not server_changed:
+        return changed
+    desired_running = get_model_server_control_settings().get("desired_state") == "running"
+    if not desired_running:
+        return changed
+
+    try:
+        restart_owner_model_server(timeout=240.0, previous_port=old_port)
+    except Exception as exc:
+        rollback_error = ""
         try:
-            restart_owner_model_server(timeout=240.0, previous_port=config.get_server_port())
-        except Exception:
+            failed_port = config.get_server_port()
             config.set_runtime_settings(
                 model=old_model,
-                thinking_budget=int(thinking_budget),
-                server_mode="standalone",
-                server_port=config.get_server_port(),
+                thinking_budget=old_budget,
+                server_mode=old_mode,
+                server_port=old_port,
             )
-            raise
+            if failed_port != old_port:
+                try:
+                    _stop_owned_model_server(port=failed_port)
+                except Exception:
+                    pass
+            start_owner_model_server(timeout=240.0)
+        except Exception as rollback_exc:
+            rollback_error = f"; rollback failed: {rollback_exc}"
+        raise RuntimeError(f"model/port switch failed: {exc}{rollback_error}") from exc
     return changed
 
 
@@ -600,28 +639,40 @@ def main() -> None:
             thinking_label=config.get_thinking_budget_label(),
         )
 
-    def _apply_runtime_selection(model: str, thinking_budget: int) -> str:
+    def _apply_runtime_selection(
+        model: str,
+        thinking_budget: int,
+        server_port: int | None = None,
+    ) -> str:
         requested_model = str(model or "").strip()
+        old_port = config.get_server_port()
+        requested_port = old_port if server_port is None else int(server_port)
         model_change_requested = requested_model != config.get_model()
+        port_change_requested = requested_port != old_port
         if not _warm_llm_ready.is_set():
             print(" กำลังรอ model cache ก่อนเปลี่ยน runtime settings…")
             _warm_llm_ready.wait()
         try:
             spinner_text = (
-                "⏳  กำลังเตรียมเปลี่ยน Model…"
+                f"⏳  กำลังเปลี่ยน Model Server Port → :{requested_port}…"
+                if port_change_requested
+                else "⏳  กำลังเตรียมเปลี่ยน Model…"
                 if model_change_requested
                 else "⚙️  กำลังปรับ Think Budget…"
             )
             with Spinner(spinner_text):
-                changed = _apply_cli_runtime_settings(model, thinking_budget)
+                changed = _apply_cli_runtime_settings(model, thinking_budget, requested_port)
         except Exception as exc:
             print(f" {C_WARN}⚠ เปลี่ยน runtime settings ไม่สำเร็จ: {exc}{R}\n")
             return "error"
-        if changed.get("model_changed") or changed.get("thinking_budget_changed"):
+        if any(changed.get(key) for key in (
+            "model_changed", "thinking_budget_changed", "server_port_changed",
+        )):
             _rebuild_for_runtime_change()
         print(
             f" {C_GREEN}✓ Runtime:{R} {config.get_model_label()} · "
-            f"Think {config.get_thinking_budget_label()} · {config.get_thinking_budget()}\n"
+            f"Think {config.get_thinking_budget_label()} · {config.get_thinking_budget()} · "
+            f"{config.get_server_mode()} :{config.get_server_port()}\n"
         )
         return "applied"
 
@@ -637,7 +688,7 @@ def main() -> None:
             print(
                 f" {C_META}↻ synced Electron runtime config:{R} "
                 f"{config.get_model_label()} · Think {config.get_thinking_budget_label()} · "
-                f"{config.get_thinking_budget()}\n"
+                f"{config.get_thinking_budget()} · {config.get_server_mode()} :{config.get_server_port()}\n"
             )
         q = prompt_user(mode=_active_skill)
         if q is None:
@@ -728,8 +779,27 @@ def main() -> None:
                             print(f" {C_WARN}⚠ ตัวเลือก Think Budget ไม่ถูกต้อง{R}\n")
                             continue
                         _apply_runtime_selection(config.get_model(), selected)
+                    elif sub == "3":
+                        mode_label = "Shared MAX" if settings.get("shared_server") else "Standalone"
+                        print(
+                            f" {C_META}{mode_label} Model Server Port ปัจจุบัน :{config.get_server_port()} "
+                            f"· ใส่ 1024–65535 หรือ b เพื่อย้อนกลับ{R}"
+                        )
+                        raw = (prompt_user() or "").strip().lower()
+                        if raw in ("b", "back", "/exit"):
+                            continue
+                        try:
+                            selected_port = int(raw)
+                            if not 1024 <= selected_port <= 65535:
+                                raise ValueError
+                        except ValueError:
+                            print(f" {C_WARN}⚠ Port ต้องเป็นตัวเลข 1024–65535{R}\n")
+                            continue
+                        _apply_runtime_selection(
+                            config.get_model(), config.get_thinking_budget(), selected_port,
+                        )
                     else:
-                        print(f" {C_WARN}⚠ เลือก 1, 2 หรือ b{R}\n")
+                        print(f" {C_WARN}⚠ เลือก 1, 2, 3 หรือ b{R}\n")
                 _print_runtime_header()
                 if restart_requested:
                     print(" Bye — runtime model selection saved.\n")

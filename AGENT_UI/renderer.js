@@ -1213,8 +1213,8 @@ function applyRuntimeSettings(ev) {
     const ramText = ev.ram_gb ? ` (RAM ประมาณ ${ev.ram_gb}GB)` : ''
     const confirmed = window.confirm(
       `เครื่องนี้มี RAM ต่ำกว่า 24GB${ramText}\n\n`
-      + 'Qwen3.6 35B เป็นโมเดลขนาดใหญ่ การดาวน์โหลด/โหลดโมเดลอาจใช้พื้นที่และ swap สูงมาก\n\n'
-      + 'ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B ต่อหรือไม่?'
+      + 'Qwen3.6 35B · VLM เป็นโมเดลขนาดใหญ่ การดาวน์โหลด/โหลดโมเดลอาจใช้พื้นที่และ swap สูงมาก\n\n'
+      + 'ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B · VLM ต่อหรือไม่?'
     )
     if (confirmed) {
       wsSend({ ...previousPending, confirmed_low_ram: true })

@@ -121,7 +121,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 - รันใน terminal — เบา เร็ว เหมาะกับงานที่ต้องทำซ้ำ ๆ หรือเปิดทิ้งไว้นาน ๆ
 - ระหว่าง agent ทำงาน จะเห็น **spinner 2 บรรทัด** ตลอดเวลา พร้อม context status bar แบบ real-time
-- พิมพ์ `menu` → **Model / Think Budget** เพื่อเลือก model และระดับ Low 256 / Medium 512 / High 1024 / xhigh 1536 / Max 2048
+- พิมพ์ `menu` → **Model / Think Budget / Port** เพื่อเลือก model, ระดับ Low 256 / Medium 512 / High 1024 / xhigh 1536 / Max 2048 และ Model Server Port จาก config กลางเดียวกับ Electron
 - CLI ใช้ owner state เดียวกับ Electron; ใน `Standalone` Agent TH จะ start/reconcile/restart model server ของตัวเองได้โดยตรงและเคารพ intentional Stop
 - ถ้า runtime อยู่ใน `Shared MAX` Model จะถูกล็อกตาม model ที่ MAX VLM โหลดอยู่; Think Budget ของ TH ยังเปลี่ยนได้ แต่ CLI จะไม่เปลี่ยนหรือหยุด process ของ MAX
 
@@ -407,7 +407,7 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 >
 > โมเดลที่เล็กกว่านี้ (เช่น 7B/8B ลงไป) ไม่ใช่ target ที่แนะนำของโปรเจกต์ เพราะมีโอกาส tool-call ผิด, หลุด format หรือ reasoning ไม่พอสำหรับ workflow หลายขั้นมากขึ้น
 >
-> สลับโมเดลหลักผ่าน **Electron Settings** หรือ CLI `menu`; Electron Settings ยังเลือก **Server Mode / Model Server Port / Watchdog / Start / Stop / Reset** ได้ด้วย. `Standalone` เป็นค่า default, ส่วน `Shared MAX` ใช้ server ทดสอบของ Agent MAX VLM แบบ read-only. env var `V2_MODEL` + `MLX_BASE_URL` ยังเป็น advanced override ที่ล็อก runtime (ดูหัวข้อ [Configuration](#configuration-env))
+> CLI `menu` และ Electron Settings ใช้ owner config เดียวกันสำหรับ **Model / Think Budget / Model Server Port**; เปลี่ยน Port จากฝั่งใดอีกฝั่งจะอ่านค่าต่อได้ทันที. Electron Settings ยังมี **Server Mode / Watchdog / Start / Stop / Reset** เพิ่มเติม. `Standalone` เป็นค่า default, ส่วน `Shared MAX` ใช้ server ทดสอบของ Agent MAX VLM แบบ read-only. env var `V2_MODEL` + `MLX_BASE_URL` ยังเป็น advanced override ที่ล็อก runtime (ดูหัวข้อ [Configuration](#configuration-env))
 
 ---
 

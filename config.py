@@ -66,7 +66,7 @@ MODEL_CHOICES = (
 MODEL_LABELS = {
     DEFAULT_MODEL: "Qwen3 14B · text",
     COMPACT_VLM_MODEL: "Qwen3.5 9B · VLM",
-    HIGH_QUALITY_MODEL: "Qwen3.6 35B",
+    HIGH_QUALITY_MODEL: "Qwen3.6 35B · VLM",
 }
 
 TEMPERATURE     = float(os.getenv("V2_TEMPERATURE",     "0.1"))

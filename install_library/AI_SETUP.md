@@ -155,7 +155,9 @@ agent to "save this file" or "create a script", point them to `workspace/` — t
 where outputs land. See README.md "Security" section for the full read/write model.
 
 **Model server + runtime settings** — CLI and Electron share
-`workspace/runtime_settings.json`: Model, Think Budget, Server Mode, and Port. In
+`workspace/runtime_settings.json`: Model, Think Budget, Server Mode, and Port. CLI `menu`
+can change Model / Think Budget / Model Server Port directly; Electron reads the same
+owner file and therefore sees the CLI-selected port without a separate UI config. In
 **Standalone**, Agent TH owns the verified launcher and may Start/Stop/Reset, watchdog,
 switch model, or move its port itself. In **Shared MAX**, TH is a read-only client of a
 verified Agent MAX VLM test server: the Model follows MAX's loaded model, Think Budget
@@ -198,7 +200,7 @@ instead of re-reading the whole README:
 |---|---|
 | "ใช้งานยังไง" / how do I start | Open CLI or Electron; TH manages its Standalone model server automatically. Shared MAX requires MAX VLM's test server to already be running |
 | "model offline" / agent ขึ้น offline | Check Settings or `python model_runtime.py status`; in Shared MAX, recover MAX VLM separately |
-| "เปลี่ยนโมเดล" / change model | ใช้ Electron Settings หรือ CLI `menu`; Standalone เปลี่ยน model/port ได้เอง, Shared MAX ล็อก model ตาม MAX และไม่แตะ lifecycle ของ MAX. Qwen3.5-9B เป็น compact VLM, Qwen3-14B เป็น default, Qwen3.6-35B เป็น high-quality VLM |
+| "เปลี่ยนโมเดล/port" / change model or port | ใช้ Electron Settings หรือ CLI `menu` → Model / Think Budget / Port; ทั้งคู่เขียน owner config เดียวกัน. Standalone เปลี่ยน model/port ได้เอง, Shared MAX ล็อก model ตาม MAX และ CLI เปลี่ยนได้เฉพาะ shared test-server port หลัง verify MAX server. Qwen3.5-9B เป็น compact VLM, Qwen3-14B เป็น default, Qwen3.6-35B เป็น high-quality VLM |
 | "port ถูกใช้อยู่" / port in use | Choose another Standalone port, or stop only the TH-owned server. A foreign/MAX listener is never killed automatically |
 | "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
 | "ลืม conversation เก่า" / load old chat | `/history` in CLI, or use History in Electron (loads from `logs/history.db`) |

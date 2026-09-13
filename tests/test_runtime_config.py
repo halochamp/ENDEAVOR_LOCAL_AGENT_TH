@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -10,6 +12,7 @@ from unittest.mock import patch
 import config
 import endeavor_agent
 import runtime_model
+import ui_cli
 
 
 class SharedRuntimeConfigTests(unittest.TestCase):
@@ -49,6 +52,8 @@ class SharedRuntimeConfigTests(unittest.TestCase):
     def test_labels_options_and_default_server_contract(self) -> None:
         settings = config.get_runtime_settings()
         self.assertEqual(config.get_model_label(), "Qwen3 14B · text")
+        self.assertEqual(config.MODEL_LABELS[config.COMPACT_VLM_MODEL], "Qwen3.5 9B · VLM")
+        self.assertEqual(config.MODEL_LABELS[config.HIGH_QUALITY_MODEL], "Qwen3.6 35B · VLM")
         self.assertEqual(config.get_thinking_budget_label(), "High")
         self.assertEqual(settings["server_mode"], "standalone")
         self.assertEqual(settings["server_port"], 8085)
@@ -139,11 +144,38 @@ class SharedRuntimeConfigTests(unittest.TestCase):
 
     def test_cli_model_change_restarts_owned_standalone_server(self) -> None:
         new = config.COMPACT_VLM_MODEL
-        with patch.object(endeavor_agent, "restart_owner_model_server", return_value={"healthy": True}) as restart:
+        with patch.object(endeavor_agent, "get_model_server_control_settings", return_value={"desired_state": "running"}), \
+             patch.object(endeavor_agent, "restart_owner_model_server", return_value={"healthy": True}) as restart:
             changed = endeavor_agent._apply_cli_runtime_settings(new, 1536)
         self.assertTrue(changed["model_changed"])
         self.assertEqual(config.get_model(), new)
-        restart.assert_called_once()
+        restart.assert_called_once_with(timeout=240.0, previous_port=8085)
+
+    def test_cli_port_change_moves_owned_standalone_server(self) -> None:
+        with patch.object(endeavor_agent, "get_model_server_control_settings", return_value={"desired_state": "running"}), \
+             patch.object(endeavor_agent, "restart_owner_model_server", return_value={"healthy": True}) as restart:
+            changed = endeavor_agent._apply_cli_runtime_settings(config.DEFAULT_MODEL, 1024, 8091)
+        self.assertTrue(changed["server_port_changed"])
+        self.assertEqual(config.get_server_port(), 8091)
+        self.assertEqual(config.get_mlx_base_url(), "http://localhost:8091/v1")
+        restart.assert_called_once_with(timeout=240.0, previous_port=8085)
+
+    def test_cli_port_change_while_stopped_only_persists(self) -> None:
+        with patch.object(endeavor_agent, "get_model_server_control_settings", return_value={"desired_state": "stopped"}), \
+             patch.object(endeavor_agent, "restart_owner_model_server") as restart:
+            changed = endeavor_agent._apply_cli_runtime_settings(config.DEFAULT_MODEL, 1024, 8091)
+        self.assertTrue(changed["server_port_changed"])
+        self.assertEqual(config.get_server_port(), 8091)
+        restart.assert_not_called()
+
+    def test_cli_port_write_is_seen_by_fresh_electron_config_refresh(self) -> None:
+        with patch.object(endeavor_agent, "get_model_server_control_settings", return_value={"desired_state": "stopped"}):
+            endeavor_agent._apply_cli_runtime_settings(config.DEFAULT_MODEL, 1024, 8091)
+        config._current_server_port = 8085
+        config.MLX_BASE_URL = "http://localhost:8085/v1"
+        self.assertTrue(config.refresh_runtime_settings_from_file())
+        self.assertEqual(config.get_server_port(), 8091)
+        self.assertEqual(config.get_mlx_base_url(), "http://localhost:8091/v1")
 
     def test_cli_shared_mode_refuses_model_change(self) -> None:
         config.set_runtime_settings(
@@ -154,6 +186,44 @@ class SharedRuntimeConfigTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "shared MAX"):
             endeavor_agent._apply_cli_runtime_settings(config.DEFAULT_MODEL, 512)
+
+    def test_cli_shared_port_change_verifies_max_and_never_mutates_server(self) -> None:
+        config.set_runtime_settings(
+            model=config.HIGH_QUALITY_MODEL,
+            thinking_budget=1024,
+            server_mode="shared_max",
+            server_port=8085,
+        )
+        shared = {
+            "healthy": True,
+            "loaded_model": config.HIGH_QUALITY_MODEL,
+            "port": 8091,
+        }
+        with patch.object(endeavor_agent, "shared_max_server_status", return_value=shared) as status, \
+             patch.object(endeavor_agent, "restart_owner_model_server") as restart, \
+             patch.object(endeavor_agent, "start_owner_model_server") as start, \
+             patch.object(endeavor_agent, "_stop_owned_model_server") as stop:
+            changed = endeavor_agent._apply_cli_runtime_settings(
+                config.HIGH_QUALITY_MODEL, 512, 8091,
+            )
+        self.assertTrue(changed["server_port_changed"])
+        self.assertEqual(config.get_server_port(), 8091)
+        status.assert_called_once_with(port=8091)
+        restart.assert_not_called()
+        start.assert_not_called()
+        stop.assert_not_called()
+
+    def test_cli_runtime_menu_exposes_same_port_state_as_electron_config(self) -> None:
+        settings = config.get_runtime_settings()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ui_cli.print_mode_menu()
+            ui_cli.print_runtime_settings_menu(settings)
+        out = buf.getvalue()
+        self.assertIn("Model / Think Budget / Port", out)
+        self.assertIn("Standalone", out)
+        self.assertIn("เปลี่ยน Model Server Port", out)
+        self.assertIn(":8085", out)
 
     def test_cli_runtime_match_uses_model_server_status(self) -> None:
         with patch.object(endeavor_agent, "model_server_status", return_value={
