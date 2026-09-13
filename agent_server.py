@@ -36,9 +36,22 @@ from agent_log import AgentLogger
 from awake_engine import AwakeEngine, Registry, drain_notices, restore_notices
 import config as _config
 from config import (
-    MLX_BASE_URL, RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED,
+    RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED,
     READ_FILE_MAX_BYTES, READ_FILE_AUDIO_VIDEO_MAX_BYTES,
     get_model, get_thinking_budget, get_runtime_settings, set_runtime_settings,
+    get_mlx_base_url, get_server_mode, get_server_port,
+)
+from model_runtime import (
+    reconcile_runtime_server as _reconcile_runtime_server,
+    model_server_status as _model_server_status,
+    shared_max_server_status as _shared_max_server_status,
+    auto_attach_max_test_server_if_present as _auto_attach_max_test_server_if_present,
+    start_owner_model_server as _start_owner_model_server,
+    stop_owner_model_server as _stop_owner_model_server,
+    restart_owner_model_server as _restart_owner_model_server,
+    stop_model_server as _stop_owned_model_server,
+    get_model_server_control_settings as _get_model_server_control_settings,
+    set_model_server_watchdog as _set_model_server_watchdog,
 )
 import graph as _graph
 import planner as _planner
@@ -255,16 +268,79 @@ async def _ws_busy_guard(websocket: WebSocket, msg: str = "agent กำลัง
 
 
 def _active_mlx_model() -> str:
-    """Resolve active local model from the listener process, never /v1/models."""
-    return _active_local_mlx_model(MLX_BASE_URL)
+    """Resolve active local model from the current owner/shared endpoint."""
+    return _active_local_mlx_model(get_mlx_base_url())
 
 
-def _runtime_settings_payload(*, error: str = "") -> dict:
+_VLM_SWITCH_TIMEOUT_SECONDS = 240.0
+_MODEL_WATCHDOG_INTERVAL_SECONDS = 5.0
+_MODEL_WATCHDOG_RETRY_SECONDS = 20.0
+_model_watchdog_task: asyncio.Task | None = None
+_model_server_action_lock = asyncio.Lock()
+
+
+def _runtime_settings_payload(
+    *,
+    switch_state: str = "idle",
+    error: str = "",
+    confirmation_required: bool = False,
+    ram_gb: int = 0,
+) -> dict:
+    state = str(switch_state or "idle")
+    if error and state == "idle":
+        state = "error"
     return {
         "type": "runtime_settings",
         **get_runtime_settings(),
+        "switching": state == "switching",
+        "switch_state": state,
+        "confirmation_required": bool(confirmation_required),
+        "ram_gb": int(ram_gb or 0),
         "error": str(error or ""),
     }
+
+
+def _model_server_progress_payload(action_state: str) -> dict:
+    control = _get_model_server_control_settings()
+    shared = get_server_mode() == "shared_max"
+    return {
+        "type": "model_server_status",
+        "owner": "agent_max_vlm" if shared else "agent_th",
+        "mode": get_server_mode(),
+        "managed_by_th": not shared,
+        "port": get_server_port(),
+        "selected_model": get_model(),
+        "watchdog_enabled": False if shared else bool(control.get("watchdog_enabled", True)),
+        "desired_state": "shared" if shared else str(control.get("desired_state") or "running"),
+        "action_state": str(action_state or ""),
+        "error": "",
+    }
+
+
+async def _model_server_status_payload(*, error: str = "", action_state: str = "") -> dict:
+    try:
+        status = await asyncio.to_thread(_model_server_status)
+    except Exception as exc:
+        shared = get_server_mode() == "shared_max"
+        control = _get_model_server_control_settings()
+        status = {
+            "owner": "agent_max_vlm" if shared else "agent_th",
+            "mode": get_server_mode(),
+            "managed_by_th": not shared,
+            "port": get_server_port(),
+            "selected_model": get_model(),
+            "watchdog_enabled": False if shared else bool(control.get("watchdog_enabled", True)),
+            "desired_state": "shared" if shared else str(control.get("desired_state") or "running"),
+            "running": False,
+            "owned": False,
+            "healthy": False,
+            "state": "error",
+            "loaded_model": "",
+            "error": str(exc),
+        }
+    if error:
+        status["error"] = str(error)
+    return {"type": "model_server_status", **status, "action_state": str(action_state or "")}
 
 
 def _rebuild_runtime_llms() -> None:
@@ -276,68 +352,227 @@ def _rebuild_runtime_llms() -> None:
 
 
 def _sync_runtime_settings_from_owner_file_if_idle() -> bool:
-    """Adopt CLI-written shared settings before Desktop reads or starts a turn.
-
-    For an unlocked local backend, never adopt a persisted model that does not
-    match the listener's real ``--model``. This keeps cross-UI sync fail-closed
-    while still allowing Think Budget changes to propagate live.
-    """
+    """Adopt CLI-written owner settings before the next idle Desktop action."""
     if _busy.locked():
         return False
-    persisted = _config.get_persisted_runtime_settings()
-    if persisted is None:
-        return False
-    runtime = get_runtime_settings()
-    if not runtime.get("model_locked"):
-        active = _active_mlx_model()
-        if not active or persisted.get("model") != active:
-            return False
     if not _config.refresh_runtime_settings_from_file():
         return False
+    try:
+        status = _model_server_status()
+        if status.get("healthy") and get_server_mode() == "shared_max":
+            _config.adopt_shared_model(str(status.get("loaded_model") or ""))
+    except Exception:
+        pass
     _rebuild_runtime_llms()
     log.info(
-        "runtime settings synced from shared config model=%s thinking_budget=%s",
-        get_model(), get_thinking_budget(),
+        "runtime settings synced model=%s budget=%s mode=%s port=%s",
+        get_model(), get_thinking_budget(), get_server_mode(), get_server_port(),
     )
     return True
 
 
-async def _apply_runtime_settings(model: str, thinking_budget: int) -> dict:
-    """Apply TH client settings only when the requested model is actually served."""
+async def _apply_model_server_action(action: str) -> dict:
+    action = str(action or "").strip().lower()
+    if action not in {"start", "stop", "reset"}:
+        return await _model_server_status_payload(error=f"unsupported model server action: {action}")
+    if _busy.locked():
+        return await _model_server_status_payload(error="agent is busy")
+    if _model_server_action_lock.locked():
+        return await _model_server_status_payload(error="model server action is busy")
+
+    async with _model_server_action_lock:
+        fn = {
+            "start": _start_owner_model_server,
+            "stop": _stop_owner_model_server,
+            "reset": _restart_owner_model_server,
+        }[action]
+        try:
+            if action == "stop":
+                await asyncio.to_thread(fn)
+            else:
+                await asyncio.to_thread(fn, _VLM_SWITCH_TIMEOUT_SECONDS)
+        except Exception as exc:
+            return await _model_server_status_payload(error=f"{action} failed: {exc}")
+    return await _model_server_status_payload()
+
+
+async def _apply_model_server_watchdog(enabled: bool) -> dict:
+    try:
+        await asyncio.to_thread(_set_model_server_watchdog, bool(enabled))
+    except Exception as exc:
+        return await _model_server_status_payload(error=f"watchdog update failed: {exc}")
+    return await _model_server_status_payload()
+
+
+async def _apply_runtime_settings(
+    model: str,
+    thinking_budget: int,
+    server_mode: str,
+    server_port: int,
+    *,
+    confirmed_low_ram: bool = False,
+) -> dict:
+    """Apply Agent TH owner settings or attach to MAX's read-only test server."""
     if _busy.locked():
         return _runtime_settings_payload(error="agent is busy")
+    if _model_server_action_lock.locked():
+        return _runtime_settings_payload(error="model server action is busy")
 
-    requested = str(model or "").strip()
-    runtime = get_runtime_settings()
-    # Environment-locked custom backends already have an authoritative V2_MODEL;
-    # do not inspect a possibly remote process just to change the per-request budget.
-    if not (runtime.get("model_locked") and not runtime.get("shared_server")):
-        active = await asyncio.to_thread(_active_mlx_model)
-        if not active or requested != active:
-            shown = active or "unknown"
-            return _runtime_settings_payload(
-                error=f"MLX active model is {shown}; switch the server model first"
-            )
-    if _busy.locked():
-        return _runtime_settings_payload(error="agent became busy; try again after the turn finishes")
+    requested_model = str(model or "").strip()
+    requested_mode = str(server_mode or "standalone").strip()
+    try:
+        requested_port = int(server_port)
+        requested_budget = int(thinking_budget)
+    except (TypeError, ValueError):
+        return _runtime_settings_payload(error="invalid runtime settings")
 
-    async with _busy:
+    old = get_runtime_settings()
+    old_model = str(old.get("model") or get_model())
+    old_budget = int(old.get("thinking_budget") or get_thinking_budget())
+    old_mode = str(old.get("server_mode") or get_server_mode())
+    old_port = int(old.get("server_port") or get_server_port())
+    old_standalone_model = str(old.get("standalone_model") or _config.DEFAULT_MODEL)
+    if requested_mode == "standalone" and old_mode == "shared_max":
+        requested_model = old_standalone_model
+
+    if (
+        requested_mode == "standalone"
+        and _config.high_quality_model_warning_required(requested_model)
+        and not confirmed_low_ram
+    ):
+        ram_bytes = _config.physical_memory_bytes()
+        ram_gb = max(1, round(ram_bytes / (1024 ** 3))) if ram_bytes else 0
+        return _runtime_settings_payload(
+            confirmation_required=True,
+            ram_gb=ram_gb,
+        )
+
+    control = _get_model_server_control_settings()
+    desired_running = control.get("desired_state") == "running"
+
+    async with _model_server_action_lock:
         try:
-            changed = set_runtime_settings(
-                model=requested,
-                thinking_budget=int(thinking_budget),
-            )
+            if requested_mode == "shared_max":
+                shared = await asyncio.to_thread(
+                    _shared_max_server_status, port=requested_port,
+                )
+                if not shared.get("healthy"):
+                    return _runtime_settings_payload(
+                        error=shared.get("error") or "MAX test server is unavailable"
+                    )
+                requested_model = str(shared.get("loaded_model") or "")
+                if old_mode == "standalone" and old_port != requested_port:
+                    old_status = await asyncio.to_thread(_model_server_status)
+                    if old_status.get("running") and old_status.get("owned"):
+                        await asyncio.to_thread(_stop_owned_model_server, port=old_port)
+                changed = set_runtime_settings(
+                    model=requested_model,
+                    thinking_budget=requested_budget,
+                    server_mode="shared_max",
+                    server_port=requested_port,
+                )
+                _config.adopt_shared_model(requested_model)
+            else:
+                changed = set_runtime_settings(
+                    model=requested_model,
+                    thinking_budget=requested_budget,
+                    server_mode="standalone",
+                    server_port=requested_port,
+                )
+                server_changed = any(changed.get(key) for key in (
+                    "model_changed", "server_mode_changed", "server_port_changed",
+                ))
+                if desired_running and server_changed:
+                    if old_mode == "standalone":
+                        await asyncio.to_thread(
+                            _restart_owner_model_server,
+                            _VLM_SWITCH_TIMEOUT_SECONDS,
+                            previous_port=old_port,
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            _start_owner_model_server,
+                            _VLM_SWITCH_TIMEOUT_SECONDS,
+                        )
         except Exception as exc:
-            return _runtime_settings_payload(error=str(exc))
+            rollback_error = ""
+            try:
+                set_runtime_settings(
+                    model=old_model,
+                    thinking_budget=old_budget,
+                    server_mode=old_mode,
+                    server_port=old_port,
+                )
+                if old_mode == "shared_max":
+                    _config.adopt_shared_model(old_model)
+                elif desired_running:
+                    await asyncio.to_thread(
+                        _start_owner_model_server,
+                        _VLM_SWITCH_TIMEOUT_SECONDS,
+                    )
+            except Exception as rollback_exc:
+                rollback_error = f"; rollback failed: {rollback_exc}"
+            return _runtime_settings_payload(
+                switch_state="error",
+                error=f"runtime/server switch failed: {exc}{rollback_error}",
+            )
 
-        if changed.get("model_changed") or changed.get("thinking_budget_changed"):
+        if any(changed.get(key) for key in (
+            "model_changed", "thinking_budget_changed", "server_mode_changed", "server_port_changed",
+        )):
             _rebuild_runtime_llms()
             log.info(
-                "runtime settings applied model=%s thinking_budget=%s",
-                get_model(), get_thinking_budget(),
+                "runtime settings applied model=%s budget=%s mode=%s port=%s",
+                get_model(), get_thinking_budget(), get_server_mode(), get_server_port(),
             )
 
-    return _runtime_settings_payload()
+    return _runtime_settings_payload(
+        switch_state="ready"
+        if any(changed.get(key) for key in ("model_changed", "server_mode_changed", "server_port_changed"))
+        else "idle"
+    )
+
+
+async def _model_server_watchdog_loop() -> None:
+    """Recover only a missing Agent TH-owned standalone server."""
+    retry_at = 0.0
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            await asyncio.sleep(_MODEL_WATCHDOG_INTERVAL_SECONDS)
+            if get_server_mode() != "standalone":
+                continue
+            control = _get_model_server_control_settings()
+            if not control.get("watchdog_enabled", True) or control.get("desired_state") != "running":
+                continue
+            if _busy.locked() or _model_server_action_lock.locked():
+                continue
+            status = await asyncio.to_thread(_model_server_status)
+            if status.get("running"):
+                continue
+            now = loop.time()
+            if now < retry_at:
+                continue
+            retry_at = now + _MODEL_WATCHDOG_RETRY_SECONDS
+            async with _model_server_action_lock:
+                latest = _get_model_server_control_settings()
+                if get_server_mode() != "standalone":
+                    continue
+                if not latest.get("watchdog_enabled", True) or latest.get("desired_state") != "running":
+                    continue
+                try:
+                    await asyncio.to_thread(
+                        _reconcile_runtime_server,
+                        _VLM_SWITCH_TIMEOUT_SECONDS,
+                    )
+                    retry_at = 0.0
+                    log.info("Standalone Agent TH model-server watchdog recovered owner server")
+                except Exception as exc:
+                    log.warning("Standalone Agent TH model-server recovery failed: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Agent TH model-server watchdog iteration failed")
 
 
 # ── Agent Awake — host wiring ──────────────────────────────────────────────────
@@ -935,6 +1170,8 @@ def get_status():
         "skills": _list_skills(),
         "builtin_cmds": _load_builtin_cmds(),
         "model": get_model(),
+        "model_server_mode": get_server_mode(),
+        "model_server_port": get_server_port(),
     }
 
 
@@ -1414,9 +1651,29 @@ async def ws_endpoint(websocket: WebSocket):
                 result = await _apply_runtime_settings(
                     str(data.get("model", "")),
                     data.get("thinking_budget", get_thinking_budget()),
+                    str(data.get("server_mode", get_server_mode())),
+                    data.get("server_port", get_server_port()),
+                    confirmed_low_ram=bool(data.get("confirmed_low_ram", False)),
                 )
                 await websocket.send_json(result)
                 await websocket.send_json({"type": "status", **get_status()})
+                await websocket.send_json(await _model_server_status_payload())
+
+            elif msg_type == "get_model_server_status":
+                await websocket.send_json(await _model_server_status_payload())
+
+            elif msg_type == "set_model_server_watchdog":
+                await websocket.send_json(
+                    await _apply_model_server_watchdog(bool(data.get("enabled", False)))
+                )
+
+            elif msg_type == "model_server_action":
+                action = str(data.get("action", "")).strip().lower()
+                if action in {"start", "stop", "reset"}:
+                    await websocket.send_json(_model_server_progress_payload({
+                        "start": "starting", "stop": "stopping", "reset": "resetting",
+                    }[action]))
+                await websocket.send_json(await _apply_model_server_action(action))
 
             elif msg_type == "get_history":
                 # Open a fresh read-only connection to avoid thread-safety issues
@@ -1470,11 +1727,30 @@ async def ws_endpoint(websocket: WebSocket):
 
 @api.on_event("startup")
 async def _start_awake_engine() -> None:
-    """Capture the live asyncio loop (needed by _awake_fire's
-    run_coroutine_threadsafe), create the awake fire queue, start its single
-    consumer task, then start the engine's own tick thread."""
-    global _awake_loop, _awake_engine, _awake_queue, _awake_worker_task
+    """Start standalone model ownership/watchdog, then Awake on the live loop."""
+    global _awake_loop, _awake_engine, _awake_queue, _awake_worker_task, _model_watchdog_task
     _awake_loop = asyncio.get_running_loop()
+
+    runtime = get_runtime_settings()
+    if not runtime.get("runtime_locked"):
+        try:
+            shared = await asyncio.to_thread(_auto_attach_max_test_server_if_present)
+            if shared is not None:
+                log.info(
+                    "Detected Agent MAX VLM test server on :%s; using read-only shared mode",
+                    get_server_port(),
+                )
+            startup_model = await asyncio.to_thread(_reconcile_runtime_server)
+            log.info(
+                "Model server startup mode=%s state=%s port=%s",
+                get_server_mode(), startup_model.get("state"), get_server_port(),
+            )
+        except Exception as exc:
+            # Keep the control plane/UI available even if the model is missing,
+            # occupied, loading, or the optional MAX test server is offline.
+            log.error("Model server startup reconcile failed: %s", exc)
+        _model_watchdog_task = asyncio.create_task(_model_server_watchdog_loop())
+
     _awake_queue = asyncio.Queue()
     _awake_worker_task = asyncio.create_task(_awake_queue_worker())
     _awake_engine = AwakeEngine(fire=_awake_fire, registry=Registry(), owner="agent_server")
@@ -1484,12 +1760,15 @@ async def _start_awake_engine() -> None:
 
 @api.on_event("shutdown")
 async def _stop_awake_engine() -> None:
-    global _awake_worker_task
+    global _awake_worker_task, _model_watchdog_task
     if _awake_engine is not None:
         _awake_engine.stop()
     if _awake_worker_task is not None:
         _awake_worker_task.cancel()
         _awake_worker_task = None
+    if _model_watchdog_task is not None:
+        _model_watchdog_task.cancel()
+        _model_watchdog_task = None
     # A pending coalesced fire left in _awake_pending would coalesce-skip
     # every future fire for that watch_id forever (the guard checks
     # `if watch_id in _awake_pending`) — clear it so a restart starts clean.

@@ -358,7 +358,7 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
         from browser_use import Agent as BUAgent, BrowserProfile
         from browser_use.browser.session import BrowserSession
         from browser_use.llm import ChatOpenAI  # browser-use 0.12+ dropped langchain — needs its own BaseChatModel (has .provider)
-        from config import MLX_BASE_URL, API_KEY, get_model
+        from config import get_mlx_base_url, API_KEY, get_model
     except ImportError as e:
         return f"[error] browser-use not installed: {e}"
 
@@ -389,7 +389,7 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
     async def _run() -> str:
         try:
             llm = ChatOpenAI(
-                base_url=MLX_BASE_URL,
+                base_url=get_mlx_base_url(),
                 api_key=API_KEY,
                 model=get_model(),
                 temperature=0.1,

@@ -26,7 +26,7 @@ from typing import Callable
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from config import MLX_BASE_URL, RECURSION_LIMIT as _RECURSION_LIMIT
+from config import get_mlx_base_url, RECURSION_LIMIT as _RECURSION_LIMIT
 
 # ── Shared paths & constants ───────────────────────────────────────────────────
 
@@ -124,7 +124,7 @@ class ThinkingTimer:
 
 def mlx_up() -> bool:
     try:
-        with urllib.request.urlopen(MLX_BASE_URL.rstrip("/") + "/models", timeout=3):
+        with urllib.request.urlopen(get_mlx_base_url().rstrip("/") + "/models", timeout=3):
             return True
     except Exception:
         return False

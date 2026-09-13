@@ -132,13 +132,14 @@ def main() -> int:
         # หา port จาก config (ต้องอยู่ใน V2 root เพื่อ import)
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         try:
-            from config import MLX_BASE_URL
-            m = re.search(r":(\d+)/", MLX_BASE_URL)
+            from config import get_mlx_base_url
+            base_url = get_mlx_base_url()
+            m = re.search(r":(\d+)/", base_url)
             if not m:
-                print(f"[!] หา port จาก MLX_BASE_URL ไม่ได้: {MLX_BASE_URL}")
+                print(f"[!] หา port จาก runtime endpoint ไม่ได้: {base_url}")
                 return 1
             keep_port = int(m.group(1))
-            print(f"\n--keep-config → port จาก config.MLX_BASE_URL = {keep_port}")
+            print(f"\n--keep-config → runtime model port = {keep_port}")
         except Exception as e:
             print(f"[!] import config ไม่ได้: {e}")
             return 1

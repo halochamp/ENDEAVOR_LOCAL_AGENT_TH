@@ -24,19 +24,28 @@ except ImportError:
     pass
 
 # ── Model + backend ───────────────────────────────────────────────────────
-_DEFAULT_URL = "http://localhost:8085/v1"
+_DEFAULT_SERVER_PORT = 8085
+_SHARED_MAX_TEST_PORT = 8085
+_DEFAULT_URL = f"http://localhost:{_DEFAULT_SERVER_PORT}/v1"
 DEFAULT_MODEL = "Qwen/Qwen3-14B-MLX-4bit"
 COMPACT_VLM_MODEL = "mlx-community/Qwen3.5-9B-4bit"
 HIGH_QUALITY_MODEL = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
 LOW_RAM_WARNING_BYTES = 24 * 1024 * 1024 * 1024
+SERVER_MODES = ("standalone", "shared_max")
+SERVER_MODE_LABELS = {
+    "standalone": "Standalone · Agent TH owns server",
+    "shared_max": "Shared MAX test server · read-only",
+}
 
-MLX_BASE_URL = os.getenv("MLX_BASE_URL", _DEFAULT_URL)
-# Keep custom-backend behavior explicit: V2_MODEL becomes authoritative only
-# when MLX_BASE_URL also points away from the default local endpoint. Normal
-# 9B/14B/35B switching on :8085 is owned by the shared runtime settings instead.
+# Explicit MLX_BASE_URL + V2_MODEL remains a development/custom-backend override.
+# Without that override, Agent TH owns the local endpoint and may move its
+# standalone port at runtime. The special shared_max mode is read-only and
+# points at the configured MAX test-server port (default :8085).
+_MLX_BASE_URL_OVERRIDE = os.getenv("MLX_BASE_URL", "").strip()
+MLX_BASE_URL = _MLX_BASE_URL_OVERRIDE or _DEFAULT_URL
 _model_env = os.getenv("V2_MODEL")
-MODEL = _model_env if (_model_env and MLX_BASE_URL != _DEFAULT_URL) else DEFAULT_MODEL
-if MLX_BASE_URL != _DEFAULT_URL and not _model_env:
+MODEL = _model_env if (_model_env and _MLX_BASE_URL_OVERRIDE) else DEFAULT_MODEL
+if _MLX_BASE_URL_OVERRIDE and not _model_env:
     import sys
     print(
         f"[config] WARNING: MLX_BASE_URL overridden to {MLX_BASE_URL} but V2_MODEL is not set — "
@@ -46,9 +55,9 @@ if MLX_BASE_URL != _DEFAULT_URL and not _model_env:
 API_KEY      = os.getenv("MLX_API_KEY",  "x")  # mlx_vlm.server ใช้ --api-key ได้ แต่ ChatOpenAI ต้องมี non-empty
 
 # ── Runtime model + generation ────────────────────────────────────────────
-# The desktop UI may share an already-running :8085 with Agent MAX VLM during
-# development. Runtime selection therefore belongs to the TH agent client;
-# the Electron host only restarts :8085 when it started that server itself.
+# Agent TH owns its standalone model-server lifecycle. A special read-only
+# shared-test mode may attach to Agent MAX VLM's current test server (default
+# :8085) without taking process/model ownership from MAX VLM.
 MODEL_CHOICES = (
     DEFAULT_MODEL,
     COMPACT_VLM_MODEL,
@@ -82,11 +91,13 @@ _RUNTIME_SETTINGS_PATH = (
     else os.path.join(_PROJECT_DIR, "workspace", "runtime_settings.json")
 )
 _runtime_settings_lock = threading.Lock()
-_SHARED_MLX_MODEL = os.getenv("TH_SHARED_MLX_MODEL", "").strip()
-_ENV_MODEL_LOCKED = bool(_model_env and MLX_BASE_URL != _DEFAULT_URL)
-_LOCKED_MODEL = _SHARED_MLX_MODEL or (MODEL if _ENV_MODEL_LOCKED else "")
+_ENV_MODEL_LOCKED = bool(_model_env and _MLX_BASE_URL_OVERRIDE)
+_LOCKED_MODEL = MODEL if _ENV_MODEL_LOCKED else ""
 _current_model = _LOCKED_MODEL or MODEL
+_current_standalone_model = _current_model
 _current_thinking_budget = THINKING_BUDGET
+_current_server_mode = "standalone"
+_current_server_port = _DEFAULT_SERVER_PORT
 
 
 def physical_memory_bytes() -> int:
@@ -108,23 +119,40 @@ def high_quality_model_warning_required(model: str, *, ram_bytes: int | None = N
     return str(model or "").strip() == HIGH_QUALITY_MODEL and 0 < total < LOW_RAM_WARNING_BYTES
 
 
-def _runtime_payload(model: str, thinking_budget: int) -> dict:
+def _validate_server_port(server_port: int) -> int:
+    port = int(server_port)
+    if not 1024 <= port <= 65535:
+        raise ValueError(f"unsupported model server port: {port}")
+    return port
+
+
+def _runtime_payload(
+    model: str,
+    thinking_budget: int,
+    server_mode: str,
+    server_port: int,
+    standalone_model: str,
+) -> dict:
     return {
         "owner": "agent_th",
         "model": model,
-        "thinking_budget": thinking_budget,
+        "standalone_model": standalone_model,
+        "thinking_budget": int(thinking_budget),
+        "server_mode": str(server_mode),
+        "server_port": int(server_port),
     }
 
 
-def _validate_runtime_values(model: str, thinking_budget: int) -> None:
-    if _LOCKED_MODEL:
-        if model != _LOCKED_MODEL:
-            reason = "shared server" if _SHARED_MLX_MODEL else "environment override"
-            raise ValueError(f"model is locked by {reason}: {_LOCKED_MODEL}")
-    elif model not in MODEL_CHOICES:
+def _validate_runtime_values(model: str, thinking_budget: int, server_mode: str, server_port: int) -> None:
+    if _LOCKED_MODEL and model != _LOCKED_MODEL:
+        raise ValueError(f"model is locked by environment override: {_LOCKED_MODEL}")
+    if not _LOCKED_MODEL and model not in MODEL_CHOICES:
         raise ValueError(f"unsupported model: {model}")
-    if thinking_budget not in _THINKING_BUDGET_VALUES:
+    if int(thinking_budget) not in _THINKING_BUDGET_VALUES:
         raise ValueError(f"unsupported thinking budget: {thinking_budget}")
+    if str(server_mode) not in SERVER_MODES:
+        raise ValueError(f"unsupported server mode: {server_mode}")
+    _validate_server_port(server_port)
 
 
 def _read_runtime_settings_file() -> dict | None:
@@ -136,23 +164,28 @@ def _read_runtime_settings_file() -> dict | None:
     if not isinstance(payload, dict) or payload.get("owner") != "agent_th":
         return None
     model = payload.get("model")
+    standalone_model = payload.get("standalone_model", model)
     try:
         budget = int(payload.get("thinking_budget"))
+        mode = str(payload.get("server_mode") or "standalone")
+        port = _validate_server_port(payload.get("server_port", _DEFAULT_SERVER_PORT))
+        _validate_runtime_values(model, budget, mode, port)
+        if standalone_model not in MODEL_CHOICES:
+            raise ValueError("invalid standalone model")
     except (TypeError, ValueError):
         return None
-    valid_model = model in MODEL_CHOICES or bool(_LOCKED_MODEL and model == _LOCKED_MODEL)
-    if not valid_model or budget not in _THINKING_BUDGET_VALUES:
-        return None
-    return _runtime_payload(model, budget)
+    return _runtime_payload(model, budget, mode, port, standalone_model)
 
 
 def get_persisted_runtime_settings() -> dict | None:
-    """Return the validated shared UI config without changing live runtime state."""
+    """Return validated persisted owner settings without changing live state."""
     return _read_runtime_settings_file()
 
 
 def refresh_runtime_settings_from_file() -> bool:
-    global _current_model, _current_thinking_budget
+    global _current_model, _current_standalone_model, _current_thinking_budget, _current_server_mode, _current_server_port, MLX_BASE_URL
+    if _MLX_BASE_URL_OVERRIDE:
+        return False
     payload = _read_runtime_settings_file()
     if payload is None:
         return False
@@ -160,9 +193,16 @@ def refresh_runtime_settings_from_file() -> bool:
     changed = (
         model != _current_model
         or payload["thinking_budget"] != _current_thinking_budget
+        or payload["standalone_model"] != _current_standalone_model
+        or payload["server_mode"] != _current_server_mode
+        or payload["server_port"] != _current_server_port
     )
     _current_model = model
+    _current_standalone_model = payload["standalone_model"]
     _current_thinking_budget = payload["thinking_budget"]
+    _current_server_mode = payload["server_mode"]
+    _current_server_port = payload["server_port"]
+    MLX_BASE_URL = get_mlx_base_url()
     return changed
 
 
@@ -170,9 +210,42 @@ def get_model() -> str:
     return _current_model
 
 
+def adopt_shared_model(model: str) -> bool:
+    """Use the model observed on the read-only shared MAX server for this process.
+
+    This is intentionally transient: switching back to standalone persists an
+    explicit owner selection through ``set_runtime_settings``.
+    """
+    global _current_model
+    model = str(model or "").strip()
+    if model not in MODEL_CHOICES:
+        raise ValueError(f"unsupported shared MAX model: {model}")
+    changed = model != _current_model
+    _current_model = model
+    return changed
+
+
+def get_standalone_model() -> str:
+    return _current_standalone_model
+
+
 def get_model_label(model: str | None = None) -> str:
     value = model or get_model()
     return MODEL_LABELS.get(value, value.split("/")[-1])
+
+
+def get_server_mode() -> str:
+    return str(_current_server_mode)
+
+
+def get_server_port() -> int:
+    return int(_current_server_port)
+
+
+def get_mlx_base_url() -> str:
+    if _MLX_BASE_URL_OVERRIDE:
+        return _MLX_BASE_URL_OVERRIDE
+    return f"http://localhost:{get_server_port()}/v1"
 
 
 def get_thinking_budget() -> int:
@@ -189,10 +262,14 @@ def get_thinking_budget_label(thinking_budget: int | None = None) -> str:
 
 def get_runtime_settings() -> dict:
     if _LOCKED_MODEL:
-        prefix = "Shared" if _SHARED_MLX_MODEL else "Env"
         model_options = [{
             "value": _LOCKED_MODEL,
-            "label": f"{prefix} · {MODEL_LABELS.get(_LOCKED_MODEL, _LOCKED_MODEL)}",
+            "label": f"Env · {MODEL_LABELS.get(_LOCKED_MODEL, _LOCKED_MODEL)}",
+        }]
+    elif get_server_mode() == "shared_max":
+        model_options = [{
+            "value": get_model(),
+            "label": f"Shared MAX · {MODEL_LABELS.get(get_model(), get_model())}",
         }]
     else:
         model_options = [
@@ -201,10 +278,18 @@ def get_runtime_settings() -> dict:
         ]
     return {
         "model": get_model(),
+        "standalone_model": get_standalone_model(),
         "thinking_budget": get_thinking_budget(),
-        "shared_server": bool(_SHARED_MLX_MODEL),
-        "model_locked": bool(_LOCKED_MODEL),
+        "server_mode": get_server_mode(),
+        "server_port": get_server_port(),
+        "shared_server": get_server_mode() == "shared_max",
+        "model_locked": bool(_LOCKED_MODEL) or get_server_mode() == "shared_max",
+        "runtime_locked": bool(_MLX_BASE_URL_OVERRIDE),
         "model_options": model_options,
+        "server_mode_options": [
+            {"value": mode, "label": SERVER_MODE_LABELS[mode]}
+            for mode in SERVER_MODES
+        ],
         "thinking_options": [
             {"label": label, "value": value}
             for label, value in THINKING_BUDGET_LEVELS
@@ -212,16 +297,31 @@ def get_runtime_settings() -> dict:
     }
 
 
-def set_runtime_settings(*, model: str, thinking_budget: int) -> dict:
-    """Persist TH client selection without taking ownership of the MLX server."""
-    global _current_model, _current_thinking_budget
+def set_runtime_settings(
+    *,
+    model: str,
+    thinking_budget: int,
+    server_mode: str | None = None,
+    server_port: int | None = None,
+) -> dict:
+    """Persist Agent TH model/budget/server-mode/port atomically."""
+    global _current_model, _current_standalone_model, _current_thinking_budget, _current_server_mode, _current_server_port, MLX_BASE_URL
+    if _MLX_BASE_URL_OVERRIDE:
+        raise ValueError("runtime UI selection is disabled when MLX_BASE_URL is overridden")
     model = str(model or "").strip()
     thinking_budget = int(thinking_budget)
-    _validate_runtime_values(model, thinking_budget)
+    server_mode = get_server_mode() if server_mode is None else str(server_mode or "").strip()
+    server_port = get_server_port() if server_port is None else _validate_server_port(server_port)
+    _validate_runtime_values(model, thinking_budget, server_mode, server_port)
     with _runtime_settings_lock:
         old_model = _current_model
         old_budget = _current_thinking_budget
-        payload = _runtime_payload(model, thinking_budget)
+        old_mode = _current_server_mode
+        old_port = _current_server_port
+        standalone_model = model if server_mode == "standalone" else _current_standalone_model
+        payload = _runtime_payload(
+            model, thinking_budget, server_mode, server_port, standalone_model,
+        )
         state_dir = os.path.dirname(_RUNTIME_SETTINGS_PATH)
         os.makedirs(state_dir, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(prefix=".runtime_settings.", suffix=".tmp", dir=state_dir)
@@ -236,10 +336,16 @@ def set_runtime_settings(*, model: str, thinking_budget: int) -> dict:
                 pass
             raise
         _current_model = model
+        _current_standalone_model = standalone_model
         _current_thinking_budget = thinking_budget
+        _current_server_mode = server_mode
+        _current_server_port = server_port
+        MLX_BASE_URL = get_mlx_base_url()
     return {
         "model_changed": model != old_model,
         "thinking_budget_changed": thinking_budget != old_budget,
+        "server_mode_changed": server_mode != old_mode,
+        "server_port_changed": server_port != old_port,
         **get_runtime_settings(),
     }
 

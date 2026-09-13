@@ -4,8 +4,9 @@
 #
 # Does everything needed to reach a working desktop app from a totally fresh
 # clone: one-time Python/conda setup if missing, then the AGENT_UI (Electron)
-# app, which auto-starts mlx_vlm.server + agent_server.py itself and shuts
-# them down again when the window closes.
+# app. agent_server.py owns the local model-server lifecycle/watchdog itself;
+# Electron is only the UI host. A verified Agent MAX VLM test server may be
+# attached read-only instead of starting a competing server.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
@@ -92,7 +93,7 @@ if [ ! -d node_modules ]; then
   echo
 fi
 
-echo "[start] กำลังเปิด ENDEAVOR Agent — mlx_vlm.server + agent server จะเปิดให้อัตโนมัติ..."
+echo "[start] กำลังเปิด ENDEAVOR Agent — Agent TH จะดูแล model server + agent server ให้อัตโนมัติ..."
 echo
 npm start
 

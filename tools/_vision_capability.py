@@ -63,9 +63,9 @@ _NO_VISION_RESPONSE_RE = re.compile(
 def capability_key(endpoint: str | None = None, model: str | None = None) -> tuple[str, str]:
     """Return the normalized process-local key for an endpoint/model pair."""
     if endpoint is None or model is None:
-        from config import MLX_BASE_URL, get_model
+        from config import get_mlx_base_url, get_model
 
-        endpoint = MLX_BASE_URL if endpoint is None else endpoint
+        endpoint = get_mlx_base_url() if endpoint is None else endpoint
         model = get_model() if model is None else model
     return (str(endpoint).strip().rstrip("/"), str(model).strip())
 

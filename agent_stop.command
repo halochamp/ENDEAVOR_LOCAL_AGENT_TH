@@ -21,12 +21,10 @@ fi
 echo "=== ENDEAVOR_LOCAL_AGENT_TH — เคลียร์โปรแกรมที่ค้างอยู่ ==="
 echo
 
-# Mirrors config.py's MLX_BASE_URL override so
-# this kills whatever port the user actually configured, not just 8085.
-_DEFAULT_MLX_URL="http://localhost:8085/v1"
-_MLX_URL="${MLX_BASE_URL:-$_DEFAULT_MLX_URL}"
-MLX_PORT="$(printf '%s' "$_MLX_URL" | sed -nE 's#^https?://[^:/]+:([0-9]+).*#\1#p')"
-[ -z "$MLX_PORT" ] && MLX_PORT=8085
+# Agent TH's model_runtime.py is the process-ownership authority. It stops only
+# a verified TH-owned standalone launcher and refuses the special shared MAX
+# test server, so this cleanup can never kill MAX VLM merely because it uses
+# the same default :8085 port.
 AGENT_PORT="${AGENT_SERVER_PORT:-8765}"
 
 _kill_port() {
@@ -40,7 +38,11 @@ _kill_port() {
   fi
 }
 
-_kill_port "$MLX_PORT" "mlx_vlm.server"
+if python3 "$SCRIPT_DIR/model_runtime.py" stop >/dev/null 2>&1; then
+  echo "[stop] Agent TH-owned model server — stopped / already stopped"
+else
+  echo "[skip] model server — shared/foreign/custom backend left untouched"
+fi
 _kill_port "$AGENT_PORT" "agent_server.py"
 
 # Anything matched below is scoped by cwd == this repo (or AGENT_UI/) —

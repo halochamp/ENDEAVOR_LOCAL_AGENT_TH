@@ -263,9 +263,34 @@ body {
   flex: 1; overflow-y: auto; padding: 12px 10px;
   display: flex; flex-direction: column; gap: 12px;
 }
+.settings-section {
+  border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg3); padding: 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.settings-title { font-size: 11px; font-weight: 600; color: var(--text); }
+.settings-input {
+  width: 100%; box-sizing: border-box; background: var(--bg2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px; padding: 6px 7px;
+  font: 10px var(--mono); outline: none;
+}
+.settings-input:focus { border-color: var(--accent); }
+.settings-input:disabled { opacity:.55; }
+.settings-help { font-size: 9px; line-height: 1.45; color: var(--text-faint); }
+.settings-status { font-size: 10px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
+.settings-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.settings-status-dot.on { background: var(--green); }
+.settings-status-dot.err { background: var(--red); }
+.settings-actions { display: flex; gap: 6px; }
+.settings-actions .btn { flex: 1; }
+.settings-toggle-row {
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  font-size:10px; color:var(--text-dim);
+}
+.settings-toggle-row input { accent-color:var(--accent); }
 .settings-runtime {
   display:grid; grid-template-columns:18px 1fr; gap:6px 7px; align-items:center;
-  padding:2px 1px 10px;
+  padding:2px 1px 10px; border-bottom:1px solid var(--border);
 }
 .settings-glyph { color:var(--text-faint); font-size:11px; text-align:center; }
 .settings-select {
@@ -640,11 +665,33 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       <div class="panel-hdr">⚙️ Settings</div>
       <div class="settings-body">
         <div class="settings-runtime">
+          <span class="settings-glyph" title="Server mode">◆</span>
+          <select class="settings-select" id="runtime-server-mode" title="Server mode"></select>
           <span class="settings-glyph" title="Model">◉</span>
           <select class="settings-select" id="runtime-model" title="Model"></select>
           <span class="settings-glyph" title="Think budget">◌</span>
           <select class="settings-select" id="runtime-think" title="Think budget"></select>
+          <span class="settings-glyph" title="Model server port">:</span>
+          <input class="settings-input" id="runtime-port" type="number" min="1024" max="65535" step="1" title="Model server port">
           <div class="settings-runtime-status" id="runtime-status"></div>
+        </div>
+        <div class="settings-section">
+          <div class="settings-title" id="model-server-title">Model Server · :8085</div>
+          <div class="settings-status">
+            <span class="settings-status-dot" id="model-server-status-dot"></span>
+            <span id="model-server-status-text">กำลังโหลด…</span>
+          </div>
+          <label class="settings-toggle-row" for="model-server-watchdog">
+            <span>Watchdog</span>
+            <input id="model-server-watchdog" type="checkbox" checked>
+          </label>
+          <div class="settings-help" id="model-server-help">Standalone: Agent TH ดูแล model server เองโดยตรง. Shared MAX: ใช้ server ทดสอบของ Agent MAX VLM แบบ read-only (default :8085) และ TH จะไม่ Start/Stop/Reset หรือเปลี่ยน model ของ MAX.</div>
+          <div class="settings-actions">
+            <button class="btn btn-primary" id="model-server-start-btn">Start</button>
+            <button class="btn btn-ghost" id="model-server-stop-btn">Stop</button>
+            <button class="btn btn-ghost" id="model-server-reset-btn">Reset</button>
+          </div>
+          <div class="settings-help" id="model-server-error" style="color:var(--red);display:none"></div>
         </div>
       </div>
     </div>

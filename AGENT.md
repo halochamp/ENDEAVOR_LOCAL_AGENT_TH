@@ -18,7 +18,8 @@ Important components documented by the project include:
 - `react.py` / planner logic — model/tool reasoning and planning;
 - `graph.py` — LangGraph state/routing/retry behavior;
 - `llm.py` — local OpenAI-compatible MLX client;
-- `runtime_common.py` — shared runtime behavior used by CLI and the Electron backend path;
+- `runtime_common.py` — shared turn/runtime behavior used by CLI and the Electron backend path;
+- `model_runtime.py` — shared model-server owner state/lifecycle for Standalone mode, plus the read-only Shared MAX boundary;
 - `agent_server.py` — authenticated WebSocket/REST backend for Electron and explicit custom clients;
 - `endeavor_agent.py` — CLI front end;
 - `AGENT_UI/` — Electron desktop front end;
@@ -84,4 +85,4 @@ Do not commit `.agent_token`, `.env`, logs, history DBs, memory files, workspace
 
 Full workflow: [`AGENT_PROCEDURE.md`](AGENT_PROCEDURE.md).
 
-**Mental model:** one local agent runtime, two supported front ends (CLI + Electron), one shared runtime config, explicit auth/sandbox boundaries, model-specific behavior.
+**Mental model:** one local agent runtime, two supported front ends (CLI + Electron), one shared runtime/model-server owner state. Standalone is TH-owned; Shared MAX is a verified read-only client mode that must never mutate Agent MAX VLM's server. Explicit auth/sandbox boundaries and model-specific behavior remain unchanged.

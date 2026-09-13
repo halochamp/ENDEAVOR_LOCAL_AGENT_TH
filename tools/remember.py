@@ -56,10 +56,10 @@ def _llm_chat(prompt: str, max_tokens: int = 800) -> str:
     """One non-streaming completion against the production model. Raises on any failure —
     every caller has a deterministic fallback; a memory save must never fail because of the LLM."""
     import requests
-    from config import MLX_BASE_URL, get_model
+    from config import get_mlx_base_url, get_model
 
     r = requests.post(
-        f"{MLX_BASE_URL}/chat/completions",
+        f"{get_mlx_base_url()}/chat/completions",
         json={
             "model": get_model(),
             "messages": [{"role": "user", "content": prompt}],

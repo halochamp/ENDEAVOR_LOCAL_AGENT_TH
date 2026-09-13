@@ -53,9 +53,9 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 
 ## เริ่มใช้งานเร็ว (Quick Start)
 
-**ทางลัด — ไม่อยากยุ่งกับ terminal เลย:** ดับเบิลคลิก `agent_start.command` ที่ root ของโปรเจกต์ — เปิดครั้งแรกจะติดตั้งให้อัตโนมัติทั้งหมด (conda env + AGENT_UI dependencies) แล้วเปิด desktop app ให้เลย โดยไม่ต้องเปิด MLX server เองแยกต่างหาก (AGENT_UI จัดการให้เองในตัว) ครั้งต่อๆ ไปดับเบิลคลิกซ้ำแค่เปิดแอปตรงๆ ไม่ติดตั้งซ้ำ
+**ทางลัด — ไม่อยากยุ่งกับ terminal เลย:** ดับเบิลคลิก `agent_start.command` ที่ root ของโปรเจกต์ — เปิดครั้งแรกจะติดตั้งให้อัตโนมัติทั้งหมด (conda env + AGENT_UI dependencies) แล้วเปิด desktop app ให้เลย โดยไม่ต้องเปิด MLX server เองแยกต่างหาก. `agent_server.py` + `model_runtime.py` ดูแล model server, port และ watchdog ของ Agent TH เอง; Electron เป็น UI host ไม่ใช่ process owner
 
-มีปัญหา/อยากเริ่มใหม่สะอาดๆ → ดับเบิลคลิก `agent_stop.command` — จะเคลียร์ process ตามพอร์ตและโฟลเดอร์ของโปรเจกต์ที่กำหนดไว้ (ไม่แตะ workspace/ข้อมูล/config) แล้วค่อยเปิด `agent_start.command` ใหม่
+มีปัญหา/อยากเริ่มใหม่สะอาดๆ → ดับเบิลคลิก `agent_stop.command` — จะหยุดเฉพาะ model server ที่ตรวจยืนยันว่า Agent TH เป็นเจ้าของและหยุด Agent/UI backend. ถ้ากำลังใช้ **Shared MAX test server** สคริปต์จะปล่อย server ของ MAX VLM ไว้ไม่แตะต้อง
 
 หรือทำเองทีละขั้นผ่าน terminal:
 
@@ -63,12 +63,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 # ขั้นที่ 1: ติดตั้งครั้งเดียว (สร้าง conda env "mlx" + ติดตั้งทุกอย่าง + copy .env)
 bash install_library/install.sh
 
-# ขั้นที่ 2: เปิด MLX server (terminal แยก — เปิดทิ้งไว้ตลอด)
-conda activate mlx
-APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
-python -m mlx_vlm.server --model Qwen/Qwen3-14B-MLX-4bit --host 127.0.0.1 --port 8085
-
-# ขั้นที่ 3: รัน agent — เลือก UI ที่ต้องการ
+# ขั้นที่ 2: รัน agent — model server จะถูกดูแลให้อัตโนมัติ
 
 # แบบ CLI: activate เอง
 conda activate mlx && python endeavor_agent.py
@@ -76,11 +71,11 @@ conda activate mlx && python endeavor_agent.py
 # แบบ CLI: run.sh (ไม่ต้อง activate — สคริปต์จัดการให้)
 bash run.sh
 
-# แบบ Electron Desktop: AGENT_UI จัดการ agent_server และ MLX lifecycle ให้
+# แบบ Electron Desktop: AGENT_UI เปิด agent_server; Python backend ดูแล MLX lifecycle
 cd AGENT_UI && npm install && npm start
 ```
 
-ถ้า run ไม่ได้เพราะ port ถูกใช้อยู่ (เช่น เปิด server ค้างจากรอบก่อน) ให้รัน `agent_stop.command` เพื่อเคลียร์ process ตามพอร์ตที่โปรเจกต์กำหนด แล้วค่อยเปิด `agent_start.command` ใหม่
+ค่าเริ่มต้นคือ **Standalone** ที่ port `8085`. ถ้า `:8085` ถูก Agent MAX VLM ครอบครองด้วย patched launcher ที่ตรวจยืนยันได้ Agent TH จะเข้า **Shared MAX test server** แบบ read-only อัตโนมัติ: ใช้ model ที่ MAX โหลดอยู่ได้ แต่ไม่ Start/Stop/Reset/Watchdog หรือเปลี่ยน model ของ MAX. Listener อื่นที่ไม่ใช่ MAX จะไม่ถูก adopt หรือ kill
 
 > การติดตั้ง **ไม่บังคับดาวน์โหลดทุกโมเดล**: fresh install ใช้ `Qwen3-14B` เป็น default และดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. ผู้ใช้สามารถเลือก `Qwen3.5-9B-4bit` สำหรับเครื่อง 16GB หรือ `Qwen3.6-35B` สำหรับคุณภาพสูงได้ภายหลัง; 35B บน RAM <24GB จะมีคำเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
 
@@ -120,15 +115,15 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 ## UI ที่มีให้ (2 แบบ)
 
-โปรเจกต์รองรับ **CLI + Electron Desktop** โดยทั้งสองฝั่งใช้ runtime config กลางเดียวกันสำหรับ Model และ Think Budget (`workspace/runtime_settings.json`, override ได้ด้วย `V2_RUNTIME_SETTINGS_PATH`) จึงไม่ต้องตั้งค่าซ้ำคนละ UI
+โปรเจกต์รองรับ **CLI + Electron Desktop** โดยทั้งสองฝั่งใช้ runtime config กลางเดียวกันสำหรับ Model, Think Budget, **Server Mode** และ **Model Server Port** (`workspace/runtime_settings.json`, override ได้ด้วย `V2_RUNTIME_SETTINGS_PATH`) จึงไม่ต้องตั้งค่าซ้ำคนละ UI. ค่าเริ่มต้นคือ `Standalone :8085`
 
 ### 1. CLI (`endeavor_agent.py`)
 
 - รันใน terminal — เบา เร็ว เหมาะกับงานที่ต้องทำซ้ำ ๆ หรือเปิดทิ้งไว้นาน ๆ
 - ระหว่าง agent ทำงาน จะเห็น **spinner 2 บรรทัด** ตลอดเวลา พร้อม context status bar แบบ real-time
 - พิมพ์ `menu` → **Model / Think Budget** เพื่อเลือก model และระดับ Low 256 / Medium 512 / High 1024 / xhigh 1536 / Max 2048
-- Think Budget เปลี่ยนแล้วใช้กับ request ถัดไปได้ทันที และค่าจะถูก Electron อ่านต่อจาก config กลางเดียวกัน
-- หากเลือก **Model** ใหม่ขณะที่ CLI ใช้ MLX process ที่รันอยู่แล้ว CLI จะบันทึกค่ากลางแต่ **ไม่ kill/restart process ที่ตัวเองไม่ได้เป็นเจ้าของ**; ให้ restart MLX หรือเปิด Electron รอบถัดไปเพื่อ apply model ที่เลือก หากตอนเปิด CLI model ใน config ไม่ตรงกับ listener จริง ระบบจะ fail-closed แทนการเดาหรือฆ่า server
+- CLI ใช้ owner state เดียวกับ Electron; ใน `Standalone` Agent TH จะ start/reconcile/restart model server ของตัวเองได้โดยตรงและเคารพ intentional Stop
+- ถ้า runtime อยู่ใน `Shared MAX` Model จะถูกล็อกตาม model ที่ MAX VLM โหลดอยู่; Think Budget ของ TH ยังเปลี่ยนได้ แต่ CLI จะไม่เปลี่ยนหรือหยุด process ของ MAX
 
 ### 2. AGENT_UI — Electron Desktop App
 
@@ -139,10 +134,12 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
   npm install     # โหลด Electron + dependencies (~150MB, ครั้งเดียว)
   npm start
   ```
-- กรณีปกติที่ `:8085` ว่าง แอปจะ spawn `mlx_vlm.server` และ `agent_server.py` ให้อัตโนมัติ คอย monitor และ restart เฉพาะ MLX server ที่แอปเปิดเอง
-- ถ้าพบ MLX listener อยู่บน `:8085` ก่อนแล้ว แอปจะ **adopt server เดิม** โดยอ่าน active model จาก `--model` ของ process ที่ถือ listenerจริง; `/v1/models` เป็น health/compatibility signal เท่านั้น ไม่ใช้เดา active model ถ้าระบุ process/model ไม่ได้จะ fail-closed และปล่อย external server untouched
-- Settings เลือก model และ Think Budget จาก config กลางเดียวกับ CLI; ใน shared-server mode ช่อง Model ล็อกตาม server จริง แต่ Think Budget ยังเปลี่ยนได้ต่อ request ใน standalone mode Electron สามารถสลับ 9B/14B/35B และ restart เฉพาะ server ที่ตัวเองเป็นเจ้าของ พร้อมสถานะ `กำลังสลับโมเดล…` และ `สลับโมเดลเสร็จแล้ว · พร้อมใช้งาน` เมื่อ server ใหม่ตอบสนองแล้ว
-- ปิดแอป = ปิด `agent_server.py` และปิด MLX serverเฉพาะกรณีที่แอปเป็นคนเปิดเอง; external/shared `:8085` จะไม่ถูกแตะ
+- Electron เปิด authenticated `agent_server.py` เท่านั้น; **Python backend/model_runtime เป็น owner ของ MLX lifecycle** จึงทำงาน standalone ได้แม้ไม่มี Electron process manager อื่น
+- Settings มี `Server Mode`, Model, Think Budget, Model Server Port, Watchdog และปุ่ม Start / Stop / Reset. Port default คือ `8085` และ standalone port เลือกได้ `1024–65535`
+- `Standalone`: TH ใช้ owner launcher ของตัวเอง, refuse foreign listener, pin `request.model` ให้ตรง owner model และ watchdog จะกู้เฉพาะ server ที่หายขณะที่ desired state=`running`
+- `Shared MAX test server`: ตรวจ process signature ของ Agent MAX VLM + `/health` ก่อน attach; Model ถูกล็อกตาม MAX และ Start/Stop/Reset/Watchdog ถูกปิดทั้งหมด. Generic external listener จะไม่ถูก adopt
+- ถ้าเปิด TH ขณะที่ MAX VLM ครอบครอง port ที่ TH ตั้งไว้ (default `:8085`) และตรวจยืนยันว่าเป็น MAX จริง TH จะ auto-attach read-only; ถ้า MAX ย้าย port ผู้ใช้ตั้ง Shared MAX port ตามได้
+- ปิด Electron = ปิดเฉพาะ `agent_server.py`; model server standalone ยังคงอยู่ตาม durable owner intent. ใช้ Stop ใน Settings หรือ `agent_stop.command` เมื่อต้องการปิด TH model server
 - Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` ใช้ full OCR fallback อัตโนมัติ ส่วน `Qwen3.5-9B-4bit` และ Qwen3.6-35B เป็นตัวเลือก vision-capable สำหรับ direct image understanding / `computer`
 
 `agent_server.py` ยังคงเป็น authenticated WebSocket/REST **backend ของ Electron และ custom clients** แต่โปรเจกต์ไม่ bundle browser HTML UI แยกอีกต่อไป
@@ -410,7 +407,7 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 >
 > โมเดลที่เล็กกว่านี้ (เช่น 7B/8B ลงไป) ไม่ใช่ target ที่แนะนำของโปรเจกต์ เพราะมีโอกาส tool-call ผิด, หลุด format หรือ reasoning ไม่พอสำหรับ workflow หลายขั้นมากขึ้น
 >
-> สลับโมเดลหลักผ่าน **Electron Settings** หรือ CLI `menu` → **Model / Think Budget** ซึ่งใช้ config กลางเดียวกัน; env var `V2_MODEL` + `MLX_BASE_URL` ยังเป็น advanced override ที่ล็อก model (ดูหัวข้อ [Configuration](#configuration-env))
+> สลับโมเดลหลักผ่าน **Electron Settings** หรือ CLI `menu`; Electron Settings ยังเลือก **Server Mode / Model Server Port / Watchdog / Start / Stop / Reset** ได้ด้วย. `Standalone` เป็นค่า default, ส่วน `Shared MAX` ใช้ server ทดสอบของ Agent MAX VLM แบบ read-only. env var `V2_MODEL` + `MLX_BASE_URL` ยังเป็น advanced override ที่ล็อก runtime (ดูหัวข้อ [Configuration](#configuration-env))
 
 ---
 
@@ -427,12 +424,7 @@ bash install_library/install.sh
 # 3. (optional) แก้ค่า config — ค่า default ใช้งานได้เลย ไม่ต้องแก้ถ้าไม่มีความจำเป็น
 #    nano .env
 
-# 4. เปิด MLX server (terminal แยก)
-conda activate mlx
-APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
-python -m mlx_vlm.server --model Qwen/Qwen3-14B-MLX-4bit --host 127.0.0.1 --port 8085
-
-# 5. รัน agent — เลือก UI ที่ต้องการ
+# 4. รัน agent — model server จะถูก Agent TH ดูแลให้อัตโนมัติ
 
 # CLI (activate เอง)
 conda activate mlx
@@ -465,7 +457,7 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 |---|---|---|
 | LLM Backend | `MLX_BASE_URL`, `V2_MODEL`, `MLX_API_KEY` | เปลี่ยน server/โมเดล |
 | Generation | `V2_TEMPERATURE`, `V2_THINKING_BUDGET`, `V2_REPETITION_PENALTY`, `V2_RECURSION_LIMIT` | tuning การตอบ |
-| Runtime UI State | `V2_RUNTIME_SETTINGS_PATH` | optional path override สำหรับ Model/Think Budget config กลางของ CLI + Electron |
+| Runtime UI State | `V2_RUNTIME_SETTINGS_PATH` | optional path override สำหรับ Model/Think Budget/Server Mode/Model Server Port config กลางของ CLI + Electron |
 | MLX Prefix Cache | `APC_ENABLED`, `APC_EXACT_CACHE_ENTRIES`, `APC_EXACT_PREFIX_GUARD_TOKENS` | ลด prefill/TTFT ของ prefix ที่ซ้ำกัน |
 | Context Window | `V2_CONTEXT_MAX_CHARS` | ขยาย/ลด session length |
 | Agent Server | `AGENT_SERVER_PORT`, `AGENT_SERVER_TOKEN`, `AGENT_AUTH_DISABLED` | ตั้งค่า authenticated backend สำหรับ Electron/custom clients |
@@ -556,7 +548,7 @@ def my_tool(query: str) -> str:
 
 default runtime model คือ **Qwen3-14B-MLX-4bit**. เครื่อง unified memory **16GB** สามารถเลือก **Qwen3.5-9B-4bit (VLM)** ได้จาก Electron Settings หรือ CLI และถ้าต้องการคุณภาพ reasoning สูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)**; เครื่องที่มี RAM ต่ำกว่า 24GB จะได้รับคำเตือนก่อน download/load เฉพาะ 35B แต่ยังยืนยันใช้ได้. `read_image` บน 14B ใช้ OCR fallback ส่วน 9B/35B รองรับ direct vision ตาม capability probe
 
-วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` → **Model / Think Budget** ทั้งสองใช้ `workspace/runtime_settings.json` ร่วมกัน. Electron จะขึ้นสถานะ `กำลังสลับโมเดล…` ระหว่าง restart model ที่ตัวเองเป็นเจ้าของ และ `สลับโมเดลเสร็จแล้ว · พร้อมใช้งาน` หลัง listener/model ใหม่พร้อมจริง; CLI จะไม่ kill/restart server ที่กำลังรันอยู่และจะแจ้งชัดเจนว่า model ใหม่ยังรอ restart
+วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` โดยใช้ `workspace/runtime_settings.json` ร่วมกัน. ใน `Standalone` Agent TH เป็น owner ของ model server และสามารถ restart model/ย้าย port ของตัวเองได้; Settings มี Watchdog + Start/Stop/Reset. ใน `Shared MAX` TH เป็น client read-only: Model ล็อกตาม MAX VLM, Think Budget ยังเป็นของ TH และ lifecycle controls ถูกปิด. เมื่อกลับจาก Shared MAX ระบบคืน **standalone model เดิมของ TH** ไม่เอา model ของ MAX มาทับค่าที่เคยเลือกไว้
 
 สำหรับ custom backend/port ให้ใช้ advanced override ซึ่งต้องตั้งคู่กันและจะล็อก Model ใน UI:
 

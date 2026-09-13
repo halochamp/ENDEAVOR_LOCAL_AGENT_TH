@@ -1,6 +1,9 @@
 const test = require('node:test')
 const assert = require('node:assert')
-const { mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh, runtimeStatusText } = require('../lib/format')
+const {
+  mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh,
+  runtimeStatusText, modelServerStatusText,
+} = require('../lib/format')
 
 test('mlxLabel extracts port from URL', () => {
   assert.strictEqual(mlxLabel('http://localhost:8085/v1'), 'MLX :8085')
@@ -60,9 +63,19 @@ test('selectValueAfterRefresh rejects a focused value no longer present in optio
   )
 })
 
-test('runtimeStatusText exposes model switch lifecycle', () => {
-  assert.strictEqual(runtimeStatusText('', 'switching'), '⏳ กำลังสลับโมเดล…')
-  assert.strictEqual(runtimeStatusText('', 'ready'), '✓ สลับโมเดลเสร็จแล้ว · พร้อมใช้งาน')
+test('runtimeStatusText exposes runtime switch lifecycle', () => {
+  assert.strictEqual(runtimeStatusText('', 'switching'), '⏳ กำลังปรับ Runtime…')
+  assert.strictEqual(runtimeStatusText('', 'ready'), '✓ Runtime พร้อมใช้งาน')
   assert.strictEqual(runtimeStatusText('', 'idle'), '')
   assert.strictEqual(runtimeStatusText('boom', 'error'), '⚠ boom')
+})
+
+test('modelServerStatusText distinguishes standalone and shared MAX', () => {
+  assert.strictEqual(modelServerStatusText({
+    state: 'ready', healthy: true, loaded_model: 'Qwen/Qwen3-14B-MLX-4bit',
+  }), 'พร้อม · Qwen3-14B-MLX-4bit')
+  assert.strictEqual(modelServerStatusText({
+    state: 'shared_ready', healthy: true, loaded_model: 'unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit',
+  }), 'Shared พร้อม · Qwen3.6-35B-A3B-UD-MLX-4bit')
+  assert.strictEqual(modelServerStatusText({ state: 'shared_offline' }), 'Shared MAX offline')
 })

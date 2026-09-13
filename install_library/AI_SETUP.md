@@ -65,24 +65,21 @@ If the dependency install fails partway, read the error, fix the underlying issu
 shortcuts. If only the optional Chromium download fails, re-run
 `python -m playwright install chromium` later when browser tools are needed.
 
-## 3. Start the LLM server (must run in a separate terminal/process)
+## 3. Model server lifecycle
 
-```bash
-conda activate mlx
-APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 \
-python -m mlx_vlm.server --model Qwen/Qwen3-14B-MLX-4bit --host 127.0.0.1 --port 8085
-```
+You normally **do not start `mlx_vlm.server` by hand anymore**. Agent TH owns its
+standalone model-server lifecycle through `model_runtime.py`; the default owner port is
+`:8085`, Settings can move it, and the same owner state is shared by CLI and Electron.
+Start/Stop/Reset and the crash watchdog all act only on a TH-owned launcher.
 
-This is a **long-running foreground process**. Do not run it and then immediately try
-to use the same terminal. If you (the AI) are starting this on the user's behalf, run
-it in the background (e.g. `tmux` or `run_in_background`) and verify it's up before
-proceeding:
+There is one deliberate special case for development with Agent MAX VLM: if the selected
+Shared MAX port (default `:8085`) contains a listener that can be verified as MAX VLM's
+patched launcher, TH attaches as a **read-only client** and adopts the model actually
+loaded by MAX. In that mode TH never Start/Stop/Reset/watchdogs or changes MAX's model.
+An unrelated/generic listener is never adopted or killed.
 
-```bash
-curl -s http://localhost:8085/v1/models | head -c 200
-```
-
-Wait for a valid JSON response (model load can take 30s–2min depending on disk speed).
+For diagnostics, `python model_runtime.py status` is read-only and reports the current
+mode, port, owner, loaded model, health, and desired state.
 
 ## 4. Run the agent
 
@@ -94,9 +91,9 @@ cd <project_root>
 python endeavor_agent.py
 ```
 
-On first run it should print the banner with `N tools  ● online`. If it shows the
-model as offline, the server in step 3 isn't reachable — check the port and that step 3
-is still running.
+On first run it should print the banner with `N tools  ● online`. In Standalone mode,
+TH reconciles its own model server first. In Shared MAX mode the MAX test server must
+already be online on the selected shared port; TH will not start or repair MAX's server.
 
 Electron Desktop (the other supported front end):
 
@@ -106,10 +103,10 @@ npm install   # first run only
 npm start
 ```
 
-Electron starts the authenticated `agent_server.py` backend for itself and manages
-MLX lifecycle only when it owns that MLX process. CLI and Electron share the same
-Model/Think Budget config in `workspace/runtime_settings.json` (or the path supplied
-by `V2_RUNTIME_SETTINGS_PATH`). There is no bundled browser HTML UI.
+Electron starts the authenticated `agent_server.py` backend for itself; Python
+`model_runtime.py` owns the MLX lifecycle, not Electron. CLI and Electron share the same
+Model / Think Budget / Server Mode / Port state in `workspace/runtime_settings.json`
+(or the path supplied by `V2_RUNTIME_SETTINGS_PATH`). There is no bundled browser HTML UI.
 
 ## 5. Common issues
 
@@ -117,7 +114,7 @@ by `V2_RUNTIME_SETTINGS_PATH`). There is no bundled browser HTML UI.
 |---|---|---|
 | `[error] ไม่พบ conda` | Miniforge not installed | install Miniforge, restart shell |
 | install.sh exits at `[1/6]` | not Apple Silicon / not macOS | this project requires M1+ Mac |
-| agent says model offline | `mlx_vlm.server` not running or wrong port | check step 3, confirm port 8085 |
+| agent says model offline | Standalone owner failed to start, or Shared MAX server is offline/wrong port | check Settings / `python model_runtime.py status`; Shared MAX must already be running |
 | out of memory / swap thrashing | selected model is too large for available memory | on a 16GB Mac choose Qwen3.5-9B-4bit; Qwen3-14B remains the fresh default and Qwen3.6-35B remains optional |
 | `playwright install chromium` fails | network/proxy issue | retry; required only for `browse_url`/`scrape_table`/`browser_use` tools |
 | Thai text broken on plot (squares / floating vowels) | pyobjc not installed correctly | run `python -c "import Quartz, CoreText"` in the mlx env — if it fails, re-run `pip install pyobjc-framework-Quartz pyobjc-framework-CoreText` |
@@ -157,15 +154,15 @@ paths) but only **writes/creates files inside `workspace/`**. If the user asks t
 agent to "save this file" or "create a script", point them to `workspace/` — that's
 where outputs land. See README.md "Security" section for the full read/write model.
 
-**Switching models / Think Budget** — CLI (`menu` → Model / Think Budget) and
-Electron Settings use the same `workspace/runtime_settings.json`. Think Budget applies
-without restarting MLX. Electron may switch Model only when it owns the standalone
-server; if it adopted a pre-existing/shared server the Model control is locked. CLI
-never kills/restarts an already-running MLX process: selecting another Model saves the
-shared config and asks for a deliberate MLX restart/next Electron launch. A CLI launch
-also fails closed if the saved model does not match the local listener's real `--model`.
-The paired `V2_MODEL` + non-default `MLX_BASE_URL` environment override remains the
-advanced authoritative path and locks model selection. Qwen3.5-9B-4bit is the compact
+**Model server + runtime settings** — CLI and Electron share
+`workspace/runtime_settings.json`: Model, Think Budget, Server Mode, and Port. In
+**Standalone**, Agent TH owns the verified launcher and may Start/Stop/Reset, watchdog,
+switch model, or move its port itself. In **Shared MAX**, TH is a read-only client of a
+verified Agent MAX VLM test server: the Model follows MAX's loaded model, Think Budget
+remains TH-owned, and lifecycle/model controls cannot mutate MAX. Returning to Standalone
+restores TH's previous standalone model instead of keeping MAX's shared model. The paired
+`V2_MODEL` + non-default `MLX_BASE_URL` environment override remains the advanced
+custom-backend path and locks runtime selection. Qwen3.5-9B-4bit is the compact
 vision-capable option for 16GB Macs; Qwen3-14B remains the default text/tool model and uses
 full-OCR fallback for `read_image`; Qwen3.6-35B remains the higher-quality vision-capable option.
 
@@ -177,7 +174,8 @@ cd <project_root>
 bash agent_stop.command
 ```
 
-Then redo step 3; reopen CLI or Electron from step 4.
+Then reopen CLI or Electron. In Standalone the owner runtime will reconcile the server;
+in Shared MAX, start/recover MAX VLM separately because TH intentionally cannot control it.
 
 **Where things are stored**:
 - `logs/history.db` — conversation history (SQLite, via LangGraph checkpointer)
@@ -198,10 +196,10 @@ instead of re-reading the whole README:
 
 | User asks | Answer |
 |---|---|
-| "ใช้งานยังไง" / how do I start | Run step 3 (MLX server) + step 4 (CLI or Electron) above |
-| "model offline" / agent ขึ้น offline | Step 3 server not running or wrong port — check `curl http://localhost:8085/v1/models` |
-| "เปลี่ยนโมเดล" / change model | ใช้ Electron Settings หรือ CLI `menu` → Model / Think Budget สำหรับ local `:8085`; advanced custom backend ค่อยตั้ง **ทั้ง** `V2_MODEL` + `MLX_BASE_URL`. Qwen3.5-9B-4bit เป็น compact VLM สำหรับ 16GB, Qwen3-14B เป็น default text/tool model, Qwen3.6-35B เป็น high-quality VLM |
-| "port ถูกใช้อยู่" / port in use | Run `bash agent_stop.command` from the project root, then repeat the relevant start step |
+| "ใช้งานยังไง" / how do I start | Open CLI or Electron; TH manages its Standalone model server automatically. Shared MAX requires MAX VLM's test server to already be running |
+| "model offline" / agent ขึ้น offline | Check Settings or `python model_runtime.py status`; in Shared MAX, recover MAX VLM separately |
+| "เปลี่ยนโมเดล" / change model | ใช้ Electron Settings หรือ CLI `menu`; Standalone เปลี่ยน model/port ได้เอง, Shared MAX ล็อก model ตาม MAX และไม่แตะ lifecycle ของ MAX. Qwen3.5-9B เป็น compact VLM, Qwen3-14B เป็น default, Qwen3.6-35B เป็น high-quality VLM |
+| "port ถูกใช้อยู่" / port in use | Choose another Standalone port, or stop only the TH-owned server. A foreign/MAX listener is never killed automatically |
 | "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
 | "ลืม conversation เก่า" / load old chat | `/history` in CLI, or use History in Electron (loads from `logs/history.db`) |
 | "ปลอดภัยไหม" / is my data safe | Yes — model runs 100% locally via MLX, no cloud LLM calls. See README "Security" |

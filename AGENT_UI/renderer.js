@@ -33,9 +33,19 @@ let currentToolName = ''
 let pendingTurnQuery = ''
 let waitingSummaryTimer = null
 let runtimeSettings = {
-  model: '', thinking_budget: 1536, shared_server: false, model_locked: false,
-  switching: false, switch_state: 'idle', error: '', model_options: [], thinking_options: [],
+  model: '', thinking_budget: 1536, server_mode: 'standalone', server_port: 8085,
+  shared_server: false, model_locked: false, runtime_locked: false,
+  switching: false, switch_state: 'idle', error: '',
+  model_options: [], thinking_options: [], server_mode_options: [],
 }
+let modelServerSettings = {
+  state: 'stopped', running: false, owned: false, healthy: false,
+  watchdog_enabled: true, desired_state: 'running', action_state: '',
+  selected_model: '', loaded_model: '', port: 8085, mode: 'standalone',
+  managed_by_th: true, error: '',
+}
+let modelServerStatusTimer = null
+let pendingRuntimeRequest = null
 
 const THINKING_SUMMARY_DELAY_MS = 6000
 
@@ -180,6 +190,9 @@ function handleEvent(ev) {
       break
     case 'runtime_settings':
       applyRuntimeSettings(ev)
+      break
+    case 'model_server_status':
+      applyModelServerStatus(ev)
       break
     case 'files':
       if (ev.root) workspaceRoot = ev.root
@@ -1123,6 +1136,10 @@ function openWorkspace() {
 
 function togglePanel(name) {
   const panel = document.getElementById('left-panel')
+  if (modelServerStatusTimer) {
+    clearInterval(modelServerStatusTimer)
+    modelServerStatusTimer = null
+  }
   if (activePanel === name) {
     // Same icon clicked again → collapse
     activePanel = null
@@ -1145,6 +1162,11 @@ function togglePanel(name) {
     }
     if (name === 'settings') {
       wsSend({ type: 'get_runtime_settings' })
+      wsSend({ type: 'get_model_server_status' })
+      modelServerStatusTimer = setInterval(
+        () => wsSend({ type: 'get_model_server_status' }),
+        5000,
+      )
     }
   }
 }
@@ -1169,23 +1191,56 @@ function fmtTs(ts) {
 }
 
 function applyRuntimeSettings(ev) {
+  const previousPending = pendingRuntimeRequest
   runtimeSettings = {
     ...runtimeSettings,
     model: String(ev.model || runtimeSettings.model || ''),
     thinking_budget: Number(ev.thinking_budget || runtimeSettings.thinking_budget || 1536),
+    server_mode: String(ev.server_mode || runtimeSettings.server_mode || 'standalone'),
+    server_port: Number(ev.server_port || runtimeSettings.server_port || 8085),
     shared_server: !!ev.shared_server,
     model_locked: !!ev.model_locked,
+    runtime_locked: !!ev.runtime_locked,
     switching: !!ev.switching,
     switch_state: String(ev.switch_state || (ev.switching ? 'switching' : runtimeSettings.switch_state || 'idle')),
     error: String(ev.error || ''),
     model_options: Array.isArray(ev.model_options) ? ev.model_options : runtimeSettings.model_options,
     thinking_options: Array.isArray(ev.thinking_options) ? ev.thinking_options : runtimeSettings.thinking_options,
+    server_mode_options: Array.isArray(ev.server_mode_options) ? ev.server_mode_options : runtimeSettings.server_mode_options,
   }
 
+  if (ev.confirmation_required && previousPending) {
+    const ramText = ev.ram_gb ? ` (RAM ประมาณ ${ev.ram_gb}GB)` : ''
+    const confirmed = window.confirm(
+      `เครื่องนี้มี RAM ต่ำกว่า 24GB${ramText}\n\n`
+      + 'Qwen3.6 35B เป็นโมเดลขนาดใหญ่ การดาวน์โหลด/โหลดโมเดลอาจใช้พื้นที่และ swap สูงมาก\n\n'
+      + 'ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B ต่อหรือไม่?'
+    )
+    if (confirmed) {
+      wsSend({ ...previousPending, confirmed_low_ram: true })
+    } else {
+      pendingRuntimeRequest = null
+      wsSend({ type: 'get_runtime_settings' })
+    }
+    return
+  }
+  if (runtimeSettings.switch_state !== 'switching') pendingRuntimeRequest = null
+
+  const mode = document.getElementById('runtime-server-mode')
   const model = document.getElementById('runtime-model')
   const think = document.getElementById('runtime-think')
+  const port = document.getElementById('runtime-port')
   const status = document.getElementById('runtime-status')
 
+  if (mode && runtimeSettings.server_mode_options.length) {
+    mode.replaceChildren(...runtimeSettings.server_mode_options.map(opt => {
+      const item = document.createElement('option')
+      item.value = String(opt.value || '')
+      item.textContent = String(opt.label || opt.value || '')
+      return item
+    }))
+    mode.value = runtimeSettings.server_mode
+  }
   if (model && runtimeSettings.model_options.length) {
     const currentValue = model.value
     const focused = document.activeElement === model
@@ -1198,7 +1253,6 @@ function applyRuntimeSettings(ev) {
     }))
     model.value = selectValueAfterRefresh(currentValue, runtimeSettings.model, focused, optionValues)
   }
-
   if (think && runtimeSettings.thinking_options.length) {
     const currentValue = think.value
     const focused = document.activeElement === think
@@ -1213,95 +1267,129 @@ function applyRuntimeSettings(ev) {
       currentValue, String(runtimeSettings.thinking_budget), focused, optionValues,
     )
   }
+  if (port && document.activeElement !== port) port.value = String(runtimeSettings.server_port)
 
+  const locked = runtimeSettings.switching || runtimeSettings.runtime_locked
+  if (mode) mode.disabled = locked
   if (model) {
-    model.disabled = runtimeSettings.switching || runtimeSettings.model_locked
+    model.disabled = locked || runtimeSettings.model_locked
     model.title = runtimeSettings.shared_server
-      ? 'Shared :8085 — ใช้ model ที่ server กำลังโหลดอยู่'
-      : runtimeSettings.model_locked
-        ? 'Model ถูกล็อกด้วย V2_MODEL + MLX_BASE_URL'
+      ? `Shared MAX :${runtimeSettings.server_port} — model ถูกกำหนดโดย MAX VLM`
+      : runtimeSettings.runtime_locked
+        ? 'Runtime ถูกล็อกด้วย V2_MODEL + MLX_BASE_URL'
         : 'Model'
   }
   if (think) think.disabled = runtimeSettings.switching
+  if (port) port.disabled = locked
   if (status) {
     status.textContent = runtimeStatusText(runtimeSettings.error, runtimeSettings.switch_state)
       || (runtimeSettings.shared_server
-        ? `shared :8085 · ${runtimeSettings.model}`
-        : runtimeSettings.model_locked
+        ? `shared MAX :${runtimeSettings.server_port} · ${runtimeSettings.model}`
+        : runtimeSettings.runtime_locked
           ? `env · ${runtimeSettings.model}`
-          : '')
+          : `standalone :${runtimeSettings.server_port}`)
   }
   if (runtimeSettings.model) setModelLabel(runtimeSettings.model)
 }
 
-async function saveRuntimeSettings() {
+function saveRuntimeSettings() {
   if (runtimeSettings.switching) return
+  const mode = document.getElementById('runtime-server-mode')
   const model = document.getElementById('runtime-model')
   const think = document.getElementById('runtime-think')
+  const port = document.getElementById('runtime-port')
   const status = document.getElementById('runtime-status')
-  if (!model || !think) return
+  if (!mode || !model || !think || !port) return
   if (isBusy) {
     if (status) status.textContent = '⚠ รอให้ agent ทำงานจบก่อนเปลี่ยน runtime settings'
     applyRuntimeSettings(runtimeSettings)
     return
   }
 
-  const requestedModel = model.value
-  const requestedBudget = Number(think.value)
-  const modelChanged = requestedModel !== runtimeSettings.model
-  runtimeSettings.switch_state = modelChanged ? 'switching' : 'idle'
-  if (status) {
-    status.textContent = modelChanged
-      ? runtimeStatusText('', 'switching')
-      : '⚙ กำลังปรับ Think Budget…'
+  const nextPort = Number(port.value)
+  if (!Number.isInteger(nextPort) || nextPort < 1024 || nextPort > 65535) {
+    if (status) status.textContent = '⚠ Port ต้องอยู่ระหว่าง 1024–65535'
+    return
   }
-
-  if (
-    modelChanged
-    && window.electronAPI
-    && window.electronAPI.applyRuntimeModel
-  ) {
-    runtimeSettings.switching = true
-    model.disabled = true
-    think.disabled = true
-    let switched
-    try {
-      switched = await window.electronAPI.applyRuntimeModel(requestedModel)
-      if (switched && switched.confirmation_required) {
-        const ramText = switched.ram_gb ? ` (RAM ประมาณ ${switched.ram_gb}GB)` : ''
-        const confirmed = window.confirm(
-          `เครื่องนี้มี RAM ต่ำกว่า 24GB${ramText}\n\n`
-          + 'Qwen3.6 35B เป็นโมเดลขนาดใหญ่ การดาวน์โหลด/โหลดโมเดลอาจใช้พื้นที่และ swap สูงมาก\n\n'
-          + 'ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B ต่อหรือไม่?'
-        )
-        if (!confirmed) {
-          runtimeSettings.switching = false
-          runtimeSettings.switch_state = 'idle'
-          if (status) status.textContent = 'ยกเลิกการเปลี่ยนเป็น Qwen3.6 35B'
-          wsSend({ type: 'get_runtime_settings' })
-          return
-        }
-        switched = await window.electronAPI.applyRuntimeModel(requestedModel, true)
-      }
-    } catch (err) {
-      switched = { ok: false, error: String(err && err.message || err) }
-    }
-    runtimeSettings.switching = false
-    if (!switched || !switched.ok) {
-      runtimeSettings.switch_state = 'error'
-      if (status) status.textContent = `⚠ ${(switched && switched.error) || 'model switch failed'}`
-      wsSend({ type: 'get_runtime_settings' })
-      return
-    }
-    runtimeSettings.switch_state = 'ready'
-    if (status) status.textContent = runtimeStatusText('', 'ready')
-  }
-
-  wsSend({
+  const request = {
     type: 'set_runtime_settings',
-    model: requestedModel,
-    thinking_budget: requestedBudget,
-  })
+    model: model.value,
+    thinking_budget: Number(think.value),
+    server_mode: mode.value,
+    server_port: nextPort,
+  }
+  pendingRuntimeRequest = request
+  runtimeSettings.switching = true
+  runtimeSettings.switch_state = 'switching'
+  if (status) {
+    if (mode.value !== runtimeSettings.server_mode) {
+      status.textContent = mode.value === 'shared_max'
+        ? `⏳ กำลังเชื่อม Shared MAX :${nextPort}…`
+        : `⏳ กำลังกลับเป็น Standalone :${nextPort}…`
+    } else if (model.value !== runtimeSettings.model) {
+      status.textContent = '⏳ กำลังสลับโมเดล…'
+    } else if (nextPort !== runtimeSettings.server_port) {
+      status.textContent = `⏳ กำลังเปลี่ยน Model Server port เป็น :${nextPort}…`
+    } else {
+      status.textContent = '⚙ กำลังปรับ Think Budget…'
+    }
+  }
+  wsSend(request)
+}
+
+function applyModelServerStatus(ev) {
+  modelServerSettings = { ...modelServerSettings, ...ev }
+  const dot = document.getElementById('model-server-status-dot')
+  const text = document.getElementById('model-server-status-text')
+  const title = document.getElementById('model-server-title')
+  const watchdog = document.getElementById('model-server-watchdog')
+  const help = document.getElementById('model-server-help')
+  const error = document.getElementById('model-server-error')
+  const start = document.getElementById('model-server-start-btn')
+  const stop = document.getElementById('model-server-stop-btn')
+  const reset = document.getElementById('model-server-reset-btn')
+  const pending = !!modelServerSettings.action_state
+  const shared = modelServerSettings.mode === 'shared_max' || !modelServerSettings.managed_by_th
+
+  if (dot) {
+    dot.classList.toggle('on', !!modelServerSettings.healthy)
+    dot.classList.toggle('err', ['foreign', 'ambiguous', 'error', 'unhealthy'].includes(String(modelServerSettings.state || '')))
+  }
+  if (text) text.textContent = modelServerStatusText(modelServerSettings)
+  if (title) {
+    title.textContent = shared
+      ? `Shared MAX Test Server · :${Number(modelServerSettings.port || runtimeSettings.server_port || 8085)}`
+      : `Model Server · :${Number(modelServerSettings.port || runtimeSettings.server_port || 8085)}`
+  }
+  if (watchdog) {
+    watchdog.checked = !!modelServerSettings.watchdog_enabled
+    watchdog.disabled = shared || pending
+  }
+  if (help) {
+    help.textContent = shared
+      ? 'Shared MAX เป็น read-only: Agent TH ใช้ model ที่ MAX VLM โหลดอยู่ได้ แต่จะไม่ Start/Stop/Reset/Watchdog หรือเปลี่ยน model ของ server นี้.'
+      : 'Standalone: Agent TH เป็นเจ้าของ model server, port และ Watchdog เองโดยตรง ไม่ต้องพึ่ง Server Monitor.'
+  }
+  if (error) {
+    const problem = String(modelServerSettings.error || '')
+    error.textContent = problem
+    error.style.display = problem ? '' : 'none'
+  }
+  const foreign = modelServerSettings.state === 'foreign' || modelServerSettings.state === 'ambiguous'
+  if (start) start.disabled = shared || pending || foreign || (!!modelServerSettings.running && !!modelServerSettings.healthy)
+  if (stop) stop.disabled = shared || pending || foreign || !modelServerSettings.running || !modelServerSettings.owned
+  if (reset) reset.disabled = shared || pending || foreign || !modelServerSettings.owned
+}
+
+function setModelServerWatchdog() {
+  const watchdog = document.getElementById('model-server-watchdog')
+  if (!watchdog || watchdog.disabled) return
+  wsSend({ type: 'set_model_server_watchdog', enabled: !!watchdog.checked })
+}
+
+function modelServerAction(action) {
+  if (modelServerSettings.action_state || !modelServerSettings.managed_by_th) return
+  wsSend({ type: 'model_server_action', action })
 }
 
 function renderHistory(pairs, total) {
@@ -1406,10 +1494,19 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#btn-activity', () => togglePanel('activity'))
   on('#btn-history', () => togglePanel('history'))
   on('#btn-settings', () => togglePanel('settings'))
+  const runtimeMode = document.getElementById('runtime-server-mode')
   const runtimeModel = document.getElementById('runtime-model')
   const runtimeThink = document.getElementById('runtime-think')
+  const runtimePort = document.getElementById('runtime-port')
+  if (runtimeMode) runtimeMode.addEventListener('change', saveRuntimeSettings)
   if (runtimeModel) runtimeModel.addEventListener('change', saveRuntimeSettings)
   if (runtimeThink) runtimeThink.addEventListener('change', saveRuntimeSettings)
+  if (runtimePort) runtimePort.addEventListener('change', saveRuntimeSettings)
+  const modelServerWatchdog = document.getElementById('model-server-watchdog')
+  if (modelServerWatchdog) modelServerWatchdog.addEventListener('change', setModelServerWatchdog)
+  on('#model-server-start-btn', () => modelServerAction('start'))
+  on('#model-server-stop-btn', () => modelServerAction('stop'))
+  on('#model-server-reset-btn', () => modelServerAction('reset'))
   on('#send-btn', () => sendMessage())
   on('#cancel-btn', () => sendCancel())
   on('#btn-clear', () => sendClear())

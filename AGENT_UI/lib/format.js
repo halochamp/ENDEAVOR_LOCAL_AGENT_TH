@@ -32,11 +32,32 @@ function runtimeStatusText(error, switchState) {
   const problem = String(error ?? '').trim()
   const state = String(switchState ?? 'idle')
   if (problem) return `⚠ ${problem}`
-  if (state === 'switching') return '⏳ กำลังสลับโมเดล…'
-  if (state === 'ready') return '✓ สลับโมเดลเสร็จแล้ว · พร้อมใช้งาน'
+  if (state === 'switching') return '⏳ กำลังปรับ Runtime…'
+  if (state === 'ready') return '✓ Runtime พร้อมใช้งาน'
   return ''
 }
 
+function modelServerStatusText(server) {
+  const s = server || {}
+  const action = String(s.action_state || '')
+  if (action === 'starting') return 'กำลัง Start…'
+  if (action === 'stopping') return 'กำลัง Stop…'
+  if (action === 'resetting') return 'กำลัง Reset…'
+  if (action === 'recovering') return 'Watchdog กำลังกู้คืน…'
+  const state = String(s.state || 'stopped')
+  const problem = String(s.error || '').trim()
+  if (state === 'shared_ready' && s.healthy) return `Shared พร้อม · ${shortModelName(s.loaded_model || s.selected_model)}`
+  if (state === 'ready' && s.healthy) return `พร้อม · ${shortModelName(s.loaded_model || s.selected_model)}`
+  if (state === 'shared_offline') return 'Shared MAX offline'
+  if (state === 'stopped') return s.desired_state === 'running' ? 'หยุดอยู่ · รอ Watchdog' : 'ปิดอยู่'
+  if (state === 'foreign') return 'Port ถูกใช้งานโดย process อื่น'
+  if (problem) return `⚠ ${problem}`
+  return state
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh, runtimeStatusText }
+  module.exports = {
+    mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh,
+    runtimeStatusText, modelServerStatusText,
+  }
 }

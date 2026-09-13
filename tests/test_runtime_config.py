@@ -17,27 +17,46 @@ class SharedRuntimeConfigTests(unittest.TestCase):
         self._path = config._RUNTIME_SETTINGS_PATH
         self._model = config._current_model
         self._budget = config._current_thinking_budget
-        self._shared = config._SHARED_MLX_MODEL
+        self._standalone_model = config._current_standalone_model
+        self._mode = config._current_server_mode
+        self._port = config._current_server_port
         self._locked = config._LOCKED_MODEL
+        self._override = config._MLX_BASE_URL_OVERRIDE
+        self._url = config.MLX_BASE_URL
         self._tmp = tempfile.TemporaryDirectory()
         config._RUNTIME_SETTINGS_PATH = str(Path(self._tmp.name) / "runtime_settings.json")
-        config._SHARED_MLX_MODEL = ""
         config._LOCKED_MODEL = ""
-        config._current_model = config.MODEL_CHOICES[0]
+        config._MLX_BASE_URL_OVERRIDE = ""
+        config._current_model = config.DEFAULT_MODEL
+        config._current_standalone_model = config.DEFAULT_MODEL
         config._current_thinking_budget = 1024
+        config._current_server_mode = "standalone"
+        config._current_server_port = 8085
+        config.MLX_BASE_URL = config.get_mlx_base_url()
 
     def tearDown(self) -> None:
         config._RUNTIME_SETTINGS_PATH = self._path
         config._current_model = self._model
         config._current_thinking_budget = self._budget
-        config._SHARED_MLX_MODEL = self._shared
+        config._current_standalone_model = self._standalone_model
+        config._current_server_mode = self._mode
+        config._current_server_port = self._port
         config._LOCKED_MODEL = self._locked
+        config._MLX_BASE_URL_OVERRIDE = self._override
+        config.MLX_BASE_URL = self._url
         self._tmp.cleanup()
 
-    def test_labels_and_options_match_desktop_contract(self) -> None:
+    def test_labels_options_and_default_server_contract(self) -> None:
         settings = config.get_runtime_settings()
         self.assertEqual(config.get_model_label(), "Qwen3 14B · text")
         self.assertEqual(config.get_thinking_budget_label(), "High")
+        self.assertEqual(settings["server_mode"], "standalone")
+        self.assertEqual(settings["server_port"], 8085)
+        self.assertEqual(config.get_mlx_base_url(), "http://localhost:8085/v1")
+        self.assertEqual(
+            [x["value"] for x in settings["server_mode_options"]],
+            ["standalone", "shared_max"],
+        )
         self.assertEqual(
             [(x["label"], x["value"]) for x in settings["thinking_options"]],
             [("Low", 256), ("Medium", 512), ("High", 1024), ("xhigh", 1536), ("Max", 2048)],
@@ -49,7 +68,44 @@ class SharedRuntimeConfigTests(unittest.TestCase):
         self.assertEqual(config.MODEL_CHOICES[0], config.DEFAULT_MODEL)
         self.assertEqual(config.MODEL_CHOICES[1], config.COMPACT_VLM_MODEL)
         self.assertEqual(config.MODEL_CHOICES[2], config.HIGH_QUALITY_MODEL)
-        self.assertEqual(config.MODEL_LABELS[config.COMPACT_VLM_MODEL], "Qwen3.5 9B · VLM")
+
+    def test_runtime_port_moves_endpoint_and_persists_owner_state(self) -> None:
+        changed = config.set_runtime_settings(
+            model=config.DEFAULT_MODEL,
+            thinking_budget=512,
+            server_mode="standalone",
+            server_port=8091,
+        )
+        self.assertTrue(changed["server_port_changed"])
+        self.assertEqual(config.get_mlx_base_url(), "http://localhost:8091/v1")
+        payload = json.loads(Path(config._RUNTIME_SETTINGS_PATH).read_text(encoding="utf-8"))
+        self.assertEqual(payload, {
+            "owner": "agent_th",
+            "model": config.DEFAULT_MODEL,
+            "standalone_model": config.DEFAULT_MODEL,
+            "thinking_budget": 512,
+            "server_mode": "standalone",
+            "server_port": 8091,
+        })
+
+    def test_shared_max_mode_locks_model_but_not_thinking_budget(self) -> None:
+        config.set_runtime_settings(
+            model=config.HIGH_QUALITY_MODEL,
+            thinking_budget=1024,
+            server_mode="shared_max",
+            server_port=8085,
+        )
+        settings = config.get_runtime_settings()
+        self.assertTrue(settings["shared_server"])
+        self.assertTrue(settings["model_locked"])
+        self.assertEqual(settings["model_options"][0]["value"], config.HIGH_QUALITY_MODEL)
+        changed = config.set_runtime_settings(
+            model=config.HIGH_QUALITY_MODEL,
+            thinking_budget=512,
+            server_mode="shared_max",
+            server_port=8085,
+        )
+        self.assertTrue(changed["thinking_budget_changed"])
 
     def test_35b_warning_is_only_below_24gb(self) -> None:
         gb = 1024 ** 3
@@ -61,9 +117,6 @@ class SharedRuntimeConfigTests(unittest.TestCase):
         ))
         self.assertFalse(config.high_quality_model_warning_required(
             config.DEFAULT_MODEL, ram_bytes=16 * gb,
-        ))
-        self.assertFalse(config.high_quality_model_warning_required(
-            config.COMPACT_VLM_MODEL, ram_bytes=16 * gb,
         ))
 
     def test_cli_35b_low_ram_warning_is_confirmable_not_blocked(self) -> None:
@@ -77,35 +130,38 @@ class SharedRuntimeConfigTests(unittest.TestCase):
              patch.object(endeavor_agent, "prompt_user", return_value="n"):
             self.assertFalse(endeavor_agent._confirm_high_quality_model_on_low_ram(config.HIGH_QUALITY_MODEL))
 
-    def test_cli_budget_change_persists_shared_owner_file_without_restart(self) -> None:
-        current = config.get_model()
-        changed = endeavor_agent._apply_cli_runtime_settings(current, 512)
+    def test_cli_budget_change_does_not_restart_owner_server(self) -> None:
+        with patch.object(endeavor_agent, "restart_owner_model_server") as restart:
+            changed = endeavor_agent._apply_cli_runtime_settings(config.DEFAULT_MODEL, 512)
         self.assertTrue(changed["thinking_budget_changed"])
         self.assertFalse(changed["model_changed"])
-        self.assertFalse(changed.get("restart_required", False))
-        payload = json.loads(Path(config._RUNTIME_SETTINGS_PATH).read_text(encoding="utf-8"))
-        self.assertEqual(payload, {
-            "owner": "agent_th",
-            "model": current,
-            "thinking_budget": 512,
-        })
+        restart.assert_not_called()
 
-    def test_cli_model_change_is_persisted_but_does_not_kill_running_server(self) -> None:
-        old = config.MODEL_CHOICES[0]
-        new = config.MODEL_CHOICES[1]
-        with patch.object(endeavor_agent, "active_local_mlx_model", return_value=old):
+    def test_cli_model_change_restarts_owned_standalone_server(self) -> None:
+        new = config.COMPACT_VLM_MODEL
+        with patch.object(endeavor_agent, "restart_owner_model_server", return_value={"healthy": True}) as restart:
             changed = endeavor_agent._apply_cli_runtime_settings(new, 1536)
         self.assertTrue(changed["model_changed"])
-        self.assertTrue(changed["restart_required"])
-        self.assertEqual(changed["active_model"], old)
         self.assertEqual(config.get_model(), new)
+        restart.assert_called_once()
 
-    def test_cli_startup_fails_closed_on_saved_model_listener_mismatch(self) -> None:
-        config._current_model = config.MODEL_CHOICES[1]
-        with patch.object(endeavor_agent, "active_local_mlx_model", return_value=config.MODEL_CHOICES[0]):
+    def test_cli_shared_mode_refuses_model_change(self) -> None:
+        config.set_runtime_settings(
+            model=config.HIGH_QUALITY_MODEL,
+            thinking_budget=1024,
+            server_mode="shared_max",
+            server_port=8085,
+        )
+        with self.assertRaisesRegex(ValueError, "shared MAX"):
+            endeavor_agent._apply_cli_runtime_settings(config.DEFAULT_MODEL, 512)
+
+    def test_cli_runtime_match_uses_model_server_status(self) -> None:
+        with patch.object(endeavor_agent, "model_server_status", return_value={
+            "healthy": True, "loaded_model": config.DEFAULT_MODEL,
+        }):
             matches, active = endeavor_agent._runtime_model_matches_active_server()
-        self.assertFalse(matches)
-        self.assertEqual(active, config.MODEL_CHOICES[0])
+        self.assertTrue(matches)
+        self.assertEqual(active, config.DEFAULT_MODEL)
 
 
 class RuntimeModelDiscoveryTests(unittest.TestCase):

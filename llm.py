@@ -14,8 +14,8 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 
 from config import (
-    MLX_BASE_URL, API_KEY, TEMPERATURE, MAX_TOKENS, REPETITION_PENALTY,
-    get_model, get_thinking_budget,
+    API_KEY, TEMPERATURE, MAX_TOKENS, REPETITION_PENALTY,
+    get_model, get_thinking_budget, get_mlx_base_url,
 )
 
 
@@ -224,7 +224,7 @@ def build_llm(**overrides) -> ChatOpenAI:
     """
     vision_fallback = overrides.pop("vision_fallback", True)
     params = dict(
-        base_url=MLX_BASE_URL,
+        base_url=get_mlx_base_url(),
         api_key=API_KEY,
         model=get_model(),
         temperature=TEMPERATURE,

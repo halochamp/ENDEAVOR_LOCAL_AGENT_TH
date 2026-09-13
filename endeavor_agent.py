@@ -25,7 +25,14 @@ import graph as _graph
 import planner as _planner
 from graph import build_graph, force_compact, rewarm_after_compact, summarize_history
 from react import get_system_prompt, ctx_stats as _ctx_stats
-from config import RECURSION_LIMIT, MLX_BASE_URL, CONTEXT_MAX_CHARS
+from config import RECURSION_LIMIT, CONTEXT_MAX_CHARS
+from model_runtime import (
+    reconcile_runtime_server,
+    restart_owner_model_server,
+    model_server_status,
+    auto_attach_max_test_server_if_present,
+    get_model_server_control_settings,
+)
 from runtime_common import (
     mlx_up as _server_up, internet_up as _internet_up,
     parse_plan_steps as _parse_plan_steps,
@@ -44,7 +51,6 @@ from tools import _summarize as _summarize_tool
 from tools._progress import set_callback as set_progress_callback, set_phase_callback, set_plan_callback
 from tools.web_cache import web_count_reset as _reset_web_counter
 from agent_log import AgentLogger
-from runtime_model import active_local_mlx_model
 from ui_cli import (
     Spinner, print_header, print_divider, print_user_prompt,
     print_tool_step, print_plan, print_synthesizing,
@@ -72,21 +78,21 @@ def _get_skill_tools(skill: str, online: bool) -> list:
     return tools
 
 
-def _ensure_server_alive(timeout: int = 30, interval: int = 3) -> bool:
-    """Check mid-session that MLX server is reachable; wait up to `timeout` seconds to reconnect."""
-    if _server_up():
+def _ensure_server_alive(timeout: int = 240, interval: int = 3) -> bool:
+    """Reconcile Agent TH's standalone owner or verify read-only MAX sharing."""
+    del interval  # compatibility with older callers/tests
+    try:
+        status = reconcile_runtime_server(timeout=float(timeout))
+    except Exception as exc:
+        mode = config.get_server_mode()
+        if mode == "shared_max":
+            print(f"\n❌ Shared MAX test server ใช้งานไม่ได้: {exc}\n")
+        else:
+            print(f"\n❌ เตรียม model server ของ Agent TH ไม่สำเร็จ: {exc}\n")
+        return False
+    if status.get("healthy"):
         return True
-    print(f"\n⚠️  LLM server หายไป — รอ reconnect (สูงสุด {timeout}s)...")
-    elapsed = 0
-    while elapsed < timeout:
-        import time as _time
-        _time.sleep(interval)
-        elapsed += interval
-        if _server_up():
-            print("✅ Server กลับมาแล้ว\n")
-            return True
-        print(f"   ยังไม่ได้ ({elapsed}s)...")
-    print(f"❌ Server ไม่กลับมาใน {timeout}s — ข้าม turn นี้ไป\n")
+    print(f"\n❌ Model server ยังไม่พร้อม: {status.get('error') or status.get('state')}\n")
     return False
 
 
@@ -425,16 +431,13 @@ def _invalidate_runtime_llms() -> None:
 
 
 def _runtime_model_matches_active_server() -> tuple[bool, str]:
-    """Fail closed when the saved owner config disagrees with a local listener.
-
-    Explicit environment-locked custom backends remain authoritative and are
-    intentionally not process-inspected here.
-    """
+    """Return whether the current standalone/shared server matches TH runtime state."""
     runtime = config.get_runtime_settings()
-    if runtime.get("model_locked") and not runtime.get("shared_server"):
+    if runtime.get("runtime_locked"):
         return True, config.get_model()
-    active = active_local_mlx_model(MLX_BASE_URL)
-    return bool(active and active == config.get_model()), active
+    status = model_server_status()
+    active = str(status.get("loaded_model") or "")
+    return bool(status.get("healthy")), active
 
 
 def _confirm_high_quality_model_on_low_ram(model: str) -> bool:
@@ -452,36 +455,50 @@ def _confirm_high_quality_model_on_low_ram(model: str) -> bool:
 
 
 def _apply_cli_runtime_settings(model: str, thinking_budget: int) -> dict:
-    """Persist the shared UI config; model changes require server lifecycle restart.
+    """Apply CLI model/budget while respecting standalone vs shared MAX ownership."""
+    runtime = config.get_runtime_settings()
+    requested = str(model or "").strip()
+    if runtime.get("shared_server") and requested != config.get_model():
+        raise ValueError("shared MAX test server locks Model to the model MAX is serving")
 
-    The CLI does not take ownership of an already-running MLX process. Think
-    Budget changes can therefore apply live, while changing Model is persisted
-    for the next server/UI launch and the current CLI session exits cleanly.
-    """
     old_model = config.get_model()
     changed = config.set_runtime_settings(
-        model=str(model or "").strip(),
+        model=requested,
         thinking_budget=int(thinking_budget),
+        server_mode=config.get_server_mode(),
+        server_port=config.get_server_port(),
     )
-    model_changed = bool(changed.get("model_changed"))
-    if model_changed:
-        runtime = config.get_runtime_settings()
-        if runtime.get("model_locked") and not runtime.get("shared_server"):
-            return changed
-        active = active_local_mlx_model(MLX_BASE_URL)
-        if active != config.get_model():
-            return {
-                **changed,
-                "restart_required": True,
-                "active_model": active or old_model,
-            }
+    if (
+        changed.get("model_changed")
+        and config.get_server_mode() == "standalone"
+        and get_model_server_control_settings().get("desired_state") == "running"
+    ):
+        try:
+            restart_owner_model_server(timeout=240.0, previous_port=config.get_server_port())
+        except Exception:
+            config.set_runtime_settings(
+                model=old_model,
+                thinking_budget=int(thinking_budget),
+                server_mode="standalone",
+                server_port=config.get_server_port(),
+            )
+            raise
     return changed
 
 
 def main() -> None:
-    if not _server_up():
-        print(f"[!] เชื่อม mlx_vlm.server ไม่ได้ที่ {MLX_BASE_URL}")
-        print(f"    เริ่ม server ก่อน: APC_ENABLED=1 APC_EXACT_CACHE_ENTRIES=2 APC_EXACT_PREFIX_GUARD_TOKENS=64 python -m mlx_vlm.server --model {config.get_model()} --host 127.0.0.1 --port <port>")
+    runtime = config.get_runtime_settings()
+    if not runtime.get("runtime_locked"):
+        shared = auto_attach_max_test_server_if_present()
+        if shared is not None:
+            print(
+                f"[shared] ใช้ Agent MAX VLM test server แบบ read-only "
+                f":{config.get_server_port()} · {config.get_model_label()}"
+            )
+        if not _ensure_server_alive():
+            return
+    elif not _server_up():
+        print(f"[!] เชื่อม custom MLX backend ไม่ได้ที่ {config.get_mlx_base_url()}")
         return
 
     matches, active_model = _runtime_model_matches_active_server()
@@ -490,7 +507,6 @@ def main() -> None:
         print("[!] Runtime config กับ MLX server ไม่ตรงกัน")
         print(f"    config: {config.get_model()}")
         print(f"    active: {shown}")
-        print("    CLI จะไม่ restart/ฆ่า server ที่กำลังรันอยู่ — restart MLX หรือเปิด Electron ให้ apply model ที่เลือกก่อน\n")
         return
 
     online = _internet_up()
@@ -563,13 +579,13 @@ def main() -> None:
         persisted = config.get_persisted_runtime_settings()
         if persisted is None:
             return False
-        runtime = config.get_runtime_settings()
-        if not runtime.get("model_locked"):
-            active = active_local_mlx_model(MLX_BASE_URL)
-            if not active or persisted.get("model") != active:
-                return False
         if not config.refresh_runtime_settings_from_file():
             return False
+        status = model_server_status()
+        if not status.get("healthy"):
+            return False
+        if config.get_server_mode() == "shared_max":
+            config.adopt_shared_model(str(status.get("loaded_model") or ""))
         if not _warm_llm_ready.is_set():
             _warm_llm_ready.wait()
         _rebuild_for_runtime_change()
@@ -601,13 +617,6 @@ def main() -> None:
         except Exception as exc:
             print(f" {C_WARN}⚠ เปลี่ยน runtime settings ไม่สำเร็จ: {exc}{R}\n")
             return "error"
-        if changed.get("restart_required"):
-            print(
-                f" {C_GREEN}✓ บันทึก Model แล้ว:{R} {config.get_model_label()}\n"
-                f" {C_META}สถานะ: รอ restart MLX จึงจะพร้อมใช้งาน — CLI ไม่ได้เป็นเจ้าของ process ที่กำลังรันอยู่ "
-                f"จึงไม่ kill/restart server ภายนอกให้เอง. ปิด session นี้แล้ว restart MLX/เปิด Electron ใหม่.{R}\n"
-            )
-            return "restart"
         if changed.get("model_changed") or changed.get("thinking_budget_changed"):
             _rebuild_for_runtime_change()
         print(
