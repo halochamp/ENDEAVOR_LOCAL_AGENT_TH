@@ -206,10 +206,13 @@ async function startup() {
 
 // ── Window ─────────────────────────────────────────────────────────────────────
 
+const DEFAULT_WINDOW_WIDTH = 900
+const DEFAULT_WINDOW_HEIGHT = 600
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1300,
-    height: 840,
+    width: DEFAULT_WINDOW_WIDTH,
+    height: DEFAULT_WINDOW_HEIGHT,
     minWidth: 900,
     minHeight: 600,
     webPreferences: {
@@ -362,7 +365,7 @@ ipcMain.on('set-compact', (_e, compact) => {
     mainWindow.setAlwaysOnTop(false)
     mainWindow.setMinimumSize(900, 600)
     if (_preCompactBounds) mainWindow.setBounds(_preCompactBounds)
-    else mainWindow.setSize(1300, 840)
+    else mainWindow.setSize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
   }
 })
 
