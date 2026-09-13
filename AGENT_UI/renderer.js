@@ -23,11 +23,14 @@ let currentDirPath = ''
 
 let suggestIdx = -1
 let suggestItems = []
+let suggestMode = ''  // 'command' | 'mention'
+let suggestContext = null
+let workspaceMentionFiles = []
 
 let wsToken = null  // cached once; '' in browser dev mode (server needs AGENT_AUTH_DISABLED=1)
 let currentRunId = null  // set on 'start' event, cleared on done/error/cancelled
 let cancelPending = false  // true between clicking stop and the turn actually stopping; locks the "stopping…" notice so late phase/progress events don't overwrite it
-let activePanel = null  // 'workspace' | 'activity' | null
+let activePanel = null  // workspace | activity | history | pdf | settings | null
 let attachedFilePath = null  // path of file attached via 📎 button
 let currentToolName = ''
 let pendingTurnQuery = ''
@@ -43,6 +46,9 @@ let modelServerSettings = {
   watchdog_enabled: true, desired_state: 'running', action_state: '',
   selected_model: '', loaded_model: '', port: 8085, mode: 'standalone',
   managed_by_th: true, error: '',
+}
+let pdfTextState = {
+  busy: false, jobId: '', outputPath: '', sourceName: '', rewriteThai: false,
 }
 let modelServerStatusTimer = null
 let pendingRuntimeRequest = null
@@ -151,6 +157,7 @@ async function connect() {
     wsConnected = true
     console.log('[ws] connected')
     applyOpen({ isBusy }, _connFx)
+    wsSend({ type: 'get_workspace_mentions' })
   })
 
   ws.addEventListener('close', () => {
@@ -202,6 +209,15 @@ function handleEvent(ev) {
       if (ev.path) currentDirPath = ev.path
       renderFiles(ev.files || [], ev.path || '', ev.root || '')
       break
+    case 'workspace_mentions': {
+      workspaceMentionFiles = Array.isArray(ev.files) ? ev.files : []
+      const input = document.getElementById('input')
+      const activeMention = input && window.WorkspaceMentions
+        ? window.WorkspaceMentions.findMentionContext(input.value, input.selectionStart)
+        : null
+      if (activeMention) updateSuggestions(input.value)
+      break
+    }
     case 'file_content':
       openModal(ev.path, ev.content)
       break
@@ -730,6 +746,9 @@ function sendMessage() {
     return
   }
 
+  const workspaceMentions = window.WorkspaceMentions
+    ? window.WorkspaceMentions.extractMentionPaths(q, workspaceMentionFiles)
+    : []
   const content = attachedFilePath
     ? (q ? `${q}\n\n${_fileHint(attachedFilePath)}` : _fileHint(attachedFilePath))
     : q
@@ -740,7 +759,7 @@ function sendMessage() {
   inp.value = ''; autoResize(inp)
   setAttachment(null)
   setBusy(true)
-  wsSend({ type: 'query', content })
+  wsSend({ type: 'query', content, workspace_mentions: workspaceMentions })
 }
 
 function sendClear() {
@@ -870,6 +889,7 @@ async function deleteWorkspaceFile(filePath, name) {
   if (res && res.deleted) {
     addSystem('ลบไฟล์แล้ว: ' + name)
     wsSend({ type: 'get_files', path: currentDirPath || workspaceRoot })  // refresh list from disk
+    wsSend({ type: 'get_workspace_mentions' })
   } else if (res && res.error) {
     addSystem('ลบไม่ได้: ' + res.error)
   }
@@ -1012,20 +1032,39 @@ function getAllCommands() {
 
 function updateSuggestions(val) {
   const suggestList = document.getElementById('suggest-list')
-  if (!val.startsWith('/')) { hideSuggestions(); return }
-  const query = val.slice(1).toLowerCase()
-  const all = getAllCommands()
-  suggestItems = query === '' ? all : all.filter(c => c.name.toLowerCase().startsWith(query))
+  const inp = document.getElementById('input')
+  const caret = inp ? inp.selectionStart : String(val || '').length
+
+  if (String(val || '').startsWith('/')) {
+    suggestMode = 'command'
+    suggestContext = null
+    const query = String(val || '').slice(1).toLowerCase()
+    const all = getAllCommands()
+    suggestItems = (query === '' ? all : all.filter(c => c.name.toLowerCase().startsWith(query)))
+      .map(c => ({ kind: 'command', name: c.name, desc: c.desc }))
+  } else {
+    const ctx = window.WorkspaceMentions
+      ? window.WorkspaceMentions.findMentionContext(val, caret)
+      : null
+    if (!ctx) { hideSuggestions(); return }
+    suggestMode = 'mention'
+    suggestContext = ctx
+    suggestItems = window.WorkspaceMentions.buildMentionCandidates(
+      workspaceMentionFiles, ctx.query, 20,
+    )
+  }
+
   suggestIdx = -1
   if (!suggestItems.length) { hideSuggestions(); return }
   suggestList.innerHTML = ''
   for (let i = 0; i < suggestItems.length; i++) {
-    const c = suggestItems[i]
+    const item = suggestItems[i]
     const el = document.createElement('div')
     el.className = 'suggest-item'
     el.dataset.idx = i
-    el.innerHTML = `<span class="suggest-cmd">/${esc(c.name)}</span><span class="suggest-desc">${esc(c.desc)}</span>`
-    el.addEventListener('mousedown', ev => { ev.preventDefault(); applySuggestion(c.name) })
+    const token = item.kind === 'mention' ? item.token : `/${item.name}`
+    el.innerHTML = `<span class="suggest-cmd">${esc(token)}</span><span class="suggest-desc">${esc(item.desc || '')}</span>`
+    el.addEventListener('mousedown', ev => { ev.preventDefault(); applySuggestion(item) })
     suggestList.appendChild(el)
   }
   suggestList.classList.add('open')
@@ -1035,11 +1074,22 @@ function hideSuggestions() {
   document.getElementById('suggest-list').classList.remove('open')
   suggestIdx = -1
   suggestItems = []
+  suggestMode = ''
+  suggestContext = null
 }
 
-function applySuggestion(name) {
+function applySuggestion(item) {
   const inp = document.getElementById('input')
-  inp.value = '/' + name + ' '
+  if (!item || !inp) return
+  if (item.kind === 'mention' && suggestContext && window.WorkspaceMentions) {
+    const inserted = window.WorkspaceMentions.insertMention(
+      inp.value, suggestContext.start, suggestContext.end, item.token,
+    )
+    inp.value = inserted.value
+    inp.setSelectionRange(inserted.caret, inserted.caret)
+  } else {
+    inp.value = '/' + item.name + ' '
+  }
   inp.focus()
   hideSuggestions()
   autoResize(inp)
@@ -1135,6 +1185,99 @@ function renderCtxBar(chars, maxChars) {
   pctEl.className = pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : ''
 }
 
+function _setPdfBusy(busy) {
+  pdfTextState.busy = !!busy
+  const btn = document.getElementById('pdf-start-btn')
+  const rewrite = document.getElementById('pdf-rewrite-thai')
+  if (btn) {
+    btn.disabled = !!busy
+    btn.textContent = busy ? 'กำลังแปลง…' : 'เลือก PDF และแปลง'
+  }
+  if (rewrite) rewrite.disabled = !!busy
+}
+
+function renderPdfTextState(job, error = '') {
+  const statusEl = document.getElementById('pdf-status')
+  const resultEl = document.getElementById('pdf-result')
+  const statsEl = document.getElementById('pdf-result-stats')
+  const pathEl = document.getElementById('pdf-result-path')
+  const warningEl = document.getElementById('pdf-result-warning')
+  if (!statusEl || !resultEl || !statsEl || !pathEl || !warningEl) return
+
+  if (error) {
+    statusEl.textContent = error
+    statusEl.classList.add('error')
+    return
+  }
+  statusEl.classList.remove('error')
+  statusEl.textContent = (job && job.message) || (pdfTextState.rewriteThai
+    ? 'พร้อม · LLM rewrite no-think เปิดอยู่'
+    : 'พร้อม · LLM rewrite ปิดอยู่')
+
+  if (!job || job.status !== 'done') return
+  const stats = job.stats || {}
+  const warnings = Array.isArray(job.warnings) ? job.warnings : []
+  pdfTextState.outputPath = job.output_path || ''
+  statsEl.textContent = `${Number(job.total_pages || 0)} หน้า · native ${Number(stats.native || 0)} · OCR ${Number(stats.ocr || 0)} · table ${Number(stats.tables || 0)} · LLM rewrite ${Number(stats.rewritten || 0)} · fallback ${Number(stats.rewrite_fallback || 0)}`
+  pathEl.textContent = pdfTextState.outputPath
+  warningEl.textContent = warnings.length ? `⚠ ${warnings.join(' · ')}` : ''
+  resultEl.classList.add('show')
+}
+
+async function startPdfToText() {
+  if (pdfTextState.busy) return
+  if (!window.electronAPI || !window.electronAPI.pdfToTextStart || !window.electronAPI.pdfToTextStatus) {
+    renderPdfTextState(null, 'PDF to Text ใช้งานไม่ได้ใน runtime นี้')
+    return
+  }
+  const rewrite = document.getElementById('pdf-rewrite-thai')
+  pdfTextState.rewriteThai = !!(rewrite && rewrite.checked)
+  pdfTextState.outputPath = ''
+  const resultEl = document.getElementById('pdf-result')
+  if (resultEl) resultEl.classList.remove('show')
+  _setPdfBusy(true)
+  renderPdfTextState({ message: 'กำลังเลือก PDF…' })
+
+  try {
+    const started = await window.electronAPI.pdfToTextStart(pdfTextState.rewriteThai)
+    if (started && started.cancelled) {
+      renderPdfTextState({ message: pdfTextState.rewriteThai
+        ? 'พร้อม · LLM rewrite no-think เปิดอยู่'
+        : 'พร้อม · LLM rewrite ปิดอยู่' })
+      return
+    }
+    if (!started || !started.ok) throw new Error((started && started.error) || 'เริ่ม PDF to Text ไม่สำเร็จ')
+    const first = started.job || {}
+    pdfTextState.jobId = first.job_id || ''
+    pdfTextState.sourceName = first.source_name || ''
+    if (!pdfTextState.jobId) throw new Error('ไม่ได้รับ PDF to Text job id')
+    renderPdfTextState(first)
+
+    while (true) {
+      await new Promise(resolve => setTimeout(resolve, 400))
+      const response = await window.electronAPI.pdfToTextStatus(pdfTextState.jobId)
+      if (!response || !response.ok) throw new Error((response && response.error) || 'อ่านสถานะ PDF to Text ไม่สำเร็จ')
+      const job = response.job || {}
+      renderPdfTextState(job)
+      if (job.status === 'done') {
+        wsSend({ type: 'get_files', path: workspaceRoot || '' })
+        wsSend({ type: 'get_workspace_mentions' })
+        break
+      }
+      if (job.status === 'error') throw new Error(job.error || 'PDF to Text ไม่สำเร็จ')
+    }
+  } catch (err) {
+    renderPdfTextState(null, `PDF to Text ไม่สำเร็จ: ${err && err.message ? err.message : err}`)
+  } finally {
+    _setPdfBusy(false)
+  }
+}
+
+function openPdfTextOutput() {
+  if (!pdfTextState.outputPath) return
+  wsSend({ type: 'open_file', path: pdfTextState.outputPath })
+}
+
 function openWorkspace() {
   if (window.electronAPI) window.electronAPI.openWorkspace()
 }
@@ -1161,6 +1304,7 @@ function togglePanel(name) {
     if (viewEl) viewEl.classList.add('active')
     if (name === 'workspace') {
       wsSend({ type: 'get_files', path: workspaceRoot || '' })
+      wsSend({ type: 'get_workspace_mentions' })
     }
     if (name === 'history') {
       wsSend({ type: 'get_history' })
@@ -1472,12 +1616,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (e.key === 'Tab') {
         e.preventDefault()
         const pick = suggestIdx >= 0 ? suggestItems[suggestIdx] : suggestItems[0]
-        if (pick) applySuggestion(pick.name)
+        if (pick) applySuggestion(pick)
         return
       }
       if (e.key === 'Enter' && suggestIdx >= 0) {
         e.preventDefault()
-        applySuggestion(suggestItems[suggestIdx].name)
+        applySuggestion(suggestItems[suggestIdx])
         return
       }
     }
@@ -1485,6 +1629,10 @@ document.addEventListener('DOMContentLoaded', () => {
   })
   inp.addEventListener('input', () => {
     autoResize(inp)
+    const ctx = window.WorkspaceMentions
+      ? window.WorkspaceMentions.findMentionContext(inp.value, inp.selectionStart)
+      : null
+    if (ctx && ctx.query === '') wsSend({ type: 'get_workspace_mentions' })
     updateSuggestions(inp.value)
   })
 
@@ -1498,6 +1646,7 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#btn-workspace', () => togglePanel('workspace'))
   on('#btn-activity', () => togglePanel('activity'))
   on('#btn-history', () => togglePanel('history'))
+  on('#btn-pdf', () => togglePanel('pdf'))
   on('#btn-settings', () => togglePanel('settings'))
   const runtimeMode = document.getElementById('runtime-server-mode')
   const runtimeModel = document.getElementById('runtime-model')
@@ -1507,6 +1656,13 @@ document.addEventListener('DOMContentLoaded', () => {
   if (runtimeModel) runtimeModel.addEventListener('change', saveRuntimeSettings)
   if (runtimeThink) runtimeThink.addEventListener('change', saveRuntimeSettings)
   if (runtimePort) runtimePort.addEventListener('change', saveRuntimeSettings)
+  on('#pdf-start-btn', startPdfToText)
+  on('#pdf-open-output-btn', openPdfTextOutput)
+  const pdfRewriteThai = document.getElementById('pdf-rewrite-thai')
+  if (pdfRewriteThai) pdfRewriteThai.addEventListener('change', () => {
+    pdfTextState.rewriteThai = !!pdfRewriteThai.checked
+    if (!pdfTextState.busy) renderPdfTextState(null)
+  })
   const modelServerWatchdog = document.getElementById('model-server-watchdog')
   if (modelServerWatchdog) modelServerWatchdog.addEventListener('change', setModelServerWatchdog)
   on('#model-server-start-btn', () => modelServerAction('start'))

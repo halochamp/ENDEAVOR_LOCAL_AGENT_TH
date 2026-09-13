@@ -3,6 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const { spawn, exec } = require('child_process')
 const crypto = require('crypto')
+const http = require('http')
 const { isInsideWorkspace } = require('./lib/workspace_guard')
 
 // Static auth token (P2 fix) — generated once per launch, shared with the Python
@@ -274,6 +275,76 @@ ipcMain.on('open-workspace', () => {
 })
 
 ipcMain.handle('get-token', () => AGENT_TOKEN)
+
+function _agentJsonRequest({ method = 'GET', route, headers = {}, body = null, filePath = '' }) {
+  return new Promise(resolve => {
+    const req = http.request({
+      hostname: '127.0.0.1', port: AGENT_PORT, path: route, method,
+      headers: { 'X-Auth-Token': AGENT_TOKEN, ...headers },
+    }, res => {
+      const chunks = []
+      let total = 0
+      res.on('data', chunk => {
+        total += chunk.length
+        if (total > 1024 * 1024) {
+          req.destroy(new Error('agent response too large'))
+          return
+        }
+        chunks.push(chunk)
+      })
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+          parsed.http_status = res.statusCode || 0
+          resolve(parsed)
+        } catch {
+          resolve({ ok: false, error: 'invalid agent response', http_status: res.statusCode || 0 })
+        }
+      })
+    })
+    req.on('error', err => resolve({ ok: false, error: String(err && err.message || err) }))
+    req.setTimeout(300_000, () => req.destroy(new Error('PDF upload timed out')))
+    if (filePath) {
+      const stream = fs.createReadStream(filePath)
+      stream.on('error', err => req.destroy(err))
+      stream.pipe(req)
+    } else {
+      req.end(body == null ? undefined : body)
+    }
+  })
+}
+
+ipcMain.handle('pdf-to-text-start', async (_e, rewriteThai) => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'เลือก PDF เพื่อแปลงเป็นข้อความ',
+    properties: ['openFile'],
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  })
+  if (canceled || !filePaths.length) return { ok: false, cancelled: true }
+  const filePath = filePaths[0]
+  try {
+    const info = await fs.promises.stat(filePath)
+    if (!info.isFile() || info.size <= 0) return { ok: false, error: 'PDF ว่างหรืออ่านไม่ได้' }
+    return await _agentJsonRequest({
+      method: 'POST',
+      route: '/pdf-to-text/start',
+      filePath,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Length': String(info.size),
+        'X-File-Name': encodeURIComponent(path.basename(filePath)),
+        'X-Rewrite-Thai': rewriteThai ? '1' : '0',
+      },
+    })
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) }
+  }
+})
+
+ipcMain.handle('pdf-to-text-status', async (_e, jobId) => {
+  const id = String(jobId || '')
+  return _agentJsonRequest({ route: `/pdf-to-text/status?job_id=${encodeURIComponent(id)}` })
+})
 
 // Compact mode: renderer toggles its CSS, but only the main process can resize
 // the BrowserWindow. Shrink to a floating mini-chat pinned above other windows;

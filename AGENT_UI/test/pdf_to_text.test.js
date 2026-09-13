@@ -1,0 +1,40 @@
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+const test = require('node:test')
+
+const ROOT = path.join(__dirname, '..')
+const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
+const renderer = fs.readFileSync(path.join(ROOT, 'renderer.js'), 'utf8')
+const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
+const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
+
+test('Electron exposes a dedicated PDF to Text tab with opt-in no-think rewrite', () => {
+  assert.match(html, /id="btn-pdf"/)
+  assert.match(html, /id="left-pdf"/)
+  assert.match(html, /id="pdf-rewrite-thai" type="checkbox"/)
+  assert.match(html, /local LLM[\s\S]*no-think/)
+  assert.match(html, /deterministic cleanup[\s\S]*ภาษาไทย/)
+  assert.doesNotMatch(html, /id="pdf-rewrite-thai"[^>]*checked/)
+})
+
+test('renderer wires the PDF tab without routing through chat', () => {
+  assert.match(renderer, /on\('#btn-pdf', \(\) => togglePanel\('pdf'\)\)/)
+  assert.match(renderer, /on\('#pdf-start-btn', startPdfToText\)/)
+  assert.match(renderer, /async function startPdfToText\(\)/)
+  assert.match(renderer, /window\.electronAPI\.pdfToTextStart\(pdfTextState\.rewriteThai\)/)
+  assert.match(renderer, /window\.electronAPI\.pdfToTextStatus\(pdfTextState\.jobId\)/)
+  assert.match(renderer, /function openPdfTextOutput\(\)/)
+  const pdfStart = renderer.slice(renderer.indexOf('async function startPdfToText()'), renderer.indexOf('function openPdfTextOutput()'))
+  assert.doesNotMatch(pdfStart, /wsSend\(\{\s*type:\s*'query'/)
+})
+
+test('preload keeps PDF IPC narrow and Electron main streams authenticated bytes', () => {
+  assert.match(preload, /pdfToTextStart: \(rewriteThai\) => ipcRenderer\.invoke\('pdf-to-text-start'/)
+  assert.match(preload, /pdfToTextStatus: \(jobId\) => ipcRenderer\.invoke\('pdf-to-text-status'/)
+  assert.match(main, /ipcMain\.handle\('pdf-to-text-start'/)
+  assert.match(main, /filters: \[\{ name: 'PDF', extensions: \['pdf'\] \}\]/)
+  assert.match(main, /fs\.createReadStream\(filePath\)/)
+  assert.match(main, /'X-Auth-Token': AGENT_TOKEN/)
+  assert.match(main, /'X-Rewrite-Thai': rewriteThai \? '1' : '0'/)
+})

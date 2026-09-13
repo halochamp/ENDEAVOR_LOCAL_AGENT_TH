@@ -259,6 +259,39 @@ class ServerRuntimeSyncTests(unittest.TestCase):
         )
         self.assertIn("/ws?transport=desktop", renderer)
 
+    def test_workspace_mentions_are_recursive_and_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nested = root / "docs"
+            nested.mkdir()
+            target = nested / "world.doc"
+            target.write_text("hello", encoding="utf-8")
+            outside = root.parent / "outside-mention.txt"
+            outside.write_text("outside", encoding="utf-8")
+            try:
+                with patch.object(srv, "WORKSPACE", str(root)):
+                    index = srv._list_workspace_mentions()
+                    self.assertTrue(any(item.get("relative_path") == "docs/world.doc" for item in index))
+                    grounded = srv._augment_query_with_workspace_mentions(
+                        "สรุปไฟล์ให้หน่อย", ["docs/world.doc"],
+                    )
+                    self.assertIn(str(target.resolve()), grounded)
+                    self.assertIn("read_file", grounded)
+                    with self.assertRaises(ValueError):
+                        srv._augment_query_with_workspace_mentions("x", ["../outside-mention.txt"])
+            finally:
+                outside.unlink(missing_ok=True)
+
+    def test_pdf_panel_routes_are_authenticated_backend_surfaces(self) -> None:
+        paths = {getattr(route, "path", "") for route in srv.api.routes}
+        self.assertIn("/pdf-to-text/start", paths)
+        self.assertIn("/pdf-to-text/status", paths)
+        source = (Path(srv.__file__).resolve().parent / "pdf_to_text.py").read_text(encoding="utf-8")
+        self.assertNotIn("/Users/", source)
+        self.assertNotIn("SERVER_MONITOR", source)
+        self.assertIn("enable_thinking", source)
+        self.assertIn('"thinking_budget": 0', source)
+
     def test_bundled_browser_ui_routes_are_retired(self) -> None:
         paths = {getattr(route, "path", "") for route in srv.api.routes}
         self.assertNotIn("/ui", paths)

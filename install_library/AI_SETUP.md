@@ -160,7 +160,12 @@ up). Key things to know:
 **Workspace** — the agent reads files from anywhere (except blocked system/credential
 paths) but only **writes/creates files inside `workspace/`**. If the user asks the
 agent to "save this file" or "create a script", point them to `workspace/` — that's
-where outputs land. See README.md "Security" section for the full read/write model.
+where outputs land. In Electron, the sidebar calls this area **Workspace** and typing
+`@` in the composer opens Workspace file autocomplete; selecting a file produces a
+validated `@file` reference for the turn. Electron also has a direct **PDF to Text**
+tab; deterministic extraction/OCR works without an LLM, while the optional rewrite
+uses the currently configured local model with thinking disabled. See README.md
+"Security" section for the full read/write model.
 
 **Model server + runtime settings** — CLI and Electron share
 `workspace/runtime_settings.json`: Model, Think Budget, Server Mode, and Port. CLI `menu`

@@ -22,10 +22,13 @@ import secrets
 import shutil
 import stat
 import subprocess
+import tempfile
 import sys
 import threading
 import time
 import uuid
+from pathlib import Path
+from urllib.parse import unquote
 
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -38,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from agent_log import AgentLogger
 from awake_engine import AwakeEngine, Registry, drain_notices, restore_notices
 import config as _config
+import pdf_to_text
 from config import (
     RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED,
     READ_FILE_MAX_BYTES, READ_FILE_AUDIO_VIDEO_MAX_BYTES,
@@ -1371,6 +1375,120 @@ def _run_agent_sync(
             pass
 
 
+# ── Direct PDF -> Text jobs (Electron-only surface) ───────────────────────────
+# The conversion pipeline is independent from the chat/graph worker: native PDF
+# text + local OCR work without an LLM; optional Thai rewrite calls the currently
+# selected local runtime model directly with no-think.
+_PDF_TEXT_STATE_LOCK = threading.RLock()
+_pdf_text_state: dict | None = None
+_pdf_text_task: asyncio.Task | None = None
+_PDF_TEXT_UPLOAD_DIR = Path(_config.PDF_TO_TEXT_PRIVATE_DIR) / "uploads"
+_MANAGED_PDF_TEXT_PREFIX = "th-pdf-to-text-"
+
+
+def _pdf_text_snapshot() -> dict:
+    with _PDF_TEXT_STATE_LOCK:
+        if not _pdf_text_state:
+            return {
+                "job_id": "", "status": "idle", "event": "idle", "message": "พร้อม",
+                "source_name": "", "rewrite_thai": False, "page": 0, "total_pages": 0,
+                "stats": {}, "warnings": [], "output_path": "", "error": "",
+            }
+        snap = dict(_pdf_text_state)
+        snap["stats"] = dict(snap.get("stats") or {})
+        snap["warnings"] = list(snap.get("warnings") or [])
+        return snap
+
+
+def _update_pdf_text_state(job_id: str, **changes) -> None:
+    with _PDF_TEXT_STATE_LOCK:
+        if not _pdf_text_state or _pdf_text_state.get("job_id") != job_id:
+            return
+        _pdf_text_state.update(changes)
+
+
+def _pdf_text_progress(job_id: str, stage: str, page: int, total: int, stats: dict) -> None:
+    detail = dict(stats or {})
+    if stage == "extract":
+        message = f"กำลังอ่าน PDF หน้า {page}/{total}…"
+    elif stage == "rewrite":
+        batch = int(detail.get("batch") or 0)
+        batches = int(detail.get("batches") or 0)
+        message = f"กำลังใช้ local LLM แบบ no-think เกลาภาษาไทย · batch {batch}/{batches}…"
+    elif stage == "write":
+        message = "กำลังเขียนไฟล์ข้อความ…"
+    else:
+        message = "กำลังแปลง PDF เป็นข้อความ…"
+    _update_pdf_text_state(
+        job_id,
+        status="running",
+        event=stage,
+        message=message,
+        page=int(page or 0),
+        total_pages=int(total or 0),
+        stats=detail,
+    )
+
+
+def _cleanup_pdf_text_uploads(*, keep: Path | None = None) -> None:
+    try:
+        entries = [
+            item for item in _PDF_TEXT_UPLOAD_DIR.iterdir()
+            if item.name.startswith(_MANAGED_PDF_TEXT_PREFIX)
+            and item.is_file()
+            and not item.is_symlink()
+        ]
+    except OSError:
+        return
+    cutoff = time.time() - _config.PDF_TO_TEXT_CACHE_MAX_AGE_SECONDS
+    for item in entries:
+        if item == keep:
+            continue
+        try:
+            if item.stat().st_mtime <= cutoff:
+                item.unlink()
+        except OSError:
+            pass
+
+
+async def _run_pdf_text_job(job_id: str, source: Path, source_name: str, rewrite_thai: bool) -> None:
+    try:
+        result = await asyncio.to_thread(
+            pdf_to_text.convert_pdf,
+            source,
+            source_name=source_name,
+            rewrite_thai=rewrite_thai,
+            progress=lambda stage, page, total, stats: _pdf_text_progress(
+                job_id, stage, page, total, stats
+            ),
+        )
+        _update_pdf_text_state(
+            job_id,
+            status="done",
+            event="done",
+            message="แปลง PDF → Text เสร็จแล้ว",
+            total_pages=int(result.get("total_pages") or 0),
+            output_path=str(result.get("output_path") or ""),
+            stats=dict(result.get("stats") or {}),
+            warnings=list(result.get("warnings") or []),
+            error="",
+        )
+    except Exception as exc:
+        log.exception("PDF to Text job failed")
+        _update_pdf_text_state(
+            job_id,
+            status="error",
+            event="error",
+            message="PDF to Text ไม่สำเร็จ",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        try:
+            source.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 # ── Workspace file helpers ─────────────────────────────────────────────────────
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg", ".tiff"}
@@ -1436,6 +1554,82 @@ def _list_workspace() -> list[dict]:
     return _list_dir(WORKSPACE)
 
 
+_WORKSPACE_MENTION_INDEX_MAX = 1000
+_WORKSPACE_MENTION_PER_TURN_MAX = 10
+
+
+def _list_workspace_mentions() -> list[dict]:
+    """Return a bounded recursive file index for Desktop @-mention autocomplete."""
+    root = os.path.realpath(WORKSPACE)
+    result: list[dict] = []
+    for current, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        dirnames[:] = sorted(
+            [name for name in dirnames if not os.path.islink(os.path.join(current, name))],
+            key=str.lower,
+        )
+        for name in sorted(filenames, key=str.lower):
+            path = os.path.join(current, name)
+            try:
+                if os.path.islink(path) or not os.path.isfile(path):
+                    continue
+                real = _safe_real(path)
+                if real is None:
+                    continue
+                stat_info = os.stat(real)
+            except OSError:
+                continue
+            result.append({
+                "name": name,
+                "relative_path": os.path.relpath(real, root).replace(os.sep, "/"),
+                "size": stat_info.st_size,
+                "mtime": stat_info.st_mtime,
+            })
+            if len(result) >= _WORKSPACE_MENTION_INDEX_MAX:
+                return result
+    return result
+
+
+def _workspace_mention_paths(raw_mentions: object) -> list[str]:
+    """Validate client-selected Workspace-relative files and return real paths."""
+    if raw_mentions in (None, []):
+        return []
+    if not isinstance(raw_mentions, list):
+        raise ValueError("workspace_mentions must be a list")
+    if len(raw_mentions) > _WORKSPACE_MENTION_PER_TURN_MAX:
+        raise ValueError(f"tag ไฟล์ได้สูงสุด {_WORKSPACE_MENTION_PER_TURN_MAX} ไฟล์ต่อข้อความ")
+
+    root = os.path.realpath(WORKSPACE)
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for item in raw_mentions:
+        if not isinstance(item, str):
+            raise ValueError("workspace mention path must be a string")
+        rel = item.strip().replace("/", os.sep)
+        if not rel or os.path.isabs(rel):
+            raise ValueError("workspace mention path ไม่ถูกต้อง")
+        real = _safe_real(os.path.join(root, rel))
+        if real is None or not os.path.isfile(real):
+            raise ValueError(f"ไม่พบไฟล์ที่ tag ใน Workspace: {item}")
+        if real not in seen:
+            seen.add(real)
+            resolved.append(real)
+    return resolved
+
+
+def _augment_query_with_workspace_mentions(content: str, raw_mentions: object) -> str:
+    paths = _workspace_mention_paths(raw_mentions)
+    if not paths:
+        return content
+    lines = ["ผู้ใช้ tag ไฟล์จาก Workspace โดยตรง:"]
+    for index, path in enumerate(paths, 1):
+        lines.append(f"{index}. {path}")
+    lines.append(
+        "ใช้ read_image สำหรับไฟล์รูปภาพ และ read_file สำหรับไฟล์เอกสาร "
+        "อ่านไฟล์ที่ tag ก่อนตอบคำถามเมื่อคำถามอ้างถึงไฟล์เหล่านี้"
+    )
+    return content.rstrip() + "\n\n" + "\n".join(lines)
+
+
 def _read_file(path: str) -> str:
     real = _safe_real(path)
     if real is None:
@@ -1477,6 +1671,116 @@ def get_files():
 @api.get("/file", dependencies=[Depends(_require_token)])
 def get_file(path: str):
     return {"content": _read_file(path)}
+
+
+@api.post("/pdf-to-text/start", dependencies=[Depends(_require_token)])
+async def pdf_to_text_start(request: Request):
+    """Stream one PDF into private staging and start the direct conversion pipeline."""
+    global _pdf_text_state, _pdf_text_task
+
+    original_name = unquote(request.headers.get("x-file-name", ""))
+    name = Path(original_name).name.strip()
+    if (
+        not name
+        or name in {".", ".."}
+        or len(name) > 512
+        or "\x00" in name
+        or Path(name).suffix.casefold() != ".pdf"
+    ):
+        return JSONResponse({"ok": False, "error": "กรุณาเลือกไฟล์ PDF ที่ชื่อถูกต้อง"}, status_code=400)
+
+    length = request.headers.get("content-length")
+    if length:
+        try:
+            declared_length = int(length)
+        except ValueError:
+            return JSONResponse({"ok": False, "error": "ขนาด PDF ไม่ถูกต้อง"}, status_code=400)
+        if declared_length <= 0 or declared_length > _config.PDF_TO_TEXT_MAX_BYTES:
+            return JSONResponse(
+                {"ok": False, "error": f"PDF ใหญ่เกิน {_config.PDF_TO_TEXT_MAX_BYTES // 1024 // 1024}MB"},
+                status_code=413,
+            )
+
+    rewrite_thai = request.headers.get("x-rewrite-thai", "0").strip().casefold() in {
+        "1", "true", "yes", "on",
+    }
+    with _PDF_TEXT_STATE_LOCK:
+        if _pdf_text_state and _pdf_text_state.get("status") in {"uploading", "queued", "running"}:
+            return {"ok": True, "already_running": True, "job": _pdf_text_snapshot()}
+        job_id = f"pdf-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+        _pdf_text_state = {
+            "job_id": job_id,
+            "status": "uploading",
+            "event": "uploading",
+            "source_name": name,
+            "rewrite_thai": bool(rewrite_thai),
+            "page": 0,
+            "total_pages": 0,
+            "stats": {},
+            "warnings": [],
+            "output_path": "",
+            "error": "",
+            "message": "กำลังรับ PDF…",
+        }
+
+    stored_path: Path | None = None
+    try:
+        _PDF_TEXT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        _PDF_TEXT_UPLOAD_DIR.chmod(0o700)
+        _cleanup_pdf_text_uploads()
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=_MANAGED_PDF_TEXT_PREFIX,
+            suffix=".pdf",
+            dir=_PDF_TEXT_UPLOAD_DIR,
+            delete=False,
+        ) as handle:
+            stored_path = Path(handle.name)
+            total = 0
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > _config.PDF_TO_TEXT_MAX_BYTES:
+                    raise ValueError("too_large")
+                handle.write(chunk)
+            if total <= 0:
+                raise ValueError("empty")
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o600)
+        with stored_path.open("rb") as stream:
+            if stream.read(5) != b"%PDF-":
+                raise ValueError("not_pdf")
+    except Exception as exc:
+        if stored_path is not None:
+            try:
+                stored_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if str(exc) == "too_large":
+            error = f"PDF ใหญ่เกิน {_config.PDF_TO_TEXT_MAX_BYTES // 1024 // 1024}MB"
+            code = 413
+        elif str(exc) == "empty":
+            error = "PDF ว่าง"
+            code = 400
+        else:
+            error = "ไฟล์ที่เลือกไม่ใช่ PDF ที่อ่านได้"
+            code = 400
+        _update_pdf_text_state(job_id, status="error", event="error", message="รับ PDF ไม่สำเร็จ", error=error)
+        return JSONResponse({"ok": False, "error": error}, status_code=code)
+
+    _update_pdf_text_state(job_id, status="queued", event="queued", message="รับ PDF แล้ว · กำลังเริ่มแปลง…")
+    _pdf_text_task = asyncio.create_task(_run_pdf_text_job(job_id, stored_path, name, rewrite_thai))
+    return {"ok": True, "already_running": False, "job": _pdf_text_snapshot()}
+
+
+@api.get("/pdf-to-text/status", dependencies=[Depends(_require_token)])
+def pdf_to_text_status(job_id: str = ""):
+    snapshot = _pdf_text_snapshot()
+    if job_id and snapshot.get("job_id") != job_id:
+        return JSONResponse({"ok": False, "error": "ไม่พบ PDF to Text job นี้"}, status_code=404)
+    return {"ok": True, "job": snapshot}
 
 
 @api.post("/chat", dependencies=[Depends(_require_token)])
@@ -1677,6 +1981,23 @@ async def ws_endpoint(websocket: WebSocket):
 
             if msg_type == "query":
                 _sync_runtime_settings_from_owner_file_if_idle()
+                content = data.get("content", "")
+                if not isinstance(content, str):
+                    await websocket.send_json({"type": "error", "msg": "query must be a string"})
+                    continue
+                try:
+                    content = _augment_query_with_workspace_mentions(
+                        content, data.get("workspace_mentions", [])
+                    )
+                except ValueError as exc:
+                    await websocket.send_json({"type": "error", "msg": str(exc)})
+                    continue
+                if len(content) > CONTEXT_MAX_CHARS:
+                    await websocket.send_json({
+                        "type": "error",
+                        "msg": f"message too large: maximum is {CONTEXT_MAX_CHARS} characters",
+                    })
+                    continue
                 if await _ws_busy_guard(websocket): continue
                 async with _busy:
                     run_id = str(uuid.uuid4())[:8]
@@ -1684,7 +2005,7 @@ async def ws_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "start", "run_id": run_id})
                     threading.Thread(
                         target=_run_agent_sync,
-                        args=(data.get("content", ""), q, loop,
+                        args=(content, q, loop,
                               _ws_sub_cb, _ws_phase_cb, _ws_plan_cb, cancel_event),
                         daemon=True,
                     ).start()
@@ -1867,6 +2188,12 @@ async def ws_endpoint(websocket: WebSocket):
                 else:
                     result = _state.toggle_skill(cmd)
                     await websocket.send_json({"type": "skill_change", **result})
+
+            elif msg_type == "get_workspace_mentions":
+                await websocket.send_json({
+                    "type": "workspace_mentions",
+                    "files": _list_workspace_mentions(),
+                })
 
             elif msg_type == "get_files":
                 req_path = data.get("path", WORKSPACE)

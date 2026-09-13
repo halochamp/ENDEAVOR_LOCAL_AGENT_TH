@@ -418,6 +418,27 @@ AUTH_DISABLED = os.getenv("AGENT_AUTH_DISABLED") == "1"
 WORKSPACE = os.getenv("V2_WORKSPACE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace"))
 os.makedirs(WORKSPACE, exist_ok=True)
 
+# Direct Electron PDF -> Text panel. Runtime-private staging stays under the
+# ignored workspace while user-facing .txt output lives in workspace/pdf_to_text.
+def _pdf_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+PDF_TO_TEXT_PRIVATE_DIR = os.path.join(WORKSPACE, ".pdf_to_text")
+PDF_TO_TEXT_DB = os.path.join(PDF_TO_TEXT_PRIVATE_DIR, "pdf_to_text.sqlite3")
+PDF_TO_TEXT_OUTPUT_DIR = os.path.join(WORKSPACE, "pdf_to_text")
+PDF_TO_TEXT_MAX_BYTES = 250 * 1024 * 1024
+PDF_TO_TEXT_OCR_DPI = _pdf_env_int("V2_PDF_OCR_DPI", 180, 120, 300)
+PDF_TO_TEXT_OCR_MAX_PIXELS = 20_000_000
+PDF_TO_TEXT_NATIVE_MIN_CHARS = _pdf_env_int("V2_PDF_NATIVE_MIN_CHARS", 40, 0, 500)
+PDF_TO_TEXT_LLM_BATCH_PAGES = _pdf_env_int("V2_PDF_LLM_BATCH_PAGES", 4, 1, 8)
+PDF_TO_TEXT_LLM_BATCH_CHARS = _pdf_env_int("V2_PDF_LLM_BATCH_CHARS", 6000, 1000, 16000)
+PDF_TO_TEXT_LLM_TIMEOUT_SECONDS = _pdf_env_int("V2_PDF_LLM_TIMEOUT", 90, 10, 300)
+PDF_TO_TEXT_CACHE_MAX_AGE_SECONDS = _pdf_env_int("V2_PDF_CACHE_MAX_AGE", 86400, 3600, 604800)
+
 # ── MCP client ─────────────────────────────────────────────────────────────
 # Developer-provisioned servers are optional and empty by default in this public
 # release. Users can register Streamable HTTP or guarded local stdio servers at

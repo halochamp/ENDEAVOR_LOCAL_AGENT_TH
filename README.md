@@ -127,7 +127,9 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 ### 2. AGENT_UI — Electron Desktop App
 
-- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง พร้อม workspace, activity, history, streaming chat, file attachment และ Settings
+- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง พร้อม **Workspace**, activity, history, streaming chat, file attachment, **PDF to Text** และ Settings
+- พิมพ์ `@` ในช่องข้อความเพื่อ tag ไฟล์จาก Workspace ได้โดยตรง เช่น `@world.doc สรุปไฟล์ให้หน่อย`; autocomplete รองรับไฟล์ในโฟลเดอร์ย่อยและชื่อซ้ำจะใช้ relative path เพื่อไม่เดาผิด. Backend ตรวจ canonical path ซ้ำก่อนส่ง grounding ให้ Agent จึงกัน `../`/symlink escape ได้
+- tab **PDF to Text** แปลง PDF โดยตรงนอก chat graph: PDF ที่มี text layer ใช้ข้อความเดิม, หน้า scan ใช้ OCR + deterministic Thai formatting cleanup. ตัวเลือก `LLM rewrite` ปิดเป็นค่าเริ่มต้น; เมื่อเปิดจะใช้ local model/port ปัจจุบันแบบ **no-think** (`enable_thinking=false`, `thinking_budget=0`) เพื่อแก้ OCR ภาษาไทยแบบอนุรักษ์นิยม พร้อม validation/fallback กลับ OCR เดิมถ้าข้อความหรือเลขเปลี่ยนเกินขอบเขต
 - **ไม่ได้ bundle Electron ไว้ในรีโป** ต้อง `npm install` เองครั้งแรก:
   ```bash
   cd AGENT_UI
