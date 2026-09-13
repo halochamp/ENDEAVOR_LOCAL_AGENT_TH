@@ -90,7 +90,7 @@ function systemTelemetryText(sample) {
   const net = up === '—' || down === '—' ? '…' : `↑${up} ↓${down}`
   const tokenRate = toNumber(s.tokens_per_second_5s)
   const tok = Number.isFinite(tokenRate) && tokenRate >= 0 ? `${tokenRate.toFixed(1)} t/s` : '—'
-  return `CPU ${pct(s.cpu_percent, 1)} · GPU ${pct(s.gpu_percent)} · RAM ${ram} · NET ${net} · TOK ${tok}`
+  return `CPU ${pct(s.cpu_percent, 1)} · GPU ${pct(s.gpu_percent)} · RAM ${ram} · TOK ${tok} · NET ${net}`
 }
 
 if (typeof module !== 'undefined' && module.exports) {

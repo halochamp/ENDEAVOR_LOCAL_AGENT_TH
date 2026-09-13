@@ -171,7 +171,11 @@ class ServerRuntimeSyncTests(unittest.TestCase):
                 srv._mark_generation_token(now=96.0 + (i * 0.16))
             self.assertEqual(srv._generation_tokens_per_second(now=100.0), 5.0)
             srv._generation_run_end("run-a")
-            self.assertEqual(srv._generation_tokens_per_second(now=100.0), 0.0)
+            self.assertEqual(srv._generation_tokens_per_second(now=100.0), 5.0)
+            srv._generation_run_start("run-b")
+            self.assertEqual(srv._generation_tokens_per_second(now=100.0), 5.0)
+            srv._generation_run_end("run-b")
+            self.assertEqual(srv._generation_tokens_per_second(now=105.0), 0.0)
         finally:
             with srv._generation_token_lock:
                 srv._generation_token_times.clear()

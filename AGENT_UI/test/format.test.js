@@ -80,7 +80,7 @@ test('modelServerStatusText distinguishes standalone and shared MAX', () => {
   assert.strictEqual(modelServerStatusText({ state: 'shared_offline' }), 'Shared MAX offline')
 })
 
-test('system telemetry formats portable CPU GPU RAM and network on one line', () => {
+test('system telemetry formats portable CPU GPU RAM TOK and network on one line', () => {
   const line = systemTelemetryText({
     cpu_percent: 12.34,
     gpu_percent: 75,
@@ -92,8 +92,8 @@ test('system telemetry formats portable CPU GPU RAM and network on one line', ()
   })
   assert.strictEqual(
     line,
-    'CPU 12.3% · GPU 75% · RAM 24.0/48 GB · NET ↑1.5 KB/s ↓2.0 MB/s · TOK 42.6 t/s',
+    'CPU 12.3% · GPU 75% · RAM 24.0/48 GB · TOK 42.6 t/s · NET ↑1.5 KB/s ↓2.0 MB/s',
   )
   assert.strictEqual(byteRateText(null), '—')
-  assert.strictEqual(systemTelemetryText({}), 'CPU — · GPU — · RAM — · NET … · TOK —')
+  assert.strictEqual(systemTelemetryText({}), 'CPU — · GPU — · RAM — · TOK — · NET …')
 })

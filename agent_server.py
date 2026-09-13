@@ -616,8 +616,9 @@ async def _model_server_watchdog_loop() -> None:
 def _generation_run_start(run_id) -> None:
     key = str(run_id or "default")
     with _generation_token_lock:
-        if not _generation_active_runs:
-            _generation_token_times.clear()
+        # One Agent turn can contain several adjacent LLM runs. Keep one true
+        # process-level rolling 5s window across those run boundaries; samples
+        # expire only by timestamp, never because another run starts.
         _generation_active_runs.add(key)
 
 
@@ -655,8 +656,6 @@ def _generation_tokens_per_second(now: float | None = None) -> float:
     with _generation_token_lock:
         while _generation_token_times and _generation_token_times[0] < cutoff:
             _generation_token_times.popleft()
-        if not _generation_active_runs:
-            return 0.0
         return len(_generation_token_times) / _GENERATION_RATE_WINDOW_SECONDS
 
 
