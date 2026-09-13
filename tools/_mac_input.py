@@ -536,6 +536,11 @@ def open_url(url: str, app: str = "") -> None:
     result = subprocess.run(command, capture_output=True, text=True, timeout=10,
                             stdin=subprocess.DEVNULL)
     if not result.returncode:
+        # LaunchServices can accept the URL while another app remains frontmost.
+        # Re-activate the requested browser so a following computer action cannot
+        # accidentally land in the app that previously had focus.
+        if application:
+            open_app(application)
         return
     if not application:
         raise RuntimeError(result.stderr.strip() or f"could not open {value}")
@@ -546,3 +551,4 @@ def open_url(url: str, app: str = "") -> None:
                               stdin=subprocess.DEVNULL)
     if fallback.returncode:
         raise RuntimeError(fallback.stderr.strip() or f"could not open {value} in {resolved}")
+    open_app(application)

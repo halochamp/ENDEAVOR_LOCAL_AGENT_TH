@@ -31,10 +31,13 @@ import logging
 import os
 import random
 import shutil
+import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -54,6 +57,7 @@ _TIMEOUT = int(os.getenv("V2_BROWSER_TIMEOUT", "300"))  # seconds — multi-step
 _ACTIONS = {"", "browse", "close", "status"}
 _CDP_PROBE_TIMEOUT = 3.0
 _TERM_GRACE_SECONDS = 5
+_FRESH_PROFILE_PREFIX = "browser-use-user-data-dir-"
 
 # Basic-stealth UA: browser-use's default headless launch args already disable the
 # 'AutomationControlled' Blink feature (browser/profile.py), but the default UA on some
@@ -77,11 +81,34 @@ def _state_path() -> Path:
 
 
 class _State:
-    """Flock-guarded single-record JSON state — same pattern as bash_bg._Registry."""
+    """Cross-process browser ownership registry with a fail-closed quarantine."""
 
     def __init__(self) -> None:
         self.path = _state_path()
         self._lock_path = self.path.with_suffix(".lock")
+        self._operation_lock_path = self.path.with_suffix(".operation.lock")
+        self._quarantine_path = self.path.with_suffix(".quarantine")
+
+    @staticmethod
+    def _read_json(path: Path) -> dict | None:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return {"pid": 0, "needs_close": True, "_state_blocked": True}
+        try:
+            rec = json.loads(raw)
+        except Exception:
+            return {"pid": 0, "needs_close": True, "_state_blocked": True}
+        if not isinstance(rec, dict):
+            return {"pid": 0, "needs_close": True, "_state_blocked": True}
+        pid = rec.get("pid")
+        valid_owned = isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+        valid_blocked = pid == 0 and rec.get("needs_close") is True and rec.get("_state_blocked") is True
+        return rec if valid_owned or valid_blocked else {
+            "pid": 0, "needs_close": True, "_state_blocked": True,
+        }
 
     def _locked(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,33 +117,93 @@ class _State:
         return handle
 
     def load(self) -> dict | None:
+        quarantine = self._read_json(self._quarantine_path)
+        if quarantine is not None:
+            return quarantine
+        return self._read_json(self.path)
+
+    @staticmethod
+    def _atomic_write(path: Path, rec: dict) -> None:
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         try:
-            raw = self.path.read_text(encoding="utf-8")
-        except OSError:
-            return None
-        try:
-            rec = json.loads(raw)
-        except Exception:
-            return None
-        return rec if isinstance(rec, dict) and rec.get("pid") else None
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(rec, stream, ensure_ascii=False, indent=1)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp, path)
+            os.chmod(path, 0o600)
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
 
     def save(self, rec: dict) -> None:
         handle = self._locked()
         try:
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
-            os.replace(tmp, self.path)
+            self._atomic_write(self.path, rec)
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
             handle.close()
 
-    def clear(self) -> None:
+    def save_reusable(self, rec: dict) -> bool:
         handle = self._locked()
         try:
+            self._atomic_write(self.path, rec)
             try:
-                self.path.unlink()
-            except OSError:
+                self._quarantine_path.unlink()
+            except FileNotFoundError:
                 pass
+            except OSError:
+                return False
+            return not self._quarantine_path.exists()
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()
+
+    def save_quarantine(self, rec: dict) -> None:
+        handle = self._locked()
+        try:
+            self._atomic_write(self._quarantine_path, rec)
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()
+
+    def try_operation(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self._operation_lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+        handle = os.fdopen(fd, "w")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return None
+        return handle
+
+    @staticmethod
+    def release_operation(handle) -> None:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        handle.close()
+
+    def clear(self) -> bool:
+        handle = self._locked()
+        ok = True
+        try:
+            for path in (self.path, self._quarantine_path):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    ok = False
+            for path in (self.path, self._quarantine_path):
+                try:
+                    if path.exists() or path.is_symlink():
+                        ok = False
+                except OSError:
+                    ok = False
+            return ok
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
             handle.close()
@@ -176,31 +263,202 @@ def _cdp_responds(cdp_url: str) -> bool:
     return False
 
 
+# browser-use creates throwaway profiles under these two prefixes.
+_TEMP_PROFILE_MARKERS = ("browser-use-user-data-dir-", "browseruse-tmp-")
+
+
+def _cleanup_temp_profile(user_data_dir: str | None) -> bool:
+    """Delete only a direct child of the OS temp dir owned by browser-use."""
+    raw = str(user_data_dir or "").strip()
+    if not raw:
+        return True
+    try:
+        candidate = Path(raw).expanduser()
+        if candidate.is_symlink():
+            return False
+        path = candidate.resolve()
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        if not path.is_relative_to(temp_root):
+            return True
+        if not any(candidate.name.startswith(marker) for marker in _TEMP_PROFILE_MARKERS):
+            return True
+        if path.parent != temp_root:
+            return False
+        safe_candidate = temp_root / path.name
+        if safe_candidate.is_symlink() or safe_candidate.resolve() != path:
+            return False
+        if safe_candidate.exists() and not safe_candidate.is_dir():
+            return False
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for _ in range(3):
+        shutil.rmtree(safe_candidate, ignore_errors=True)
+        time.sleep(0.1)
+        if not safe_candidate.exists():
+            return True
+    return not safe_candidate.exists()
+
+
+def _persist_quarantine(state: _State, rec: dict) -> bool:
+    updated = dict(rec)
+    updated["needs_close"] = True
+    try:
+        state.save(updated)
+    except BaseException:
+        log.warning("could not persist browser_use quarantine in main state", exc_info=True)
+    try:
+        state.save_quarantine(updated)
+        return True
+    except BaseException:
+        log.warning("could not persist browser_use quarantine sidecar", exc_info=True)
+        return False
+
+
+def _reserve_lifecycle(state: _State, live: dict | None,
+                       url: str, task: str, user_data_dir: str = "") -> bool:
+    """Persist fail-closed ownership uncertainty before touching Chromium."""
+    if live is not None:
+        return _persist_quarantine(state, live)
+    tombstone = {
+        "pid": 0,
+        "needs_close": True,
+        "_state_blocked": True,
+        "launch_in_progress": True,
+        "url": url,
+        "task": task,
+        "user_data_dir": user_data_dir,
+        "opened_at": _now_iso(),
+    }
+    try:
+        state.save_quarantine(tombstone)
+        return True
+    except BaseException:
+        log.warning("could not persist browser_use launch reservation", exc_info=True)
+        return False
+
+
+def _rollback_lifecycle_reservation(state: _State, live: dict | None) -> bool:
+    try:
+        return state.save_reusable(live) if live is not None else state.clear()
+    except BaseException:
+        log.warning("could not roll back browser_use lifecycle reservation", exc_info=True)
+        return False
+
+
+def _profile_browser_pids(user_data_dir: str | None = None) -> list[int] | None:
+    """Find browser-use Chromium main processes by exact throwaway-profile argv."""
+    raw = str(user_data_dir or "").strip()
+    exact_profile_arg = f"--user-data-dir={raw}" if raw else ""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,command="],
+                             capture_output=True, text=True, timeout=5)
+        if out.returncode != 0:
+            return None
+        candidates: list[int] = []
+        for line in out.stdout.splitlines():
+            fields = line.strip().split(None, 1)
+            if len(fields) != 2:
+                continue
+            try:
+                pid = int(fields[0])
+                argv = shlex.split(fields[1])
+            except (ValueError, TypeError):
+                continue
+            if pid == os.getpid():
+                continue
+            if not any(arg.startswith("--remote-debugging-port=") and arg.split("=", 1)[1]
+                       for arg in argv):
+                continue
+            profile_args = [arg for arg in argv if arg.startswith("--user-data-dir=")]
+            if exact_profile_arg:
+                if exact_profile_arg not in profile_args:
+                    continue
+            else:
+                if not any(
+                    any(Path(arg.split("=", 1)[1]).name.startswith(marker)
+                        for marker in _TEMP_PROFILE_MARKERS)
+                    for arg in profile_args if arg.split("=", 1)[1]
+                ):
+                    continue
+            candidates.append(pid)
+        return sorted(set(candidates))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _recover_blocked_lifecycle_state(state: _State, rec: dict) -> dict | None:
+    """Recover only when exact profile/process evidence makes ownership deterministic."""
+    if not rec.get("_state_blocked"):
+        return rec
+    pid = rec.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        return rec
+    profile = str(rec.get("user_data_dir") or "").strip()
+    if not profile and not rec.get("launch_in_progress"):
+        return rec
+    candidates = _profile_browser_pids(profile or None)
+    if candidates is None:
+        return rec
+    if profile:
+        if len(candidates) > 1:
+            return rec
+        if len(candidates) == 1:
+            recovered_pid = candidates[0]
+            start_sig = _ps_lstart(recovered_pid)
+            if not start_sig:
+                return rec
+            recovered = {
+                key: value for key, value in rec.items()
+                if key not in {"_state_blocked", "launch_in_progress"}
+            }
+            recovered.update({
+                "pid": recovered_pid,
+                "start_sig": start_sig,
+                "needs_close": True,
+                "user_data_dir": profile,
+            })
+            return recovered if _persist_quarantine(state, recovered) else rec
+        if not _cleanup_temp_profile(profile):
+            return rec
+    elif candidates:
+        return rec
+    return None if state.clear() else rec
+
+
 def _live(state: _State | None = None) -> dict | None:
-    """The kept-open browser if it is genuinely reusable, else None (clearing the
-    record on the way out so the next call launches fresh instead of erroring)."""
+    """Return reusable ownership; blocked/uncertain state stays fail-closed."""
     state = state or _State()
     rec = state.load()
     if rec is None:
         return None
+    if rec.get("_state_blocked"):
+        rec = _recover_blocked_lifecycle_state(state, rec)
+        if rec is None or rec.get("_state_blocked"):
+            return rec
     pid = rec.get("pid")
-    if not _is_alive(pid) or _ps_lstart(pid) != rec.get("start_sig"):
+    start_sig = rec.get("start_sig")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return rec
+    if not _is_alive(pid) or _ps_lstart(pid) != start_sig:
+        _cleanup_temp_profile(rec.get("user_data_dir"))
         state.clear()
         return None
+    if rec.get("needs_close"):
+        return rec
     if not _cdp_responds(rec.get("cdp_url", "")):
-        # Process still around but not serving CDP — nothing can drive it any more.
-        _terminate(pid)
-        state.clear()
-        return None
+        if _terminate(pid, start_sig):
+            _cleanup_temp_profile(rec.get("user_data_dir"))
+            state.clear()
+            return None
+        rec["needs_close"] = True
+        _persist_quarantine(state, rec)
     return rec
 
 
-def _terminate(pid: int) -> bool:
-    """SIGTERM, then SIGKILL after the grace period. We cannot delegate this to
-    browser-use: its LocalBrowserWatchdog only kills the process it launched itself
-    (`is_local and self._subprocess`, local_browser_watchdog.py), and a session
-    reconnected by cdp_url is is_local=False — session.kill() there disconnects but
-    leaves Chromium running forever (verified, not assumed)."""
+def _terminate(pid: int, expected_start_sig: str | None = None) -> bool:
+    """Stop only the process whose PID/start signature still matches ownership."""
+    if expected_start_sig and _ps_lstart(pid) != expected_start_sig:
+        return False
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
@@ -209,29 +467,17 @@ def _terminate(pid: int) -> bool:
     while time.time() < deadline:
         if not _is_alive(pid):
             return True
+        if expected_start_sig and _ps_lstart(pid) != expected_start_sig:
+            return False
         time.sleep(0.1)
+    if expected_start_sig and _ps_lstart(pid) != expected_start_sig:
+        return False
     try:
         os.kill(pid, signal.SIGKILL)
     except OSError:
         pass
     time.sleep(0.3)
     return not _is_alive(pid)
-
-
-# browser-use creates a throwaway profile dir under two different prefixes:
-# `browser-use-user-data-dir-` (profile.py, the common case — observed in the live
-# end-to-end) and `browseruse-tmp-` (local_browser_watchdog.py, the locked-default-dir
-# fallback). Matching only the second one silently leaks a profile dir per kept-open
-# session, since we bypass browser-use's own kill path.
-_TEMP_PROFILE_MARKERS = ("browser-use-user-data-dir-", "browseruse-tmp-")
-
-
-def _cleanup_temp_profile(user_data_dir: str | None) -> None:
-    """Remove a throwaway profile dir left behind by a kept-open browser. Only ever
-    touches a dir carrying one of browser-use's own temp markers."""
-    path = str(user_data_dir or "")
-    if path and any(marker in path for marker in _TEMP_PROFILE_MARKERS):
-        shutil.rmtree(path, ignore_errors=True)
 
 
 def _result_text(result) -> str:
@@ -257,23 +503,16 @@ def _result_text(result) -> str:
 
 
 def _browser_pid(session) -> int | None:
-    """PID of the Chromium browser-use launched. Primary source is the local watchdog
-    handle; the port scan is the fallback for when the watchdog has been detached."""
+    """PID of the exact browser-use Chromium process, never a port-only guess."""
     wd = getattr(session, "_local_browser_watchdog", None)
-    pid = getattr(wd, "browser_pid", None) if wd is not None else None
-    if pid:
-        return pid
-    port = _cdp_port(getattr(session, "cdp_url", "") or "")
-    if not port:
-        return None
-    try:
-        # Pattern deliberately has no leading "--": pgrep would parse that as an option.
-        out = subprocess.run(["pgrep", "-f", f"remote-debugging-port={port}"],
-                             capture_output=True, text=True, timeout=5)
-        pids = [int(p) for p in out.stdout.split() if p.strip().isdigit()]
-        return pids[0] if pids else None
-    except Exception:
-        return None
+    if wd is not None:
+        for handle in (getattr(wd, "_subprocess", None), getattr(wd, "browser_pid", None)):
+            pid = getattr(handle, "pid", handle)
+            if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+                return pid
+    profile = str(getattr(getattr(session, "browser_profile", None), "user_data_dir", "") or "")
+    candidates = _profile_browser_pids(profile) if profile else None
+    return candidates[0] if candidates is not None and len(candidates) == 1 else None
 
 
 def _compose_task(url: str, task: str, reusing: bool) -> str:
@@ -294,9 +533,8 @@ def _describe(rec: dict) -> str:
             f"(pid {rec.get('pid')}, เปิดตั้งแต่ {rec.get('opened_at')})")
 
 
-@tool
-def browser_use(url: str = "", task: str = "", user_query: str = "",
-                keep_open: bool = False, action: str = "") -> str:
+def _browser_use_impl(url: str = "", task: str = "", user_query: str = "",
+                      keep_open: bool = False, action: str = "") -> str:
     """Browse a website like a human — can click, scroll, fill forms, navigate multiple pages.
     Use ONLY when: user explicitly asks to "open" or "browse" a specific site, need to login, need to interact with JS-heavy pages, or browse_url returns insufficient content.
     Returns a compact Thai summary tagged with the URL — full result is cached. Call recall_web(url) for full body.
@@ -320,15 +558,35 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
     if action == "status":
         return _describe(live) if live else "ไม่มี browser เปิดค้างอยู่"
 
+    if live and live.get("_state_blocked"):
+        return ("[error] lifecycle registry ของ browser ยังยืนยัน ownership ไม่ได้ — "
+                "ห้ามเริ่ม/reconnect และห้ามใช้ pkill/kill Chrome เพราะอาจปิด browser ของผู้ใช้ผิดตัว; "
+                "ตรวจสถานะด้วย browser_use(action=\"status\") และปิดหน้าต่าง browser-use ที่ค้างเองถ้ายังมีอยู่")
+
     if action == "close":
         # No page is fetched — deliberately outside the web budget counter.
         if not live:
             return "ไม่มี browser เปิดค้างอยู่ (ไม่ต้องปิด)"
-        ok = _terminate(live["pid"])
-        _cleanup_temp_profile(live.get("user_data_dir"))
-        state.clear()
-        return ("ปิด browser เรียบร้อย" if ok else
-                f"[error] ปิด browser ไม่สำเร็จ — pid {live['pid']} ยังทำงานอยู่ กรุณาปิดหน้าต่างเอง")
+        pid = live.get("pid")
+        start_sig = live.get("start_sig")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            return "[error] ปิด browser ไม่ได้อย่างปลอดภัย — registry ไม่มี process identity ที่ยืนยันได้"
+        if not _is_alive(pid) or _ps_lstart(pid) != start_sig:
+            _cleanup_temp_profile(live.get("user_data_dir"))
+            return "ปิด browser เรียบร้อย" if state.clear() else "[error] browser ปิดแล้วแต่ล้าง registry ไม่สำเร็จ"
+        ok = _terminate(pid, start_sig)
+        if not ok:
+            _persist_quarantine(state, live)
+            return (f"[error] ปิด browser ไม่สำเร็จ — pid {pid} ยังทำงานอยู่หรือ identity เปลี่ยน "
+                    "สถานะถูกเก็บไว้ กรุณาปิดหน้าต่างเอง")
+        profile_ok = _cleanup_temp_profile(live.get("user_data_dir"))
+        cleared = state.clear() if profile_ok else False
+        return ("ปิด browser เรียบร้อย" if cleared else
+                "[error] browser หยุดแล้ว แต่ลบ profile/registry ชั่วคราวไม่สำเร็จ")
+
+    if live and live.get("needs_close"):
+        return ("[error] browser session อยู่ในสถานะไม่แน่ชัดจากการหยุดงานครั้งก่อน — "
+                "กรุณาสั่ง browser_use(action=\"close\") ก่อนเริ่มงานใหม่")
 
     url = (url or "").strip()
     if not url and not live:
@@ -362,12 +620,22 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
     except ImportError as e:
         return f"[error] browser-use not installed: {e}"
 
+    fresh_profile = (
+        "" if live else
+        str(Path(tempfile.gettempdir()) / f"{_FRESH_PROFILE_PREFIX}{uuid.uuid4().hex}")
+    )
+    if not _reserve_lifecycle(state, live, url, task, user_data_dir=fresh_profile):
+        return ("[error] browser_use ไม่สามารถบันทึก lifecycle reservation ได้อย่างปลอดภัย — "
+                "ไม่ได้เปิดหรือ reconnect browser ใหม่ กรุณาตรวจสอบสิทธิ์/พื้นที่ของ registry แล้วลองใหม่")
+
     err = _wc_check_and_inc()   # นับเฉพาะ browser launch จริง — cache hit ไม่นับ (ตาม batch_browse)
     if err:
+        if not _rollback_lifecycle_reservation(state, live):
+            err += " (lifecycle reservation ถูกเก็บไว้เพื่อป้องกันการเปิด browser ซ้ำ)"
         return err
     _progress(f"{'reconnecting to open' if live else 'launching'} Chromium for: {(url or 'current page')[:60]}")
     t0 = time.time()
-    captured: dict = {}
+    captured: dict = ({"user_data_dir": fresh_profile} if fresh_profile else {})
 
     def _on_step(browser_state_summary, model_output, step_number) -> None:
         # browser_use calls this right after each step's LLM output, before the
@@ -388,11 +656,16 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
 
     async def _run() -> str:
         try:
+            browser_model = get_model()
             llm = ChatOpenAI(
                 base_url=get_mlx_base_url(),
                 api_key=API_KEY,
-                model=get_model(),
+                model=browser_model,
                 temperature=0.1,
+                reasoning_effort="none",
+                reasoning_models=[browser_model],
+                # browser-use 0.12.9 no longer accepts LangChain's extra_body;
+                # use its native reasoning control so browser action selection stays no-think.
                 # Keep browser-use on its existing prompt-schema path: its parser does no repair,
                 # so this integration must not rely on response_format grammar enforcement from
                 # the local model server. The schema is supplied in the system prompt instead.
@@ -408,6 +681,7 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
             else:
                 session = BrowserSession(browser_profile=BrowserProfile(
                     user_agent=_STEALTH_USER_AGENT,
+                    user_data_dir=fresh_profile,
                     # randomized per-call, human-like pacing between actions (default is a
                     # robotic fixed 0.1s) — reduces timing-based bot-detection heuristics
                     wait_between_actions=random.uniform(0.4, 1.1),
@@ -457,33 +731,52 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
         raw = f"[error] browser_use runner failed: {e}"
 
     recorded = True
-    if keep_open and not live:
-        if captured.get("pid") and captured.get("cdp_url"):
-            state.save({
-                "cdp_url": captured["cdp_url"],
-                "pid": captured["pid"],
-                "start_sig": _ps_lstart(captured["pid"]),
-                "user_data_dir": captured.get("user_data_dir") or "",
+    run_failed = raw.startswith("[error]")
+    if keep_open and not live and not run_failed:
+        pid = captured.get("pid")
+        cdp_url = captured.get("cdp_url")
+        start_sig = _ps_lstart(pid) if isinstance(pid, int) and pid > 0 else None
+        if pid and cdp_url and start_sig:
+            recorded = state.save_reusable({
+                "cdp_url": cdp_url,
+                "pid": pid,
+                "start_sig": start_sig,
+                "user_data_dir": captured.get("user_data_dir") or fresh_profile,
                 "url": url,
                 "task": task,
                 "opened_at": _now_iso(),
             })
         else:
             recorded = False
-            log.warning("browser_use(keep_open=True): could not capture browser pid/cdp_url — "
-                        "the window may stay open with no way to close it from the agent")
-    elif keep_open and live:
-        # Keep the record pointing at where the window actually is, so action="status"
-        # doesn't keep reporting the url it was first opened at.
-        live["url"] = url or live.get("url", "")
-        live["task"] = task
-        state.save(live)
-    elif not live:
-        # One-shot run: browser-use has already killed the browser by now (Agent.close()
-        # is awaited inside run()), but its own cleanup only matches `browseruse-tmp-`,
-        # never the `browser-use-user-data-dir-` prefix profile.py actually uses — so
-        # every one-shot call used to leave a profile dir behind.
-        _cleanup_temp_profile(captured.get("user_data_dir"))
+            current = state.load()
+            if current is not None:
+                _recover_blocked_lifecycle_state(state, current)
+            log.warning("browser_use(keep_open=True): browser identity was not reusable; lifecycle remains guarded")
+    elif keep_open and live and not run_failed:
+        # Publish reusable state only after the task completed successfully.
+        updated = dict(live)
+        updated.pop("needs_close", None)
+        updated["url"] = url or live.get("url", "")
+        updated["task"] = task
+        recorded = state.save_reusable(updated)
+    elif live and not keep_open and not run_failed:
+        # One-shot use of an existing kept-open browser must honor keep_open=False.
+        pid = live.get("pid")
+        start_sig = live.get("start_sig")
+        stopped = isinstance(pid, int) and pid > 0 and _terminate(pid, start_sig)
+        cleaned = _cleanup_temp_profile(live.get("user_data_dir")) if stopped else False
+        if not (stopped and cleaned and state.clear()):
+            recorded = False
+            _persist_quarantine(state, live)
+    else:
+        # Fresh one-shot success/error, or any failed run: resolve the exact-profile
+        # reservation deterministically. No Chromium -> cleanup+clear; one exact
+        # Chromium -> close-only quarantine; ambiguity remains fail-closed.
+        current = state.load()
+        if current is not None:
+            remaining = _recover_blocked_lifecycle_state(state, current)
+            if remaining is not None:
+                recorded = False
 
     if raw.startswith("[error]"):
         return raw  # don't cache errors
@@ -511,3 +804,34 @@ def browser_use(url: str = "", task: str = "", user_query: str = "",
     web_cache.put(url, raw_with_task)
     web_cache.put_summary(url, effective_uq, summary, raw=raw_with_task)
     return f"[web:{url}] {summary}"
+
+
+def _browser_use_serialized(url: str = "", task: str = "", user_query: str = "",
+                            keep_open: bool = False, action: str = "") -> str:
+    if (action or "").strip().lower() == "status":
+        return _browser_use_impl(url, task, user_query, keep_open, action)
+    state = _State()
+    operation = state.try_operation()
+    if operation is None:
+        return ("[error] browser_use is busy with another browser operation — "
+                "wait for that operation to finish, then retry")
+    try:
+        return _browser_use_impl(url, task, user_query, keep_open, action)
+    finally:
+        state.release_operation(operation)
+
+
+@tool
+def browser_use(url: str = "", task: str = "", user_query: str = "",
+                keep_open: bool = False, action: str = "") -> str:
+    """Browse an interactive website: click, scroll, fill forms, navigate, or play media.
+
+    Prefer browse_url for static reading. Use keep_open=True only when the browser must
+    remain live for media or a follow-up; continue that session with another browser_use
+    call and close it with action="close". action="status" is read-only.
+    Never use pkill/kill Chrome to recover lifecycle state because that can close a
+    browser the user owns.
+    """
+    return _browser_use_serialized(
+        url=url, task=task, user_query=user_query, keep_open=keep_open, action=action,
+    )
