@@ -31,7 +31,9 @@ let wsToken = null  // cached once; '' in browser dev mode (server needs AGENT_A
 let currentRunId = null  // set on 'start' event, cleared on done/error/cancelled
 let cancelPending = false  // true between clicking stop and the turn actually stopping; locks the "stopping…" notice so late phase/progress events don't overwrite it
 let activePanel = null  // workspace | activity | history | pdf | settings | null
-let attachedFilePath = null  // path of file attached via 📎 button
+let attachedFilePath = null  // path of file attached via 📎 button (turn-only)
+let pinnedFiles = []         // persistent per-Electron-session working set, up to PIN_MAX
+const PIN_MAX = window.PinnedFiles ? window.PinnedFiles.PIN_MAX : 10
 let currentToolName = ''
 let pendingTurnQuery = ''
 let waitingSummaryTimer = null
@@ -749,17 +751,31 @@ function sendMessage() {
   const workspaceMentions = window.WorkspaceMentions
     ? window.WorkspaceMentions.extractMentionPaths(q, workspaceMentionFiles)
     : []
-  const content = attachedFilePath
-    ? (q ? `${q}\n\n${_fileHint(attachedFilePath)}` : _fileHint(attachedFilePath))
+  const turnAttachment = attachedFilePath
+  const turnAttachments = turnAttachment ? [turnAttachment] : []
+  const effectiveAttachments = window.PinnedFiles
+    ? window.PinnedFiles.withoutPinned(turnAttachments, pinnedFiles)
+    : turnAttachments.filter(p => !pinnedFiles.includes(p))
+  const currentQuestion = q || (turnAttachment ? 'สรุปไฟล์ที่แนบมาให้หน่อย' : '')
+  const content = effectiveAttachments.length
+    ? (currentQuestion ? `${currentQuestion}\n\n${_fileHint(effectiveAttachments[0])}` : _fileHint(effectiveAttachments[0]))
+    : currentQuestion
+  const displayContent = turnAttachment
+    ? (q ? `${q}  📎 ${turnAttachment.split('/').pop()}` : `📎 ${turnAttachment.split('/').pop()}`)
     : q
   pendingTurnQuery = content
-  addMessage('user', attachedFilePath
-    ? (q ? `${q}  📎 ${attachedFilePath.split('/').pop()}` : `📎 ${attachedFilePath.split('/').pop()}`)
-    : q)
+  addMessage('user', displayContent)
   inp.value = ''; autoResize(inp)
   setAttachment(null)
   setBusy(true)
-  wsSend({ type: 'query', content, workspace_mentions: workspaceMentions })
+  wsSend({
+    type: 'query',
+    content,
+    user_query: currentQuestion,
+    workspace_mentions: workspaceMentions,
+    attached_files: turnAttachments,
+    pinned_files: pinnedFiles.slice(),
+  })
 }
 
 function sendClear() {
@@ -788,6 +804,71 @@ async function handleUpload() {
   if (!window.electronAPI) return
   const filePath = await window.electronAPI.showOpenDialog()
   if (filePath) setAttachment(filePath)
+}
+
+function _renderPinnedChips() {
+  const badge = document.getElementById('pin-badge')
+  const list = document.getElementById('pin-badge-list')
+  const count = document.getElementById('pin-count')
+  if (!badge || !list || !count) return
+  count.textContent = `${pinnedFiles.length}/${PIN_MAX}`
+  if (pinnedFiles.length === 0) {
+    badge.style.display = 'none'
+    list.replaceChildren()
+    return
+  }
+  badge.style.display = 'flex'
+  list.replaceChildren()
+  pinnedFiles.forEach((p, i) => {
+    const chip = document.createElement('span')
+    chip.className = 'pin-chip'
+    chip.title = p
+    const label = document.createElement('span')
+    label.textContent = p.split('/').pop()
+    chip.appendChild(label)
+
+    const remove = document.createElement('button')
+    remove.className = 'file-chip-remove'
+    remove.type = 'button'
+    remove.title = 'Unpin ไฟล์นี้'
+    remove.dataset.idx = String(i)
+    remove.textContent = '✕'
+    remove.addEventListener('click', () => removePinnedFile(i))
+    chip.appendChild(remove)
+    list.appendChild(chip)
+  })
+}
+
+function addPinnedFiles(filePaths) {
+  const merged = window.PinnedFiles
+    ? window.PinnedFiles.mergePinned(pinnedFiles, filePaths, PIN_MAX)
+    : { files: pinnedFiles.concat((filePaths || []).slice(0, PIN_MAX - pinnedFiles.length)), rejectedCount: 0 }
+  pinnedFiles = merged.files
+  _renderPinnedChips()
+  if (merged.rejectedCount > 0) {
+    addSystem(`📌 Pin ได้สูงสุด ${PIN_MAX} ไฟล์ — ไม่ได้ Pin อีก ${merged.rejectedCount} ไฟล์`)
+  }
+}
+
+function removePinnedFile(index) {
+  if (index < 0 || index >= pinnedFiles.length) return
+  pinnedFiles.splice(index, 1)
+  _renderPinnedChips()
+}
+
+function clearPinnedFiles() {
+  pinnedFiles = []
+  _renderPinnedChips()
+}
+
+async function handlePinFiles() {
+  if (!window.electronAPI || !window.electronAPI.showPinDialog) return
+  const result = await window.electronAPI.showPinDialog()
+  const filePaths = result && Array.isArray(result.paths) ? result.paths : []
+  if (filePaths.length > 0) addPinnedFiles(filePaths)
+  if (result && result.rejected > 0) {
+    addSystem(`📌 Pin ได้เฉพาะไฟล์ใน Workspace — ข้าม ${result.rejected} ไฟล์`)
+  }
 }
 
 function sendCancel() {
@@ -1672,6 +1753,8 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#cancel-btn', () => sendCancel())
   on('#btn-clear', () => sendClear())
   on('#btn-upload', () => handleUpload())
+  on('#btn-pin', () => handlePinFiles())
+  on('#pin-badge-remove', () => clearPinnedFiles())
   on('#file-badge-remove', () => setAttachment(null))
   on('#files-back', () => navigateUp())
   on('.files-open-btn', () => openWorkspace())

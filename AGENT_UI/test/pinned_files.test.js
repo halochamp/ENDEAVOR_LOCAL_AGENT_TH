@@ -1,0 +1,34 @@
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+const test = require('node:test')
+
+const { PIN_MAX, mergePinned, withoutPinned } = require('../lib/pinned_files')
+
+test('Pin accepts 1-10 files, rejects 11th, and Pin wins over attachment', () => {
+  const ten = Array.from({ length: PIN_MAX }, (_, i) => `/workspace/pin-${i + 1}.txt`)
+  const merged = mergePinned([], ten.concat('/workspace/eleven.txt'))
+  assert.deepEqual(merged.files, ten)
+  assert.equal(merged.rejectedCount, 1)
+  assert.deepEqual(withoutPinned(['/workspace/pin-1.txt', '/workspace/other.txt'], ten), ['/workspace/other.txt'])
+})
+
+test('Electron wiring keeps Pin persistent on normal queries and telemetry below composer', () => {
+  const root = path.join(__dirname, '..')
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8')
+  const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
+
+  assert.ok(html.indexOf('lib/pinned_files.js') < html.indexOf('renderer.js'))
+  assert.match(html, /id="btn-pin"/)
+  assert.match(html, /id="pin-badge"/)
+  assert.ok(html.indexOf('id="telemetry-bar"') > html.indexOf('id="input-area"'))
+  assert.match(renderer, /pinned_files: pinnedFiles\.slice\(\)/)
+  assert.match(renderer, /user_query: currentQuestion/)
+  assert.match(renderer, /function sendClear\(\)[\s\S]*cmd: '\/clear'/)
+  assert.doesNotMatch(renderer.match(/function sendClear\(\)[\s\S]*?\n\}/)?.[0] || '', /pinnedFiles\s*=/)
+  assert.match(main, /ipcMain\.handle\('show-pin-dialog'/)
+  assert.match(main, /isInsideWorkspace\(selected, WORKSPACE_DIR\)/)
+  assert.match(preload, /showPinDialog: \(\) => ipcRenderer\.invoke\('show-pin-dialog'\)/)
+})

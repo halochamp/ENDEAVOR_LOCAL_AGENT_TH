@@ -487,6 +487,31 @@ body {
 .btn-ghost   { background: var(--bg4); color: var(--text-dim); border: 1px solid var(--divider-hover); }
 .btn-cancel  { background: var(--error-bg); color: var(--red); border: 1px solid var(--red); }
 
+/* ── Persistent pinned-file working set (per Electron session only) ─────── */
+#pin-badge {
+  display: none; align-items: center; gap: 8px;
+  padding: 4px 10px; background: var(--bg3);
+  border-top: 1px solid var(--divider); font-size: 11px;
+}
+#pin-badge-label { color: var(--text-dim); font-family: var(--mono); white-space: nowrap; }
+#pin-badge-list { flex: 1; display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+#pin-badge-remove {
+  flex-shrink: 0; background: none; border: none; color: var(--text-faint);
+  cursor: pointer; font-size: 11px; padding: 2px 4px;
+}
+#pin-badge-remove:hover { color: var(--red); }
+.pin-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 220px; padding: 2px 6px; border-radius: 4px;
+  background: var(--bg4); color: var(--text); font-family: var(--mono); font-size: 10px;
+}
+.pin-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip-remove {
+  flex-shrink: 0; background: none; border: none; color: var(--text-faint);
+  cursor: pointer; padding: 0 1px; line-height: 1; font-size: 10px;
+}
+.file-chip-remove:hover { color: var(--red); }
+
 /* ── File attachment badge ─────────────────────────────── */
 #file-badge {
   display: none; align-items: center; gap: 6px;
@@ -760,15 +785,17 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
   <!-- Chat -->
   <div id="chat-panel">
     <div id="messages"></div>
-    <div id="telemetry-bar" title="Local host telemetry · ไม่พึ่ง Server Monitor">
-      <span id="telemetry-text">CPU — · GPU — · RAM — · TOK — · NET …</span>
-    </div>
     <div id="ctx-bar">
       <span id="ctx-pct">0%</span>
       <span id="ctx-graph">░░░░░░░░░░░░░░░░░░</span>
       <span id="ctx-chars">0 / 0</span>
     </div>
     <div id="suggest-list"></div>
+    <div id="pin-badge">
+      <span id="pin-badge-label">📌 PINNED <span id="pin-count">0/10</span></span>
+      <div id="pin-badge-list"></div>
+      <button id="pin-badge-remove" title="Unpin ทุกไฟล์">Unpin all</button>
+    </div>
     <div id="file-badge">
       <span>📎</span>
       <span id="file-badge-name"></span>
@@ -778,8 +805,12 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       <textarea id="input" placeholder="พิมพ์ข้อความ... (Enter ส่ง, Shift+Enter ขึ้นบรรทัด)" rows="1"></textarea>
       <button class="btn btn-cancel" id="cancel-btn" style="display:none">■ Stop</button>
       <button class="btn btn-primary" id="send-btn">Send</button>
-      <button class="btn btn-ghost" id="btn-upload" title="แนบไฟล์">📎</button>
+      <button class="btn btn-ghost" id="btn-upload" title="แนบไฟล์เฉพาะข้อความนี้">📎</button>
+      <button class="btn btn-ghost" id="btn-pin" title="Pin ไฟล์เป็น context ต่อเนื่อง">📌</button>
       <button class="btn btn-ghost" id="btn-clear">Clear</button>
+    </div>
+    <div id="telemetry-bar" title="Local host telemetry · ไม่พึ่ง Server Monitor">
+      <span id="telemetry-text">CPU — · GPU — · RAM — · TOK — · NET …</span>
     </div>
   </div>
 
@@ -810,6 +841,7 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
 <script src="lib/busy_state.js"></script>
 <script src="lib/waiting_status.js"></script>
 <script src="lib/workspace_mentions.js"></script>
+<script src="lib/pinned_files.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>

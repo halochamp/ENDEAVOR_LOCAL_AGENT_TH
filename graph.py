@@ -11,6 +11,7 @@ START → react (main agent คุมเอง: ถ้าซับซ้อน �
 """
 from __future__ import annotations
 import logging
+import os
 import re
 from typing import Annotated, TypedDict
 
@@ -427,6 +428,112 @@ def force_compact(app, config: dict) -> dict:
     return {"cut": cut_idx, "before": chars_before, "after": chars_after}
 
 
+_PINNED_FILE_MAX = 10
+_PINNED_DOC_BATCH_MAX = 4
+_PINNED_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.heic', '.heif', '.tiff', '.tif'}
+_PIN_GENERIC_EN = {'the','a','an','this','that','file','files','document','documents','read','show','tell','summarize','summary','please','what','which','how','compare','all','pinned','pin'}
+
+
+def _pinned_read_request(path: str, user_query: str) -> dict:
+    request = {"path": path, "user_query": user_query}
+    quoted = [next(v for v in groups if v) for groups in re.findall(r'"([^"\n]{2,80})"|“([^”\n]{2,80})”|\'([^\'\n]{2,80})\'', user_query)]
+    file_exts = {'pdf','doc','docx','xls','xlsx','csv','txt','md','json','png','jpg','jpeg','gif','bmp','webp','heic','heif','tif','tiff'}
+    terms = []
+    for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.%/-]{1,39}", user_query):
+        low = term.lower().strip('./-')
+        suffix = low.rsplit('.', 1)[-1] if '.' in low else ''
+        if len(low) < 2 or low in _PIN_GENERIC_EN or low in file_exts or suffix in file_exts:
+            continue
+        if any(ch.isdigit() for ch in term) or (term.isupper() and len(term) <= 12):
+            terms.append(term)
+    terms = list(dict.fromkeys(quoted + terms))[:8]
+    if terms:
+        request['contains_any'] = terms
+        request['context_lines'] = 5
+        ext = os.path.splitext(path)[1].lower()
+        if ext in {'.pdf','.doc','.docx'}: request['doc_mode'] = 'section'
+        elif ext in {'.xlsx','.xls'}: request['doc_mode'] = 'row'
+    return request
+
+
+def _pinned_file_blocks(result: str, paths: list[str]) -> tuple[list[str], list[dict[str, str]]]:
+    ok, failures, text = [], [], str(result or '')
+    for idx, path in enumerate(paths):
+        marker = f"[file:{path}]\n"; start = text.find(marker)
+        if start < 0:
+            failures.append({'path': path, 'reason': 'read_file ไม่คืนผลสำหรับไฟล์นี้'}); continue
+        start += len(marker)
+        nexts = [p for other in paths[idx+1:] if (p := text.find(f"[file:{other}]\n", start)) >= 0]
+        body = text[start:min(nexts) if nexts else len(text)].lstrip()
+        if body.startswith('[error]'): failures.append({'path': path, 'reason': body.splitlines()[0][:240]})
+        else: ok.append(path)
+    return ok, failures
+
+
+def _pinned_image_blocks(result: str, paths: list[str]) -> tuple[list[str], list[dict[str, str]]]:
+    text = str(result or ''); ok, failures = [], []
+    if len(paths) == 1 and not text.startswith('[image:1 '):
+        return ([], [{'path': paths[0], 'reason': text.splitlines()[0][:240]}]) if text.lstrip().lower().startswith('[error]') else ([paths[0]], [])
+    for i, path in enumerate(paths, 1):
+        marker = f"[image:{i} {path}]\n"; start = text.find(marker)
+        if start < 0: failures.append({'path': path, 'reason': 'read_image ไม่คืนผลสำหรับภาพนี้'}); continue
+        start += len(marker); nxt = text.find(f"[image:{i+1} ", start) if i < len(paths) else len(text)
+        body = text[start:nxt if nxt >= 0 else len(text)].lstrip().lower()
+        if body.startswith('[error]') or 'direct vision deferred' in body: failures.append({'path': path, 'reason': body.splitlines()[0][:240]})
+        else: ok.append(path)
+    return ok, failures
+
+
+def _seed_pinned_files(msgs: list, query: str, *, tool_config: RunnableConfig | None = None) -> tuple[list, list, dict]:
+    cfg = dict(((tool_config or {}).get('configurable') or {}))
+    paths = [str(p) for p in (cfg.get('pinned_files') or [])[:_PINNED_FILE_MAX] if str(p).strip()]
+    raw_failures = [dict(x) for x in (cfg.get('pinned_failures') or []) if isinstance(x, dict)]
+    user_query = str(cfg.get('pinned_user_query') or query or '').strip()
+    status = {'requested': len(paths) + len(raw_failures), 'success': [], 'failures': raw_failures}
+    if not paths: return msgs, [], status
+    images = [p for p in paths if os.path.splitext(p)[1].lower() in _PINNED_IMAGE_EXTS]
+    docs = [p for p in paths if p not in set(images)]
+    seeded = []
+    if docs:
+        from tools.read_file import read_file
+        for offset in range(0, len(docs), _PINNED_DOC_BATCH_MAX):
+            batch = docs[offset:offset+_PINNED_DOC_BATCH_MAX]; reqs = [_pinned_read_request(p, user_query) for p in batch]
+            args = {'requests': reqs}; _phase(f"📌 กำลังอ่านไฟล์ Pin {offset+1}-{offset+len(batch)}/{len(docs)}…")
+            try: result = str(read_file.invoke(args, config=tool_config or {}))
+            except Exception as exc: result = f"[error] pinned read_file failed: {exc}"
+            ok, fails = ([], [{'path': p, 'reason': result.splitlines()[0][:240]} for p in batch]) if result.startswith('[error]') and '[file:' not in result else _pinned_file_blocks(result, batch)
+            tcid = 'pinned_read_file_' + uuid.uuid4().hex[:8]
+            seeded += [AIMessage(content='', tool_calls=[{'name':'read_file','args':args,'id':tcid}]), ToolMessage(content='[PINNED DOCUMENT EVIDENCE — current turn only]\n'+result, tool_call_id=tcid, name='read_file')]
+            no_match = [str(x.get('path') or '') for x in fails if str(x.get('reason') or '').startswith('[error] no matches for ')]
+            final_fails = [x for x in fails if str(x.get('path') or '') not in set(no_match)]; success = set(ok)
+            if no_match:
+                fb_args = {'requests': [{'path': p, 'user_query': user_query} for p in no_match]}
+                try: fb = str(read_file.invoke(fb_args, config=tool_config or {}))
+                except Exception as exc: fb = f"[error] pinned read_file fallback failed: {exc}"
+                fb_ok, fb_fail = ([], [{'path':p,'reason':fb.splitlines()[0][:240]} for p in no_match]) if fb.startswith('[error]') and '[file:' not in fb else _pinned_file_blocks(fb, no_match)
+                success.update(fb_ok); final_fails += fb_fail
+                tid = 'pinned_read_file_fallback_' + uuid.uuid4().hex[:8]
+                seeded += [AIMessage(content='', tool_calls=[{'name':'read_file','args':fb_args,'id':tid}]), ToolMessage(content='[PINNED DOCUMENT FALLBACK EVIDENCE — current turn only]\n'+fb, tool_call_id=tid, name='read_file')]
+            status['success'] += [p for p in batch if p in success]; status['failures'] += final_fails
+    if images:
+        from tools.read_image import read_image
+        src = images[0] if len(images) == 1 else images; args = {'source': src, 'detail': 'overview'}
+        _phase(f"📌 กำลังดูภาพ Pin {len(images)} ภาพ…")
+        try: result = str(read_image.invoke(args, config=tool_config or {}))
+        except Exception as exc: result = f"[error] pinned read_image failed: {exc}"
+        ok, fails = _pinned_image_blocks(result, images); status['success'] += ok; status['failures'] += fails
+        tid = 'pinned_read_image_' + uuid.uuid4().hex[:8]
+        seeded += [AIMessage(content='', tool_calls=[{'name':'read_image','args':args,'id':tid}]), ToolMessage(content='[PINNED IMAGE EVIDENCE — current turn only]\n'+result, tool_call_id=tid, name='read_image')]
+    return list(msgs) + seeded, seeded, status
+
+
+def _pinned_limitation_message(status: dict) -> str:
+    failures = list(status.get('failures') or [])
+    if not failures: return ''
+    details = '; '.join(f"{os.path.basename(str(x.get('path') or '?'))}: {x.get('reason') or 'อ่านไม่ได้'}" for x in failures)
+    return f"📌 ข้อจำกัดไฟล์ Pin: อ่านสำเร็จ {len(status.get('success') or [])}/{int(status.get('requested') or 0)} ไฟล์; อ่านไม่ได้: {details}. คำตอบนี้อาศัยเฉพาะหลักฐานจากไฟล์ที่อ่านได้"
+
+
 _STARTUP_WARM_THREAD_ID = "__cache_warm__"
 _REWARM_THREAD_ID = "__cache_rewarm__"
 _WARM_THREAD_IDS = {_STARTUP_WARM_THREAD_ID, _REWARM_THREAD_ID}
@@ -608,19 +715,29 @@ def _react_node_impl(state: V2State, config: RunnableConfig) -> dict:
             from tools.computer_use import set_computer_turn_scope
             set_computer_turn_scope(block_destructive=True)
 
+    # Persistent Pin is a hard current-turn evidence phase: validate in the
+    # backend, read every file here before ReAct, then discard raw tool evidence
+    # from cross-turn history so the working set is reread fresh next turn.
+    pin_query = _last_human_content(trimmed)
+    trimmed, pinned_seeded, pinned_status = _seed_pinned_files(
+        trimmed, pin_query, tool_config=config,
+    )
+
     # Deterministic intercept: when user explicitly commands research, seed create_plan
     # in code (complex) or nudge (simple). `seeded` must be persisted so the plan call
     # survives in cross-turn history and is not dropped by the slice below.
     trimmed, seeded = _force_plan_or_directive(trimmed)
+    pinned_ids = {id(m) for m in pinned_seeded}
+    persisted_window = [m for m in trimmed if id(m) not in pinned_ids]
 
     out = _REACT.invoke(
         {"messages": trimmed},
         config={**config, "recursion_limit": RECURSION_LIMIT},
     )
-    new_msgs = out["messages"][len(trimmed):]  # slice by trimmed length (correct after compaction); excludes seeded
+    new_msgs = out["messages"][len(trimmed):]  # excludes seeded Pin/plan evidence already in invoke window
 
-    # Update char count after full turn (include response in this turn's tally)
-    ctx_stats["chars"] = sum(len(str(m.content)) for m in list(trimmed) + list(new_msgs))
+    # Update persisted context accounting without transient raw Pin evidence.
+    ctx_stats["chars"] = sum(len(str(m.content)) for m in list(persisted_window) + list(new_msgs))
 
     # ตรวจว่ามี final synthesis หรือไม่
     if not _last_ai_content(new_msgs):
@@ -637,7 +754,19 @@ def _react_node_impl(state: V2State, config: RunnableConfig) -> dict:
         else:
             log.warning("[react_node] retry synthesis also empty")
 
-    # Order: removes+summary (old) → seeded plan call (this turn) → agent output (this turn)
+    pinned_limitation = _pinned_limitation_message(pinned_status)
+    if pinned_limitation:
+        new_msgs = new_msgs + [AIMessage(
+            content=pinned_limitation,
+            additional_kwargs={"_no_thinking": True, "_pinned_limitation": True},
+        )]
+
+    # Final persisted accounting excludes transient Pin tool evidence but includes
+    # any synthesis retry and deterministic Pin limitation note.
+    ctx_stats["chars"] = sum(len(str(m.content)) for m in list(persisted_window) + list(new_msgs))
+
+    # Order: removes+summary (old) → seeded plan call (this turn) → agent output (this turn).
+    # pinned_seeded is intentionally current-turn-only and is not persisted.
     return {"messages": extra_updates + seeded + new_msgs}
 
 

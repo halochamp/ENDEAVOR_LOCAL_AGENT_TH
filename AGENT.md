@@ -20,7 +20,7 @@ Important components documented by the project include:
 - `llm.py` — local OpenAI-compatible MLX client;
 - `runtime_common.py` — shared turn/runtime behavior used by CLI and the Electron backend path;
 - `model_runtime.py` — shared model-server owner state/lifecycle for Standalone mode, plus the read-only Shared MAX boundary;
-- `agent_server.py` — authenticated WebSocket/REST backend for Electron and explicit custom clients; publishes self-contained host telemetry in UI order CPU/GPU/RAM/TOK/network and validates recursive Workspace `@file` mentions before grounding them into a turn;
+- `agent_server.py` — authenticated WebSocket/REST backend for Electron and explicit custom clients; publishes self-contained host telemetry in UI order CPU/GPU/RAM/TOK/network, validates recursive Workspace `@file` mentions, and revalidates structured persistent Pin File paths every normal turn before graph-owned reads;
 - `pdf_to_text.py` — direct deterministic-first PDF → text pipeline used by Electron, with native text extraction, OCR/table reconstruction, Thai formatting repair, and optional local no-think rewrite;
 - `endeavor_agent.py` — CLI front end;
 - `AGENT_UI/` — Electron desktop front end with Workspace browsing, `@file` autocomplete, direct PDF to Text, activity/history and runtime Settings;

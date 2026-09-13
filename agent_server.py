@@ -1329,6 +1329,8 @@ def _run_agent_sync(
     phase_cb=None,
     plan_cb=None,
     cancel_event: threading.Event | None = None,
+    *,
+    turn_context: dict | None = None,
 ) -> None:
     # Bind per-run callbacks as ContextVars so parallel tool threads (LangGraph
     # ToolNode uses ThreadPoolExecutor.submit which copies context) inherit them
@@ -1345,6 +1347,10 @@ def _run_agent_sync(
     _state.logger.turn_start(query, tid)
     cb = _WSCallback(q, loop, _state.logger, tid, cancel_event)
     stream_cfg = {**_state.cfg, "callbacks": [cb]}
+    if turn_context:
+        configurable = dict(stream_cfg.get("configurable") or {})
+        configurable.update(turn_context)
+        stream_cfg["configurable"] = configurable
     try:
         final = run_turn_core(
             _state.app, actual_q, stream_cfg,
@@ -1556,6 +1562,10 @@ def _list_workspace() -> list[dict]:
 
 _WORKSPACE_MENTION_INDEX_MAX = 1000
 _WORKSPACE_MENTION_PER_TURN_MAX = 10
+_PINNED_FILE_PER_TURN_MAX = 10
+_PINNED_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.heic', '.heif', '.tiff', '.tif'}
+_ATTACH_AUDIO_EXTS = {'.m4a', '.mp3', '.wav', '.aiff', '.aif', '.caf', '.flac', '.aac'}
+_ATTACH_VIDEO_EXTS = {'.mp4', '.mov', '.m4v'}
 
 
 def _list_workspace_mentions() -> list[dict]:
@@ -1589,7 +1599,11 @@ def _list_workspace_mentions() -> list[dict]:
     return result
 
 
-def _workspace_mention_paths(raw_mentions: object) -> list[str]:
+def _workspace_mention_paths(
+    raw_mentions: object,
+    *,
+    skip_real_paths: set[str] | None = None,
+) -> list[str]:
     """Validate client-selected Workspace-relative files and return real paths."""
     if raw_mentions in (None, []):
         return []
@@ -1608,7 +1622,11 @@ def _workspace_mention_paths(raw_mentions: object) -> list[str]:
         if not rel or os.path.isabs(rel):
             raise ValueError("workspace mention path ไม่ถูกต้อง")
         real = _safe_real(os.path.join(root, rel))
-        if real is None or not os.path.isfile(real):
+        if real is None:
+            raise ValueError(f"ไม่พบไฟล์ที่ tag ใน Workspace: {item}")
+        if skip_real_paths and real in skip_real_paths:
+            continue
+        if not os.path.isfile(real):
             raise ValueError(f"ไม่พบไฟล์ที่ tag ใน Workspace: {item}")
         if real not in seen:
             seen.add(real)
@@ -1616,8 +1634,7 @@ def _workspace_mention_paths(raw_mentions: object) -> list[str]:
     return resolved
 
 
-def _augment_query_with_workspace_mentions(content: str, raw_mentions: object) -> str:
-    paths = _workspace_mention_paths(raw_mentions)
+def _augment_query_with_workspace_mention_paths(content: str, paths: list[str]) -> str:
     if not paths:
         return content
     lines = ["ผู้ใช้ tag ไฟล์จาก Workspace โดยตรง:"]
@@ -1628,6 +1645,99 @@ def _augment_query_with_workspace_mentions(content: str, raw_mentions: object) -
         "อ่านไฟล์ที่ tag ก่อนตอบคำถามเมื่อคำถามอ้างถึงไฟล์เหล่านี้"
     )
     return content.rstrip() + "\n\n" + "\n".join(lines)
+
+
+def _augment_query_with_workspace_mentions(content: str, raw_mentions: object) -> str:
+    return _augment_query_with_workspace_mention_paths(
+        content, _workspace_mention_paths(raw_mentions)
+    )
+
+
+def _pinned_file_paths(raw_pins: object) -> tuple[list[str], list[dict[str, str]]]:
+    """Validate structured Pin paths against the real Workspace on every turn."""
+    if raw_pins in (None, []):
+        return [], []
+    if not isinstance(raw_pins, list):
+        raise ValueError("pinned_files must be a list")
+    if len(raw_pins) > _PINNED_FILE_PER_TURN_MAX:
+        raise ValueError(f"Pin ได้สูงสุด {_PINNED_FILE_PER_TURN_MAX} ไฟล์")
+
+    root = os.path.realpath(WORKSPACE)
+    resolved: list[str] = []
+    failures: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_pins:
+        if not isinstance(item, str):
+            raise ValueError("pinned file path must be a string")
+        supplied = item.strip()
+        if not supplied or not os.path.isabs(supplied):
+            failures.append({"path": supplied or "<empty>", "reason": "path ไม่ใช่ canonical absolute path"})
+            continue
+        if ".." in Path(supplied).parts:
+            failures.append({"path": supplied, "reason": "path traversal ถูกปฏิเสธ"})
+            continue
+        real = os.path.realpath(supplied)
+        if real in seen:
+            continue
+        seen.add(real)
+        if os.path.normpath(supplied) != real:
+            failures.append({"path": supplied, "reason": "path ไม่เป็น canonical real path (traversal/symlink alias ถูกปฏิเสธ)"})
+            continue
+        if not (real == root or real.startswith(root + os.sep)):
+            failures.append({"path": supplied, "reason": "path อยู่นอก Workspace"})
+            continue
+        if not os.path.exists(real):
+            failures.append({"path": supplied, "reason": "ไม่พบไฟล์ (อาจถูกย้ายหรือลบ)"})
+            continue
+        if not os.path.isfile(real):
+            failures.append({"path": supplied, "reason": "path ไม่ใช่ไฟล์"})
+            continue
+        if not os.access(real, os.R_OK):
+            failures.append({"path": supplied, "reason": "ไฟล์อ่านไม่ได้"})
+            continue
+        resolved.append(real)
+    return resolved, failures
+
+
+def _canonical_attachment_paths(raw_paths: object) -> list[str]:
+    """Canonicalize optional renderer attachment metadata for source dedupe."""
+    if raw_paths in (None, []):
+        return []
+    if not isinstance(raw_paths, list):
+        raise ValueError("attached_files must be a list")
+    if len(raw_paths) > 1:
+        raise ValueError("Agent TH แนบไฟล์ได้ครั้งละ 1 ไฟล์")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_paths:
+        if not isinstance(item, str):
+            raise ValueError("attached file path must be a string")
+        supplied = item.strip()
+        if not supplied:
+            continue
+        real = os.path.realpath(supplied)
+        if real not in seen:
+            seen.add(real)
+            result.append(real)
+    return result
+
+
+def _attachment_hint(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _PINNED_IMAGE_EXTS:
+        return f"[ไฟล์แนบ (รูปภาพ): {path}]\nใช้ tool: read_image"
+    if ext in _ATTACH_AUDIO_EXTS:
+        return f"[ไฟล์แนบ (เสียง): {path}]\nใช้ tool: read_file (จะถอดเสียงเป็นข้อความอัตโนมัติ)"
+    if ext in _ATTACH_VIDEO_EXTS:
+        return f"[ไฟล์แนบ (วิดีโอ): {path}]\nใช้ tool: read_file (จะถอดเสียงจากวิดีโอเป็นข้อความอัตโนมัติ)"
+    return f"[ไฟล์แนบ: {path}]\nใช้ tool: read_file"
+
+
+def _attachment_content(question: str, paths: list[str]) -> str:
+    if not paths:
+        return question
+    hint = _attachment_hint(paths[0])
+    return f"{question}\n\n{hint}" if question else hint
 
 
 def _read_file(path: str) -> str:
@@ -1985,13 +2095,40 @@ async def ws_endpoint(websocket: WebSocket):
                 if not isinstance(content, str):
                     await websocket.send_json({"type": "error", "msg": "query must be a string"})
                     continue
+                user_query = data.get("user_query", content)
+                if not isinstance(user_query, str):
+                    await websocket.send_json({"type": "error", "msg": "user_query must be a string"})
+                    continue
                 try:
-                    content = _augment_query_with_workspace_mentions(
-                        content, data.get("workspace_mentions", [])
+                    raw_pins = data.get("pinned_files", [])
+                    pinned_paths, pinned_failures = _pinned_file_paths(raw_pins)
+                    pin_identity_set = {
+                        os.path.realpath(item.strip())
+                        for item in raw_pins
+                        if isinstance(item, str) and item.strip() and os.path.isabs(item.strip())
+                    }
+                    mention_paths = _workspace_mention_paths(
+                        data.get("workspace_mentions", []),
+                        skip_real_paths=pin_identity_set,
                     )
+                    attached_paths = _canonical_attachment_paths(
+                        data.get("attached_files", [])
+                    ) if "attached_files" in data else []
                 except ValueError as exc:
                     await websocket.send_json({"type": "error", "msg": str(exc)})
                     continue
+
+                effective_attachments = [p for p in attached_paths if p not in pin_identity_set]
+                attachment_set = set(effective_attachments)
+                effective_mentions = [p for p in mention_paths if p not in attachment_set]
+                if "attached_files" in data:
+                    content = _attachment_content(user_query, effective_attachments)
+                content = _augment_query_with_workspace_mention_paths(content, effective_mentions)
+                turn_context = {
+                    "pinned_files": pinned_paths,
+                    "pinned_failures": pinned_failures,
+                    "pinned_user_query": user_query,
+                } if (pinned_paths or pinned_failures) else None
                 if len(content) > CONTEXT_MAX_CHARS:
                     await websocket.send_json({
                         "type": "error",
@@ -2007,6 +2144,7 @@ async def ws_endpoint(websocket: WebSocket):
                         target=_run_agent_sync,
                         args=(content, q, loop,
                               _ws_sub_cb, _ws_phase_cb, _ws_plan_cb, cancel_event),
+                        kwargs={"turn_context": turn_context} if turn_context else {},
                         daemon=True,
                     ).start()
                     ws_alive = True
