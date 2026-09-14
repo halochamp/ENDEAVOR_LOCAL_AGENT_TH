@@ -88,7 +88,7 @@ test('system telemetry formats portable CPU GPU RAM TOK and network on one line'
     ram_total_bytes: 48 * 1024 ** 3,
     network_up_bytes_per_second: 1536,
     network_down_bytes_per_second: 2 * 1024 ** 2,
-    tokens_per_second_5s: 42.64,
+    tokens_per_second_2s: 42.64,
   })
   assert.strictEqual(
     line,

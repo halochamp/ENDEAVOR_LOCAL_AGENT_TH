@@ -160,7 +160,7 @@ class ServerRuntimeSyncTests(unittest.TestCase):
             result = asyncio.run(srv._apply_model_server_action("stop"))
         self.assertIn("read-only", result["error"])
 
-    def test_generation_rate_is_actual_stream_callback_count_over_rolling_five_seconds(self) -> None:
+    def test_generation_rate_uses_observed_interval_with_rolling_two_seconds(self) -> None:
         with srv._generation_token_lock:
             old_times = list(srv._generation_token_times)
             old_runs = set(srv._generation_active_runs)
@@ -170,11 +170,11 @@ class ServerRuntimeSyncTests(unittest.TestCase):
             srv._generation_run_start("run-a")
             for i in range(25):
                 srv._mark_generation_token(now=96.0 + (i * 0.16))
-            self.assertEqual(srv._generation_tokens_per_second(now=100.0), 5.0)
+            self.assertAlmostEqual(srv._generation_tokens_per_second(now=100.0), 6.25)
             srv._generation_run_end("run-a")
-            self.assertEqual(srv._generation_tokens_per_second(now=100.0), 5.0)
+            self.assertAlmostEqual(srv._generation_tokens_per_second(now=100.0), 6.25)
             srv._generation_run_start("run-b")
-            self.assertEqual(srv._generation_tokens_per_second(now=100.0), 5.0)
+            self.assertAlmostEqual(srv._generation_tokens_per_second(now=100.0), 6.25)
             srv._generation_run_end("run-b")
             self.assertEqual(srv._generation_tokens_per_second(now=105.0), 0.0)
         finally:
@@ -238,7 +238,7 @@ class ServerRuntimeSyncTests(unittest.TestCase):
         self.assertEqual(sample["ram_total_bytes"], 48 * (1024 ** 3))
         self.assertEqual(sample["network_up_bytes_per_second"], 1_000.0)
         self.assertEqual(sample["network_down_bytes_per_second"], 2_000.0)
-        self.assertEqual(sample["tokens_per_second_5s"], 0.0)
+        self.assertEqual(sample["tokens_per_second_2s"], 0.0)
 
     def test_telemetry_does_not_depend_on_private_monitor_or_machine_paths(self) -> None:
         source = Path(srv.__file__).read_text(encoding="utf-8")

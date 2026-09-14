@@ -111,9 +111,11 @@ Model / Think Budget / Server Mode / Port state in `workspace/runtime_settings.j
 standalone host telemetry (`CPU · GPU · RAM · TOK · NET`) collected by Agent TH itself; it does
 not require Server Monitor or a developer-machine path. CPU/RAM/network use `psutil`, GPU
 is capability-detected from local platform tools when available and otherwise displays `—`.
-`TOK` is the rolling five-second token/sec average from actual LLM streaming-generation callbacks;
-it is model-agnostic and does not estimate from characters. After a generation ends, the recent
-callbacks remain visible until they age out of the five-second window, then the meter returns to `0.0 t/s`. Telemetry events are scoped to the Electron WebSocket (`transport=desktop`)
+`TOK` is the rolling two-second token/sec average from actual LLM streaming-generation callbacks;
+it is model-agnostic and does not estimate from characters. Before the two-second window fills,
+the meter divides by the interval actually observed so short or newly-started generations are not
+systematically understated. After a generation ends, recent callbacks remain visible until they age
+out of the two-second window, then the meter returns to `0.0 t/s`. Telemetry events are scoped to the Electron WebSocket (`transport=desktop`)
 so generic custom clients are not forced to consume desktop-only status frames. There is no bundled browser HTML UI.
 
 ## 5. Common issues

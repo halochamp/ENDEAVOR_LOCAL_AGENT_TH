@@ -88,7 +88,7 @@ function systemTelemetryText(sample) {
   const up = byteRateText(s.network_up_bytes_per_second)
   const down = byteRateText(s.network_down_bytes_per_second)
   const net = up === '—' || down === '—' ? '…' : `↑${up} ↓${down}`
-  const tokenRate = toNumber(s.tokens_per_second_5s)
+  const tokenRate = toNumber(s.tokens_per_second_2s)
   const tok = Number.isFinite(tokenRate) && tokenRate >= 0 ? `${tokenRate.toFixed(1)} t/s` : '—'
   return `CPU ${pct(s.cpu_percent, 1)} · GPU ${pct(s.gpu_percent)} · RAM ${ram} · TOK ${tok} · NET ${net}`
 }

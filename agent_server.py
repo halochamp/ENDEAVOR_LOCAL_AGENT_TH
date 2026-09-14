@@ -131,7 +131,7 @@ _system_net_prev: tuple[int, int, float] | None = None
 _system_net_lock = threading.Lock()
 _system_telemetry_task: asyncio.Task | None = None
 
-_GENERATION_RATE_WINDOW_SECONDS = 5.0
+_GENERATION_RATE_WINDOW_SECONDS = 2.0
 _generation_token_times: deque[float] = deque()
 _generation_active_runs: set[str] = set()
 _generation_token_lock = threading.Lock()
@@ -625,7 +625,7 @@ def _generation_run_start(run_id) -> None:
     key = str(run_id or "default")
     with _generation_token_lock:
         # One Agent turn can contain several adjacent LLM runs. Keep one true
-        # process-level rolling 5s window across those run boundaries; samples
+        # process-level rolling 2s window across those run boundaries; samples
         # expire only by timestamp, never because another run starts.
         _generation_active_runs.add(key)
 
@@ -652,19 +652,29 @@ def _mark_generation_token(now: float | None = None) -> None:
 
 
 def _generation_tokens_per_second(now: float | None = None) -> float:
-    """Return the current model's real streamed-token rate over a rolling 5s window.
+    """Return the current model's real streamed-token rate over a rolling 2s window.
 
     The meter counts generation callbacks, not characters and not a model-specific
     tokenizer. mlx/OpenAI-compatible streaming emits one callback for each output
     token/chunk produced by the active model; reasoning/tool-call chunks are counted
-    too when the callback carries generation payload. No model ID is assumed.
+    too when the callback carries generation payload. Before the two-second window
+    fills, divide by the interval actually observed so short generations are not
+    systematically understated. No model ID is assumed.
     """
     stamp = time.monotonic() if now is None else float(now)
     cutoff = stamp - _GENERATION_RATE_WINDOW_SECONDS
     with _generation_token_lock:
         while _generation_token_times and _generation_token_times[0] < cutoff:
             _generation_token_times.popleft()
-        return len(_generation_token_times) / _GENERATION_RATE_WINDOW_SECONDS
+        if not _generation_token_times:
+            return 0.0
+        observed_seconds = min(
+            _GENERATION_RATE_WINDOW_SECONDS,
+            max(0.0, stamp - _generation_token_times[0]),
+        )
+        if observed_seconds <= 0.0:
+            return 0.0
+        return len(_generation_token_times) / observed_seconds
 
 
 def _callback_has_generation_payload(token: str, kwargs: dict) -> bool:
@@ -783,7 +793,7 @@ def _collect_system_telemetry() -> dict:
         "ram_total_bytes": _SYSTEM_RAM_TOTAL or None,
         "network_up_bytes_per_second": None,
         "network_down_bytes_per_second": None,
-        "tokens_per_second_5s": _generation_tokens_per_second(),
+        "tokens_per_second_2s": _generation_tokens_per_second(),
     }
     if _HAS_PSUTIL and _psutil is not None:
         try:
@@ -839,7 +849,7 @@ async def _system_telemetry_loop() -> None:
             else:
                 cached = {
                     **cached,
-                    "tokens_per_second_5s": _generation_tokens_per_second(),
+                    "tokens_per_second_2s": _generation_tokens_per_second(),
                 }
 
             if _active_ws is not target:
