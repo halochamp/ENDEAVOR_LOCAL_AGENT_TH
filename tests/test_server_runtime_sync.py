@@ -69,6 +69,25 @@ class ServerRuntimeSyncTests(unittest.TestCase):
         self.assertEqual(labels[srv._config.COMPACT_VLM_MODEL], "Qwen3.5 9B · VLM")
         self.assertEqual(labels[srv._config.HIGH_QUALITY_MODEL], "Qwen3.6 35B · VLM")
 
+    def test_authenticated_rest_runtime_route_uses_same_owner_apply_seam(self) -> None:
+        expected = {"type": "runtime_settings", "switch_state": "ready"}
+
+        async def fake_apply(model, budget, mode, port, *, confirmed_low_ram=False):
+            self.assertEqual((model, budget, mode, port), (srv._config.DEFAULT_MODEL, 512, "standalone", 8085))
+            self.assertFalse(confirmed_low_ram)
+            return expected
+
+        with patch.object(srv, "_sync_runtime_settings_from_owner_file_if_idle", return_value=False), \
+             patch.object(srv, "_apply_runtime_settings", side_effect=fake_apply):
+            result = asyncio.run(srv.post_runtime_settings({
+                "model": srv._config.DEFAULT_MODEL,
+                "thinking_budget": 512,
+                "server_mode": "standalone",
+                "server_port": 8085,
+            }))
+        self.assertIs(result, expected)
+        self.assertIn("/runtime-settings", {route.path for route in srv.api.routes})
+
     def test_backend_adopts_cli_written_budget_and_port(self) -> None:
         model = srv._config.DEFAULT_MODEL
         self._write(model=model, budget=512, port=8091)

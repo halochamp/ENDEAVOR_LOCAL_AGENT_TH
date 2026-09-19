@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onStartupDone: (cb) => ipcRenderer.once('startup-done', () => cb()),
   openWorkspace: () => ipcRenderer.send('open-workspace'),
   getToken: () => ipcRenderer.invoke('get-token'),
+  setRuntimeSettings: (payload) => ipcRenderer.invoke('set-runtime-settings', payload),
   requestExit: () => ipcRenderer.send('request-exit'),
   editFile: (p) => ipcRenderer.invoke('edit-file', p),
   deleteFile: (p) => ipcRenderer.invoke('delete-file', p),

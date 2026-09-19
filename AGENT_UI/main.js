@@ -316,6 +316,27 @@ function _agentJsonRequest({ method = 'GET', route, headers = {}, body = null, f
   })
 }
 
+// Runtime selection stays behind the Electron main-process auth boundary. The
+// renderer receives only the authoritative response, never AGENT_TOKEN.
+ipcMain.handle('set-runtime-settings', async (_e, payload) => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, error: 'invalid runtime settings' }
+  }
+  const body = {
+    model: String(payload.model || ''),
+    thinking_budget: Number(payload.thinking_budget),
+    server_mode: String(payload.server_mode || ''),
+    server_port: Number(payload.server_port),
+  }
+  if (payload.confirmed_low_ram) body.confirmed_low_ram = true
+  return _agentJsonRequest({
+    method: 'POST',
+    route: '/runtime-settings',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+})
+
 ipcMain.handle('pdf-to-text-start', async (_e, rewriteThai) => {
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
     title: 'เลือก PDF เพื่อแปลงเป็นข้อความ',

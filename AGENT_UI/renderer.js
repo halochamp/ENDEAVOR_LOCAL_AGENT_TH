@@ -175,6 +175,12 @@ async function connect() {
 
   ws.addEventListener('close', () => {
     wsConnected = false
+    // A disconnected websocket is not an outstanding runtime transaction.
+    // Reconnect must reconstruct controls from the backend owner, not a stale
+    // renderer selection.
+    pendingRuntimeRequest = null
+    runtimeSettings.switching = false
+    runtimeSettings.switch_state = 'idle'
     console.log('[ws] disconnected')
     applyClose({ isBusy }, _connFx)
   })
@@ -198,7 +204,9 @@ async function connect() {
 function wsSend(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj))
+    return true
   }
+  return false
 }
 
 // ── Event handler ──────────────────────────────────────────────────────────────
@@ -1601,6 +1609,38 @@ function fmtTs(ts) {
   return `${dd}/${mm} ${hh}:${min}`
 }
 
+async function dispatchRuntimeSettings(request) {
+  const payload = { ...request }
+  delete payload.type
+  delete payload._sent
+  if (window.electronAPI && window.electronAPI.setRuntimeSettings) {
+    pendingRuntimeRequest = { ...request, _sent: true }
+    try {
+      const response = await window.electronAPI.setRuntimeSettings(payload)
+      if (!response || response.type !== 'runtime_settings') {
+        throw new Error((response && response.error) || 'runtime settings request failed')
+      }
+      applyRuntimeSettings(response)
+      return
+    } catch (error) {
+      pendingRuntimeRequest = null
+      runtimeSettings.switching = false
+      runtimeSettings.switch_state = 'error'
+      runtimeSettings.error = String(error && error.message || error)
+      applyRuntimeSettings(runtimeSettings)
+      return
+    }
+  }
+  const sent = wsSend(request)
+  pendingRuntimeRequest = sent ? { ...request, _sent: true } : null
+  if (!sent) {
+    runtimeSettings.switching = false
+    runtimeSettings.switch_state = 'error'
+    runtimeSettings.error = 'agent websocket is not connected'
+    applyRuntimeSettings(runtimeSettings)
+  }
+}
+
 function applyRuntimeSettings(ev) {
   const previousPending = pendingRuntimeRequest
   runtimeSettings = {
@@ -1628,14 +1668,21 @@ function applyRuntimeSettings(ev) {
       + 'ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B · VLM ต่อหรือไม่?'
     )
     if (confirmed) {
-      wsSend({ ...previousPending, confirmed_low_ram: true })
+      void dispatchRuntimeSettings({ ...previousPending, confirmed_low_ram: true })
     } else {
       pendingRuntimeRequest = null
       wsSend({ type: 'get_runtime_settings' })
     }
     return
   }
-  if (runtimeSettings.switch_state !== 'switching') pendingRuntimeRequest = null
+  // Only an explicit backend terminal state completes a sent transaction.
+  // A stale payload must not manufacture a new pending/loading state.
+  if (previousPending && ['ready', 'error', 'failed', 'rollback', 'idle'].includes(runtimeSettings.switch_state)) {
+    pendingRuntimeRequest = null
+  }
+  const preservePendingSelection = !!previousPending
+    && previousPending._sent === true
+    && runtimeSettings.switch_state === 'switching'
 
   const mode = document.getElementById('runtime-server-mode')
   const model = document.getElementById('runtime-model')
@@ -1662,7 +1709,9 @@ function applyRuntimeSettings(ev) {
       item.textContent = String(opt.label || opt.value || '')
       return item
     }))
-    model.value = selectValueAfterRefresh(currentValue, runtimeSettings.model, focused, optionValues)
+    model.value = preservePendingSelection
+      ? selectValueAfterRefresh(currentValue, runtimeSettings.model, focused, optionValues)
+      : runtimeSettings.model
   }
   if (think && runtimeSettings.thinking_options.length) {
     const currentValue = think.value
@@ -1674,9 +1723,9 @@ function applyRuntimeSettings(ev) {
       item.textContent = `${String(opt.label || '')} · ${Number(opt.value)}`
       return item
     }))
-    think.value = selectValueAfterRefresh(
-      currentValue, String(runtimeSettings.thinking_budget), focused, optionValues,
-    )
+    think.value = preservePendingSelection
+      ? selectValueAfterRefresh(currentValue, String(runtimeSettings.thinking_budget), focused, optionValues)
+      : String(runtimeSettings.thinking_budget)
   }
   if (port && document.activeElement !== port) port.value = String(runtimeSettings.server_port)
 
@@ -1729,7 +1778,6 @@ function saveRuntimeSettings() {
     server_mode: mode.value,
     server_port: nextPort,
   }
-  pendingRuntimeRequest = request
   runtimeSettings.switching = true
   runtimeSettings.switch_state = 'switching'
   if (status) {
@@ -1745,7 +1793,7 @@ function saveRuntimeSettings() {
       status.textContent = '⚙ กำลังปรับ Think Budget…'
     }
   }
-  wsSend(request)
+  void dispatchRuntimeSettings(request)
 }
 
 function applyModelServerStatus(ev) {

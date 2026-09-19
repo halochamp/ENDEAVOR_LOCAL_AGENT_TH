@@ -40,6 +40,7 @@ test('Edit Access settings are backend-driven and wired through Electron IPC', (
   assert.match(main, /route: '\/edit-access\/authorize'/)
   assert.match(main, /route: '\/edit-access\/delete'/)
   assert.match(preload, /showApprovedEditFolderDialog: \(\) => ipcRenderer\.invoke\('show-approved-edit-folder-dialog'\)/)
+  assert.match(preload, /setRuntimeSettings: \(payload\) => ipcRenderer\.invoke\('set-runtime-settings', payload\)/)
 })
 
 test('Focus browsing and mentions use a temporary focus scope', () => {

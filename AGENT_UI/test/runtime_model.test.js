@@ -1,4 +1,6 @@
 const test = require('node:test')
+const fs = require('node:fs')
+const path = require('node:path')
 const assert = require('node:assert')
 const {
   listenerPidFromLsof,
@@ -75,4 +77,18 @@ test('requiresLargeModelWarning warns only for 35B below 24GB', () => {
   assert.strictEqual(requiresLargeModelWarning({
     model: compactVlm, highQualityModel: high, ramBytes: 16 * GB, thresholdBytes: 24 * GB,
   }), false)
+})
+
+test('runtime selection uses authenticated REST owner seam and clears stale pending state on reconnect', () => {
+  const root = path.join(__dirname, '..')
+  const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+  const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
+  assert.match(main, /route: '\/runtime-settings'/)
+  assert.match(main, /['"]X-Auth-Token['"]:\s*AGENT_TOKEN/)
+  assert.match(preload, /set-runtime-settings/)
+  assert.match(renderer, /pendingRuntimeRequest = null/)
+  assert.match(renderer, /runtimeSettings\.switch_state = 'switching'/)
+  assert.match(renderer, /switch_state === 'switching'/)
+  assert.match(renderer, /Object\.assign\(payload, \{ workspace_mentions: workspaceMentions \}\)/)
 })

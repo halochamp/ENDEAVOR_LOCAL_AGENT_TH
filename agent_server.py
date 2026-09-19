@@ -1988,6 +1988,22 @@ def get_status():
     }
 
 
+@api.post("/runtime-settings", dependencies=[Depends(_require_token)])
+async def post_runtime_settings(payload: dict):
+    """Authenticated Electron control path using the same owner lifecycle seam as WS."""
+    if not isinstance(payload, dict):
+        return _runtime_settings_payload(error="runtime settings must be an object")
+    _sync_runtime_settings_from_owner_file_if_idle()
+    result = await _apply_runtime_settings(
+        str(payload.get("model", "")),
+        payload.get("thinking_budget", get_thinking_budget()),
+        str(payload.get("server_mode", get_server_mode())),
+        payload.get("server_port", get_server_port()),
+        confirmed_low_ram=bool(payload.get("confirmed_low_ram", False)),
+    )
+    return result
+
+
 @api.get("/files", dependencies=[Depends(_require_token)])
 def get_files():
     return {"files": _list_workspace()}
