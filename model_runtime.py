@@ -150,9 +150,14 @@ def stop_model_server(timeout: float = _STOP_TIMEOUT, *, port: int | None = None
 
 
 def _server_env() -> dict[str, str]:
+    """Environment for the TH-owned Standalone launcher only.
+
+    Shared MAX is never started through this function and therefore never gets
+    these values mutated by TH.
+    """
     env = dict(os.environ)
-    env["APC_ENABLED"] = env.get("APC_ENABLED", "1")
-    env["APC_EXACT_CACHE_ENTRIES"] = env.get("APC_EXACT_CACHE_ENTRIES", "2")
+    env["APC_ENABLED"] = "1"
+    env["APC_EXACT_CACHE_ENTRIES"] = "2"
     env["APC_EXACT_PREFIX_GUARD_TOKENS"] = env.get("APC_EXACT_PREFIX_GUARD_TOKENS", "64")
     return env
 

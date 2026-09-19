@@ -164,6 +164,7 @@ def _get_summarize_llm(temperature: float):
         if temperature not in _LLM_CACHE:
             from llm import build_llm
             _LLM_CACHE[temperature] = build_llm(
+                apc_cache=False,
                 temperature=temperature,
                 max_tokens=SUMMARY_MAX_TOKENS,
                 extra_body={"enable_thinking": False},
@@ -178,6 +179,7 @@ def _get_batch_summarize_llm(temperature: float):
         if temperature not in _BATCH_LLM_CACHE:
             from llm import build_llm
             _BATCH_LLM_CACHE[temperature] = build_llm(
+                apc_cache=False,
                 temperature=temperature,
                 max_tokens=SUMMARY_BATCH_MAX_TOKENS,
                 extra_body={"enable_thinking": False},

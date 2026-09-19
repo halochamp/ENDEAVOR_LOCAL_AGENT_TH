@@ -10,6 +10,12 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from pathlib import Path
+
+
+_PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(_PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_DIR))
 
 
 def _option_value(argv: Sequence[str], option: str) -> str:
@@ -47,6 +53,18 @@ def _install_owner_model_gate(owner_model: str) -> None:
 def main() -> None:
     owner_model = _option_value(sys.argv, "--model")
     _install_owner_model_gate(owner_model)
+    # Apply only the generic, in-memory APC seam. Incompatible mlx-vlm builds
+    # keep their native APC behavior; the patch module is fail-closed.
+    try:
+        from scripts.apc_extra_hash_patch import apply as _apply_apc_patch
+        _apply_apc_patch()
+    except Exception:
+        pass
+    from scripts.apc_tool_call_template_patch import apply_for_model
+    if not apply_for_model(owner_model):
+        raise RuntimeError(
+            "Qwen3.6 APC tool-call template stabilization seam is unavailable"
+        )
     from mlx_vlm.server import main as server_main
 
     server_main()

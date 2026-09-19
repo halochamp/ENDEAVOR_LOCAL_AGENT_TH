@@ -57,6 +57,20 @@ class ModelRuntimeOwnershipTests(unittest.TestCase):
         self.assertTrue(runtime._is_owned_model_server(owned))
         self.assertFalse(runtime._is_owned_model_server(generic))
 
+    def test_owned_launcher_installs_qwen36_template_patch_at_owner_boundary(self) -> None:
+        source = Path(runtime._LAUNCHER).read_text(encoding="utf-8")
+        self.assertIn("apc_tool_call_template_patch", source)
+        self.assertIn("apply_for_model(owner_model)", source)
+
+    def test_owned_standalone_launcher_gets_explicit_apc_policy(self) -> None:
+        with mock.patch.dict(runtime.os.environ, {
+            "APC_ENABLED": "0",
+            "APC_EXACT_CACHE_ENTRIES": "9",
+        }, clear=False):
+            env = runtime._server_env()
+        self.assertEqual(env["APC_ENABLED"], "1")
+        self.assertEqual(env["APC_EXACT_CACHE_ENTRIES"], "2")
+
     def test_shared_max_requires_max_project_patched_launcher(self) -> None:
         max_cmd = (
             "/opt/python /tmp/ENDEAVOR_LOCAL_AGENT_MAX_VLM/scripts/"

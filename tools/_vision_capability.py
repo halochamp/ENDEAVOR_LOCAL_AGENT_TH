@@ -275,7 +275,7 @@ def probe_vision_capability(
                 overrides["base_url"] = endpoint
             if model is not None:
                 overrides["model"] = model
-            client = build_llm(**overrides)
+            client = build_llm(apc_cache=False, **overrides)
             response = client.invoke([HumanMessage(content=[
                 {
                     "type": "text",

@@ -250,6 +250,7 @@ def _get_compact_llm():
     global _COMPACT_LLM
     if _COMPACT_LLM is None:
         _COMPACT_LLM = build_llm(
+            apc_cache=False,
             temperature=0.1,
             max_tokens=250,
             extra_body={"enable_thinking": False},
@@ -261,6 +262,7 @@ def _get_synth_llm():
     global _SYNTH_LLM
     if _SYNTH_LLM is None:
         _SYNTH_LLM = build_llm(
+            apc_cache=False,
             temperature=0.1,
             max_tokens=2048,
             extra_body={"enable_thinking": False},

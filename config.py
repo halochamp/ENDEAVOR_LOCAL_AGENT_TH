@@ -56,6 +56,12 @@ if _MLX_BASE_URL_OVERRIDE and not _model_env:
     )
 API_KEY      = os.getenv("MLX_API_KEY",  "x")  # mlx_vlm.server ใช้ --api-key ได้ แต่ ChatOpenAI ต้องมี non-empty
 
+# APC is namespaced at the OpenAI-compatible request boundary. The main
+# conversation has one stable tenant; helper calls use a separate tenant so a
+# summarizer/planner cannot evict the interactive exact-prefix entries.
+APC_TENANT = os.getenv("V2_APC_TENANT", "endeavor-th-main")
+APC_BACKGROUND_TENANT = os.getenv("V2_APC_BACKGROUND_TENANT", "endeavor-th-background")
+
 # ── Runtime model + generation ────────────────────────────────────────────
 # Agent TH owns its standalone model-server lifecycle. A special read-only
 # shared-test mode may attach to Agent MAX VLM's current test server (default

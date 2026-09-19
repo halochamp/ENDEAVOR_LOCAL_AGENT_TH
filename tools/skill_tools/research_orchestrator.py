@@ -237,6 +237,7 @@ def _append_final_summary(path: str, topic: str, all_mini: list[dict], all_summa
     try:
         from llm import build_llm
         llm = build_llm(
+            apc_cache=False,
             temperature=0.1,
             max_tokens=SUMMARY_BATCH_MAX_TOKENS,
             extra_body={"enable_thinking": False},
@@ -438,6 +439,7 @@ def research_orchestrator(topic: str, n: int = 30, resume: bool = False, keyword
             try:
                 from llm import build_llm
                 llm = build_llm(
+                    apc_cache=False,
                     temperature=0.1,
                     max_tokens=SUMMARY_BATCH_MAX_TOKENS,
                     extra_body={"enable_thinking": False},

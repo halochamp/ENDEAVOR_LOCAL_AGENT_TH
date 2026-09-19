@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI
 
 from config import (
     API_KEY, TEMPERATURE, MAX_TOKENS, REPETITION_PENALTY,
+    APC_TENANT, APC_BACKGROUND_TENANT,
     get_model, get_thinking_budget, get_mlx_base_url,
 )
 
@@ -215,7 +216,7 @@ class VisionFallbackChatOpenAI(ChatOpenAI):
                 yield chunk
             return
 
-def build_llm(**overrides) -> ChatOpenAI:
+def build_llm(*, apc_cache: bool = True, **overrides) -> ChatOpenAI:
     """สร้าง ChatOpenAI client สำหรับ mlx_vlm.server (OpenAI-compatible).
 
     overrides: override param ใดก็ได้ (เช่น temperature, extra_body สำหรับ thinking)
@@ -223,6 +224,7 @@ def build_llm(**overrides) -> ChatOpenAI:
     แค่ enable_thinking ทำ repetition_penalty หายไป
     """
     vision_fallback = overrides.pop("vision_fallback", True)
+    caller_headers = dict(overrides.pop("default_headers", {}) or {})
     params = dict(
         base_url=get_mlx_base_url(),
         api_key=API_KEY,
@@ -242,5 +244,7 @@ def build_llm(**overrides) -> ChatOpenAI:
         # TH client. Callers may disable thinking, but cannot silently override it.
         extra_body["thinking_budget"] = get_thinking_budget()
     params["extra_body"] = extra_body
+    caller_headers["X-APC-Tenant"] = APC_TENANT if apc_cache else APC_BACKGROUND_TENANT
+    params["default_headers"] = caller_headers
     client_type = VisionFallbackChatOpenAI if vision_fallback else ChatOpenAI
     return client_type(**params)

@@ -144,6 +144,7 @@ def _get_planner_llm():
         # planner = JSON classification task (simple/complex + step list)
         # ไม่ต้อง reasoning chain → ปิด thinking ลด latency ~10× (verified 2026-05-29)
         _planner_llm = build_llm(
+            apc_cache=False,
             temperature=0.0,
             max_tokens=768,
             extra_body={"enable_thinking": False},
