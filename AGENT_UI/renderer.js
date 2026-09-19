@@ -20,12 +20,15 @@ let firstAgentBubbleThisTurn = null  // refs must attach to this turn's main ans
 let streamingActive = false  // true while token stream is building response bubble
 let workspaceRoot = ''
 let currentDirPath = ''
+let focusRoot = ''
+let focusDirPath = ''
 
 let suggestIdx = -1
 let suggestItems = []
 let suggestMode = ''  // 'command' | 'mention'
 let suggestContext = null
 let workspaceMentionFiles = []
+let focusMentionFiles = []
 
 let wsToken = null  // cached once; '' in browser dev mode (server needs AGENT_AUTH_DISABLED=1)
 let currentRunId = null  // set on 'start' event, cleared on done/error/cancelled
@@ -34,6 +37,7 @@ let activePanel = null  // workspace | activity | history | pdf | settings | nul
 let attachedFilePath = null  // path of file attached via 📎 button (turn-only)
 let pinnedFiles = []         // persistent per-Electron-session working set, up to PIN_MAX
 const PIN_MAX = window.PinnedFiles ? window.PinnedFiles.PIN_MAX : 10
+let editAccessState = { folders: [], focus_folder: '', max_folders: 10, error: '' }
 let currentToolName = ''
 let pendingTurnQuery = ''
 let waitingSummaryTimer = null
@@ -160,6 +164,13 @@ async function connect() {
     console.log('[ws] connected')
     applyOpen({ isBusy }, _connFx)
     wsSend({ type: 'get_workspace_mentions' })
+    wsSend({ type: 'get_focus_mentions' })
+    wsSend({ type: 'get_approved_edit_folders' })
+    if (activePanel === 'settings') {
+      wsSend({ type: 'get_runtime_settings' })
+      wsSend({ type: 'get_model_server_status' })
+      wsSend({ type: 'get_approved_edit_folders' })
+    }
   })
 
   ws.addEventListener('close', () => {
@@ -220,6 +231,20 @@ function handleEvent(ev) {
       if (activeMention) updateSuggestions(input.value)
       break
     }
+    case 'focus_mentions': {
+      focusMentionFiles = Array.isArray(ev.files) ? ev.files : []
+      focusRoot = String(ev.root || focusRoot || '')
+      renderFocusHeader()
+      const input = document.getElementById('input')
+      const activeMention = input && window.WorkspaceMentions
+        ? window.WorkspaceMentions.findMentionContext(input.value, input.selectionStart)
+        : null
+      if (activeMention) updateSuggestions(input.value)
+      break
+    }
+    case 'approved_edit_folders':
+      applyApprovedEditFolders(ev)
+      break
     case 'file_content':
       openModal(ev.path, ev.content)
       break
@@ -748,9 +773,11 @@ function sendMessage() {
     return
   }
 
-  const workspaceMentions = window.WorkspaceMentions
-    ? window.WorkspaceMentions.extractMentionPaths(q, workspaceMentionFiles)
+  const mentionFiles = editAccessState.focus_folder ? focusMentionFiles : workspaceMentionFiles
+  const mentionPaths = window.WorkspaceMentions
+    ? window.WorkspaceMentions.extractMentionPaths(q, mentionFiles)
     : []
+  const workspaceMentions = editAccessState.focus_folder ? [] : mentionPaths
   const turnAttachment = attachedFilePath
   const turnAttachments = turnAttachment ? [turnAttachment] : []
   const effectiveAttachments = window.PinnedFiles
@@ -768,14 +795,16 @@ function sendMessage() {
   inp.value = ''; autoResize(inp)
   setAttachment(null)
   setBusy(true)
-  wsSend({
+  const payload = {
     type: 'query',
     content,
     user_query: currentQuestion,
-    workspace_mentions: workspaceMentions,
     attached_files: turnAttachments,
     pinned_files: pinnedFiles.slice(),
-  })
+  }
+  if (editAccessState.focus_folder) payload.focus_mentions = mentionPaths
+  else Object.assign(payload, { workspace_mentions: workspaceMentions })
+  wsSend(payload)
 }
 
 function sendClear() {
@@ -916,21 +945,24 @@ function fileIcon(entry) {
   return FILE_ICONS[ext] || '📄'
 }
 
-function renderFiles(files, currentPath, root) {
-  const list = document.getElementById('file-list')
+function renderFiles(files, currentPath, root, scope = 'workspace') {
+  const isFocus = scope === 'focus'
+  const list = document.getElementById(isFocus ? 'focus-file-list' : 'file-list')
   list.innerHTML = ''
 
   // Update breadcrumb
-  const crumb = document.getElementById('files-crumb')
-  const backBtn = document.getElementById('files-back')
+  const crumb = document.getElementById(isFocus ? 'focus-files-path' : 'files-crumb')
+  const backBtn = document.getElementById(isFocus ? 'focus-files-back' : 'files-back')
   if (root && currentPath) {
-    const rel = currentPath === root ? 'workspace' : currentPath.replace(root, '').replace(/^\//, '')
-    crumb.textContent = rel || 'workspace'
-    backBtn.style.display = currentPath !== root ? 'inline' : 'none'
+    const rel = currentPath === root ? (isFocus ? 'Focus Folder' : 'workspace') : currentPath.replace(root, '').replace(/^\//, '')
+    if (crumb) crumb.textContent = rel || (isFocus ? 'Focus Folder' : 'workspace')
+    if (backBtn) backBtn.style.display = currentPath !== root ? 'inline' : 'none'
+  } else if (crumb && isFocus) {
+    crumb.textContent = 'No Focus Folder'
   }
 
   if (!files.length) {
-    list.innerHTML = '<div class="files-empty">โฟลเดอร์ว่างเปล่า</div>'
+    list.innerHTML = `<div class="${isFocus ? 'focus-empty' : 'files-empty'}">${isFocus && !root ? 'ยังไม่ได้ตั้ง Focus Folder' : 'โฟลเดอร์ว่างเปล่า'}</div>`
     return
   }
   for (const f of files) {
@@ -948,39 +980,45 @@ function renderFiles(files, currentPath, root) {
       ${actions}
       <span class="file-size">${sizeStr}</span>
     `
-    el.onclick = () => wsSend({ type: 'open_file', path: f.path })
+    el.onclick = () => wsSend({ type: 'open_file', path: f.path, scope })
     // stopPropagation so the action click doesn't also trigger the row's open_file
     const editBtn = el.querySelector('[data-act="edit"]')
     const delBtn = el.querySelector('[data-act="del"]')
-    if (editBtn) editBtn.onclick = (e) => { e.stopPropagation(); editWorkspaceFile(f.path) }
-    if (delBtn) delBtn.onclick = (e) => { e.stopPropagation(); deleteWorkspaceFile(f.path, f.name) }
+    if (editBtn) editBtn.onclick = (e) => { e.stopPropagation(); editWorkspaceFile(f.path, scope) }
+    if (delBtn) delBtn.onclick = (e) => { e.stopPropagation(); deleteWorkspaceFile(f.path, f.name, scope) }
     list.appendChild(el)
   }
 }
 
-async function editWorkspaceFile(filePath) {
+async function editWorkspaceFile(filePath, scope = 'workspace') {
   if (!window.electronAPI || !window.electronAPI.editFile) return
   const err = await window.electronAPI.editFile(filePath)
   if (err) addSystem('เปิดไฟล์เพื่อแก้ไขไม่ได้: ' + err)
 }
 
-async function deleteWorkspaceFile(filePath, name) {
+async function deleteWorkspaceFile(filePath, name, scope = 'workspace') {
   if (!window.electronAPI || !window.electronAPI.deleteFile) return
   const res = await window.electronAPI.deleteFile(filePath)  // native confirm happens in main
   if (res && res.deleted) {
     addSystem('ลบไฟล์แล้ว: ' + name)
-    wsSend({ type: 'get_files', path: currentDirPath || workspaceRoot })  // refresh list from disk
-    wsSend({ type: 'get_workspace_mentions' })
+    wsSend({
+      type: 'get_files',
+      path: scope === 'focus' ? (focusDirPath || focusRoot) : (currentDirPath || workspaceRoot),
+      scope,
+    })  // refresh list from disk
+    wsSend({ type: scope === 'focus' ? 'get_focus_mentions' : 'get_workspace_mentions' })
   } else if (res && res.error) {
     addSystem('ลบไม่ได้: ' + res.error)
   }
 }
 
-function navigateUp() {
-  if (!currentDirPath || currentDirPath === workspaceRoot) return
-  const parent = currentDirPath.split('/').slice(0, -1).join('/') || workspaceRoot
-  const target = parent.startsWith(workspaceRoot) ? parent : workspaceRoot
-  wsSend({ type: 'get_files', path: target })
+function navigateUp(scope = 'workspace') {
+  const current = scope === 'focus' ? focusDirPath : currentDirPath
+  const root = scope === 'focus' ? focusRoot : workspaceRoot
+  if (!current || current === root) return
+  const parent = current.split('/').slice(0, -1).join('/') || root
+  const target = parent.startsWith(root) ? parent : root
+  wsSend({ type: 'get_files', path: target, scope })
 }
 
 // ── File modal ─────────────────────────────────────────────────────────────────
@@ -1130,9 +1168,8 @@ function updateSuggestions(val) {
     if (!ctx) { hideSuggestions(); return }
     suggestMode = 'mention'
     suggestContext = ctx
-    suggestItems = window.WorkspaceMentions.buildMentionCandidates(
-      workspaceMentionFiles, ctx.query, 20,
-    )
+    const mentionFiles = editAccessState.focus_folder ? focusMentionFiles : workspaceMentionFiles
+    suggestItems = window.WorkspaceMentions.buildMentionCandidates(mentionFiles, ctx.query, 20)
   }
 
   suggestIdx = -1
@@ -1387,18 +1424,155 @@ function togglePanel(name) {
       wsSend({ type: 'get_files', path: workspaceRoot || '' })
       wsSend({ type: 'get_workspace_mentions' })
     }
+    if (name === 'focus') {
+      wsSend({ type: 'get_approved_edit_folders' })
+      wsSend({ type: 'get_focus_mentions' })
+      if (editAccessState.focus_folder) {
+        wsSend({ type: 'get_files', path: focusDirPath || focusRoot || editAccessState.focus_folder, scope: 'focus' })
+      } else {
+        renderFocusFiles([], '', '')
+      }
+    }
     if (name === 'history') {
       wsSend({ type: 'get_history' })
     }
     if (name === 'settings') {
       wsSend({ type: 'get_runtime_settings' })
       wsSend({ type: 'get_model_server_status' })
+      wsSend({ type: 'get_approved_edit_folders' })
       modelServerStatusTimer = setInterval(
         () => wsSend({ type: 'get_model_server_status' }),
         5000,
       )
     }
   }
+}
+
+function applyApprovedEditFolders(ev) {
+  const previousFocus = String(editAccessState.focus_folder || '')
+  editAccessState = window.EditAccess
+    ? window.EditAccess.normalizeState(ev)
+    : {
+        folders: Array.isArray(ev.folders) ? ev.folders : [],
+        focus_folder: String(ev.focus_folder || ''),
+        max_folders: Number(ev.max_folders || 10),
+        error: String(ev.error || ''),
+      }
+  renderApprovedEditFolders()
+  renderFocusHeader()
+  if (previousFocus !== editAccessState.focus_folder || activePanel === 'focus') {
+    if (editAccessState.focus_folder) {
+      focusRoot = editAccessState.focus_folder
+      focusDirPath = focusRoot
+      wsSend({ type: 'get_focus_mentions' })
+      if (activePanel === 'focus') wsSend({ type: 'get_files', path: focusRoot, scope: 'focus' })
+    } else {
+      focusRoot = ''
+      focusDirPath = ''
+      focusMentionFiles = []
+      renderFocusFiles([], '', '')
+      if (activePanel !== 'focus') wsSend({ type: 'get_workspace_mentions' })
+    }
+  }
+}
+
+function renderFocusHeader() {
+  const pathEl = document.getElementById('focus-files-path')
+  const clear = document.getElementById('focus-files-clear')
+  const focus = String(editAccessState.focus_folder || focusRoot || '')
+  if (pathEl) {
+    pathEl.textContent = focus || 'No Focus Folder'
+    pathEl.title = focus
+  }
+  if (clear) clear.disabled = !focus
+}
+
+function renderFocusFiles(files, currentPath, root) {
+  focusRoot = root || focusRoot
+  focusDirPath = currentPath || focusDirPath
+  renderFiles(files, currentPath, root, 'focus')
+  renderFocusHeader()
+}
+
+function renderApprovedEditFolders() {
+  const count = document.getElementById('approved-edit-folders-count')
+  const list = document.getElementById('approved-edit-folders-list')
+  const focusState = document.getElementById('focus-folder-state')
+  const focusPath = document.getElementById('focus-folder-path')
+  const focusClear = document.getElementById('focus-folder-clear')
+  const status = document.getElementById('approved-edit-folders-status')
+  const state = editAccessState
+  if (count) {
+    count.textContent = window.EditAccess
+      ? window.EditAccess.folderCount(state)
+      : `${state.folders.length} / ${state.max_folders}`
+  }
+  if (list) {
+    list.replaceChildren()
+    if (!state.folders.length) {
+      const empty = document.createElement('div')
+      empty.className = 'approved-folder-empty'
+      empty.textContent = 'None'
+      list.appendChild(empty)
+    } else {
+      state.folders.forEach(folder => {
+        const row = document.createElement('div')
+        row.className = 'approved-folder-item'
+        const pathEl = document.createElement('span')
+        pathEl.className = 'approved-folder-path'
+        pathEl.textContent = folder
+        pathEl.title = folder
+        const remove = document.createElement('button')
+        remove.className = 'btn btn-ghost approved-folder-remove'
+        remove.type = 'button'
+        remove.textContent = 'Remove'
+        remove.addEventListener('click', () => {
+          wsSend({ type: 'remove_approved_edit_folder', folder })
+        })
+        row.append(pathEl, remove)
+        list.appendChild(row)
+      })
+    }
+  }
+  const focus = String(state.focus_folder || '')
+  if (focusState) {
+    focusState.textContent = window.EditAccess
+      ? window.EditAccess.focusStatus(state)
+      : (focus ? 'Temporary' : 'Not set')
+  }
+  if (focusPath) {
+    focusPath.textContent = focus || 'No Focus Folder'
+    focusPath.title = focus
+  }
+  if (focusClear) focusClear.disabled = !focus
+  if (status) {
+    status.textContent = state.error ? `⚠ ${state.error}` : ''
+    status.style.color = state.error ? 'var(--red)' : ''
+  }
+}
+
+async function addApprovedEditFolders() {
+  if (!window.electronAPI || !window.electronAPI.showApprovedEditFolderDialog) return
+  const result = await window.electronAPI.showApprovedEditFolderDialog()
+  const paths = Array.isArray(result && result.paths) ? result.paths : []
+  if (paths.length) wsSend({ type: 'add_approved_edit_folders', folders: paths })
+  else if (result && result.rejected) {
+    applyApprovedEditFolders({ ...editAccessState, error: 'เลือกโฟลเดอร์ไม่สำเร็จ' })
+  }
+}
+
+async function setFocusFolder() {
+  if (!window.electronAPI || !window.electronAPI.showApprovedEditFolderDialog) return
+  const result = await window.electronAPI.showApprovedEditFolderDialog()
+  const paths = Array.isArray(result && result.paths) ? result.paths : []
+  if (paths.length) wsSend({ type: 'set_focus_folder', folder: paths[0] })
+  else if (result && result.rejected) {
+    applyApprovedEditFolders({ ...editAccessState, error: 'เลือก Focus Folder ไม่สำเร็จ' })
+  }
+}
+
+function clearFocusFolder() {
+  if (editAccessState.focus_folder) wsSend({ type: 'set_focus_folder', folder: '' })
 }
 
 function fmtTs(ts) {
@@ -1713,7 +1887,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const ctx = window.WorkspaceMentions
       ? window.WorkspaceMentions.findMentionContext(inp.value, inp.selectionStart)
       : null
-    if (ctx && ctx.query === '') wsSend({ type: 'get_workspace_mentions' })
+    if (ctx && ctx.query === '') {
+      wsSend({ type: editAccessState.focus_folder ? 'get_focus_mentions' : 'get_workspace_mentions' })
+    }
     updateSuggestions(inp.value)
   })
 
@@ -1725,6 +1901,7 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#btn-theme', toggleTheme)
   on('#btn-compact', toggleCompact)
   on('#btn-workspace', () => togglePanel('workspace'))
+  on('#btn-focus', () => togglePanel('focus'))
   on('#btn-activity', () => togglePanel('activity'))
   on('#btn-history', () => togglePanel('history'))
   on('#btn-pdf', () => togglePanel('pdf'))
@@ -1749,6 +1926,11 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#model-server-start-btn', () => modelServerAction('start'))
   on('#model-server-stop-btn', () => modelServerAction('stop'))
   on('#model-server-reset-btn', () => modelServerAction('reset'))
+  on('#approved-edit-folders-add', () => addApprovedEditFolders())
+  on('#focus-folder-select', () => setFocusFolder())
+  on('#focus-folder-clear', () => clearFocusFolder())
+  on('#focus-files-select', () => setFocusFolder())
+  on('#focus-files-clear', () => clearFocusFolder())
   on('#send-btn', () => sendMessage())
   on('#cancel-btn', () => sendCancel())
   on('#btn-clear', () => sendClear())
@@ -1757,6 +1939,7 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#pin-badge-remove', () => clearPinnedFiles())
   on('#file-badge-remove', () => setAttachment(null))
   on('#files-back', () => navigateUp())
+  on('#focus-files-back', () => navigateUp('focus'))
   on('.files-open-btn', () => openWorkspace())
   on('.modal-copy', () => copyFile())
   on('.modal-close', () => closeModal())

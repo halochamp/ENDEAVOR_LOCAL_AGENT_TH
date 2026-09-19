@@ -4,7 +4,6 @@ const fs = require('fs')
 const { spawn, exec } = require('child_process')
 const crypto = require('crypto')
 const http = require('http')
-const { isInsideWorkspace } = require('./lib/workspace_guard')
 
 // Static auth token (P2 fix) — generated once per launch, shared with the Python
 // server via env and with the renderer via IPC. The agent server requires it on
@@ -394,9 +393,15 @@ ipcMain.on('request-exit', async () => {
 // Edit → open the file in the OS default app (shell.openPath). Returns '' on
 // success or an error string the renderer can surface.
 ipcMain.handle('edit-file', async (_e, filePath) => {
-  if (typeof filePath !== 'string' || !isInsideWorkspace(filePath, path.join(AGENT_DIR, 'workspace'))) return 'outside workspace'
+  if (typeof filePath !== 'string') return 'invalid path'
+  const authorized = await _agentJsonRequest({
+    method: 'POST', route: '/edit-access/authorize',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: filePath }),
+  })
+  if (!authorized || !authorized.path) return authorized.error || 'outside approved edit scope'
   try {
-    return (await shell.openPath(filePath)) || ''
+    return (await shell.openPath(authorized.path)) || ''
   } catch (e) {
     return String(e && e.message || e)
   }
@@ -405,14 +410,7 @@ ipcMain.handle('edit-file', async (_e, filePath) => {
 // Delete → confirm in a native dialog (destructive), then unlink. Only files, never
 // directories. Returns {deleted} / {cancelled} / {error} for the renderer.
 ipcMain.handle('delete-file', async (_e, filePath) => {
-  if (typeof filePath !== 'string' || !isInsideWorkspace(filePath, path.join(AGENT_DIR, 'workspace'))) {
-    return { deleted: false, error: 'outside workspace' }
-  }
-  try {
-    if (fs.statSync(filePath).isDirectory()) return { deleted: false, error: 'is a directory' }
-  } catch (e) {
-    return { deleted: false, error: String(e && e.message || e) }
-  }
+  if (typeof filePath !== 'string') return { deleted: false, error: 'invalid path' }
   const name = path.basename(filePath)
   const { response } = await dialog.showMessageBox(mainWindow, {
     type: 'warning',
@@ -423,12 +421,14 @@ ipcMain.handle('delete-file', async (_e, filePath) => {
     detail: 'การลบนี้ย้อนกลับไม่ได้',
   })
   if (response !== 1) return { deleted: false, cancelled: true }
-  try {
-    await fs.promises.unlink(filePath)
-    return { deleted: true }
-  } catch (e) {
-    return { deleted: false, error: String(e && e.message || e) }
-  }
+  const result = await _agentJsonRequest({
+    method: 'POST', route: '/edit-access/delete',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: filePath }),
+  })
+  return result && result.deleted
+    ? { deleted: true }
+    : { deleted: false, error: result && result.error || 'outside approved edit scope' }
 })
 
 ipcMain.handle('show-open-dialog', async () => {
@@ -455,6 +455,29 @@ ipcMain.handle('show-pin-dialog', async () => {
       const real = fs.realpathSync(selected)
       const info = fs.statSync(real)
       if (!info.isFile()) { rejected += 1; continue }
+      paths.push(real)
+    } catch {
+      rejected += 1
+    }
+  }
+  return { paths, rejected }
+})
+
+// Approved Edit / Focus selection is directory-only. The backend remains the
+// policy authority and validates every returned path again before persisting it.
+ipcMain.handle('show-approved-edit-folder-dialog', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'เลือกโฟลเดอร์สำหรับสิทธิ์แก้ไข',
+    properties: ['openDirectory', 'multiSelections'],
+  })
+  if (canceled) return { paths: [], rejected: 0 }
+  const paths = []
+  let rejected = 0
+  for (const selected of filePaths) {
+    try {
+      const real = fs.realpathSync(selected)
+      const info = fs.statSync(real)
+      if (!info.isDirectory()) { rejected += 1; continue }
       paths.push(real)
     } catch {
       rejected += 1

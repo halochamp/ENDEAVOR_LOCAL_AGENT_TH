@@ -90,9 +90,20 @@ from tools._progress import (
     ToolCancelled,
 )
 from tools._safety import (
+    plan_write as _plan_write,
     resolve_path as _resolve_write_path,
     check_path as _check_write_path,
     resolve_read_path as _resolve_read_path,
+    validate_approved_edit_folder as _validate_approved_edit_folder,
+)
+from tools.edit_access import (
+    MAX_APPROVED_EDIT_FOLDERS as _MAX_APPROVED_EDIT_FOLDERS,
+    add_approved_edit_folders as _add_approved_edit_folders,
+    get_focus_folder as _get_focus_folder,
+    load_edit_access_state as _load_edit_access_state,
+    remove_approved_edit_folder as _remove_approved_edit_folder,
+    save_focus_folder as _save_focus_folder,
+    path_is_approved_for_edit as _path_is_approved_for_edit,
 )
 from tools._transcribe import _AUDIO_EXT, _VIDEO_EXT
 from tools.read_image import _KNOWN_IMG_EXTS
@@ -344,6 +355,70 @@ def _runtime_settings_payload(
         "ram_gb": int(ram_gb or 0),
         "error": str(error or ""),
     }
+
+
+def _edit_access_payload(*, state: dict | None = None, error: str = "") -> dict:
+    current = state or _load_edit_access_state()
+    return {
+        "type": "approved_edit_folders",
+        "folders": list(current.get("folders") or []),
+        "focus_folder": str(current.get("focus_folder") or ""),
+        "max_folders": _MAX_APPROVED_EDIT_FOLDERS,
+        "error": str(error or ""),
+    }
+
+
+def _validated_edit_folders(raw_folders: object) -> list[str]:
+    if not isinstance(raw_folders, list):
+        raise ValueError("approved edit folders must be a list")
+    normalized: list[str] = []
+    for value in raw_folders:
+        if not isinstance(value, str):
+            raise ValueError("approved edit folder path must be a string")
+        folder = _validate_approved_edit_folder(value)
+        if folder not in normalized:
+            normalized.append(folder)
+    return normalized
+
+
+async def _apply_add_approved_edit_folders(raw_folders: object) -> dict:
+    if _busy.locked():
+        return _edit_access_payload(error="agent is busy")
+    try:
+        folders = _validated_edit_folders(raw_folders)
+        state = await asyncio.to_thread(_add_approved_edit_folders, folders)
+        return _edit_access_payload(state=state)
+    except (OSError, TypeError, ValueError) as exc:
+        return _edit_access_payload(error=str(exc))
+
+
+async def _apply_remove_approved_edit_folder(raw_folder: object) -> dict:
+    if _busy.locked():
+        return _edit_access_payload(error="agent is busy")
+    if not isinstance(raw_folder, str) or not raw_folder.strip():
+        return _edit_access_payload(error="approved edit folder path is required")
+    try:
+        state = await asyncio.to_thread(_remove_approved_edit_folder, raw_folder)
+        return _edit_access_payload(state=state)
+    except (OSError, TypeError, ValueError) as exc:
+        return _edit_access_payload(error=str(exc))
+
+
+async def _apply_focus_folder(raw_folder: object) -> dict:
+    if _busy.locked():
+        return _edit_access_payload(error="agent is busy")
+    if raw_folder is None:
+        raw_folder = ""
+    if not isinstance(raw_folder, str):
+        return _edit_access_payload(error="focus folder path must be a string")
+    try:
+        normalized = "" if not raw_folder.strip() else _validate_approved_edit_folder(raw_folder)
+        # Focus is process/session state only. It deliberately never calls the
+        # persistent approval mutator, even when the folder is new.
+        state = await asyncio.to_thread(_save_focus_folder, normalized)
+        return _edit_access_payload(state=state)
+    except (OSError, TypeError, ValueError) as exc:
+        return _edit_access_payload(error=str(exc))
 
 
 def _model_server_progress_payload(action_state: str) -> dict:
@@ -1549,6 +1624,48 @@ def _safe_real(path: str) -> str | None:
     return real if (real == ws or real.startswith(ws + os.sep)) else None
 
 
+def _focus_root() -> str | None:
+    """Return the live, canonical Focus root or ``None`` when Focus is unset.
+
+    Focus is deliberately revalidated on every request.  This keeps a cleared
+    or replaced Focus from retaining edit/read access in a stale websocket.
+    """
+    raw = _get_focus_folder()
+    if not raw:
+        return None
+    try:
+        return _validate_approved_edit_folder(raw)
+    except (OSError, ValueError):
+        return None
+
+
+def _safe_focus_real(path: str) -> str | None:
+    root = _focus_root()
+    if root is None:
+        return None
+    real = os.path.realpath(path)
+    return real if (real == root or real.startswith(root + os.sep)) else None
+
+
+def _safe_scoped_real(path: str, scope: object = "workspace") -> str | None:
+    return _safe_focus_real(path) if str(scope or "workspace") == "focus" else _safe_real(path)
+
+
+def _validated_edit_target(path: object) -> str:
+    raw = str(path or "").strip()
+    if not raw or not os.path.isabs(raw):
+        raise HTTPException(status_code=403, detail="edit target must be an absolute path")
+    real = os.path.realpath(raw)
+    if not (_safe_real(real) or _safe_focus_real(real) or _path_is_approved_for_edit(real)):
+        raise HTTPException(status_code=403, detail="edit target is outside approved edit scope")
+    if not os.path.isfile(real):
+        raise HTTPException(status_code=400, detail="edit target must be an existing file")
+    effective, error, _note = _plan_write(real, allow_approved_edit=True)
+    if error:
+        raise HTTPException(status_code=403, detail=error)
+    return os.path.realpath(effective)
+
+
 def _list_dir(path: str) -> list[dict]:
     result = []
     try:
@@ -1613,6 +1730,38 @@ def _list_workspace_mentions() -> list[dict]:
     return result
 
 
+def _list_focus_mentions() -> list[dict]:
+    root = _focus_root()
+    if root is None:
+        return []
+    result: list[dict] = []
+    for current, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        dirnames[:] = sorted(
+            [name for name in dirnames if not os.path.islink(os.path.join(current, name))],
+            key=str.lower,
+        )
+        for name in sorted(filenames, key=str.lower):
+            path = os.path.join(current, name)
+            try:
+                if os.path.islink(path) or not os.path.isfile(path):
+                    continue
+                real = _safe_focus_real(path)
+                if real is None:
+                    continue
+                stat_info = os.stat(real)
+            except OSError:
+                continue
+            result.append({
+                "name": name,
+                "relative_path": os.path.relpath(real, root).replace(os.sep, "/"),
+                "size": stat_info.st_size,
+                "mtime": stat_info.st_mtime,
+            })
+            if len(result) >= _WORKSPACE_MENTION_INDEX_MAX:
+                return result
+    return result
+
+
 def _workspace_mention_paths(
     raw_mentions: object,
     *,
@@ -1648,10 +1797,56 @@ def _workspace_mention_paths(
     return resolved
 
 
+def _focus_mention_paths(
+    raw_mentions: object,
+    *,
+    skip_real_paths: set[str] | None = None,
+) -> list[str]:
+    if raw_mentions in (None, []):
+        return []
+    if not isinstance(raw_mentions, list):
+        raise ValueError("focus_mentions must be a list")
+    if len(raw_mentions) > _WORKSPACE_MENTION_PER_TURN_MAX:
+        raise ValueError(f"tag ไฟล์ได้สูงสุด {_WORKSPACE_MENTION_PER_TURN_MAX} ไฟล์ต่อข้อความ")
+    root = _focus_root()
+    if root is None:
+        raise ValueError("Focus Folder ยังไม่ได้ตั้งค่าหรือใช้งานไม่ได้")
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for item in raw_mentions:
+        if not isinstance(item, str):
+            raise ValueError("focus mention path must be a string")
+        rel = item.strip().replace("/", os.sep)
+        if not rel or os.path.isabs(rel):
+            raise ValueError("focus mention path ไม่ถูกต้อง")
+        real = _safe_focus_real(os.path.join(root, rel))
+        if real is None or not os.path.isfile(real):
+            raise ValueError(f"ไม่พบไฟล์ที่ tag ใน Focus Folder: {item}")
+        if skip_real_paths and real in skip_real_paths:
+            continue
+        if real not in seen:
+            seen.add(real)
+            resolved.append(real)
+    return resolved
+
+
 def _augment_query_with_workspace_mention_paths(content: str, paths: list[str]) -> str:
     if not paths:
         return content
     lines = ["ผู้ใช้ tag ไฟล์จาก Workspace โดยตรง:"]
+    for index, path in enumerate(paths, 1):
+        lines.append(f"{index}. {path}")
+    lines.append(
+        "ใช้ read_image สำหรับไฟล์รูปภาพ และ read_file สำหรับไฟล์เอกสาร "
+        "อ่านไฟล์ที่ tag ก่อนตอบคำถามเมื่อคำถามอ้างถึงไฟล์เหล่านี้"
+    )
+    return content.rstrip() + "\n\n" + "\n".join(lines)
+
+
+def _augment_query_with_focus_mention_paths(content: str, paths: list[str]) -> str:
+    if not paths:
+        return content
+    lines = ["ผู้ใช้ tag ไฟล์จาก Focus Folder โดยตรง:"]
     for index, path in enumerate(paths, 1):
         lines.append(f"{index}. {path}")
     lines.append(
@@ -1801,6 +1996,22 @@ def get_files():
 @api.get("/file", dependencies=[Depends(_require_token)])
 def get_file(path: str):
     return {"content": _read_file(path)}
+
+
+@api.post("/edit-access/authorize", dependencies=[Depends(_require_token)])
+def authorize_edit_access(payload: dict):
+    """Revalidate the current runtime Focus/approval state for Electron native open."""
+    return {"path": _validated_edit_target(payload.get("path"))}
+
+
+@api.post("/edit-access/delete", dependencies=[Depends(_require_token)])
+def delete_edit_access_file(payload: dict):
+    real = _validated_edit_target(payload.get("path"))
+    try:
+        os.remove(real)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"delete failed: {exc}") from exc
+    return {"deleted": True, "path": real}
 
 
 @api.post("/pdf-to-text/start", dependencies=[Depends(_require_token)])
@@ -2127,10 +2338,17 @@ async def ws_endpoint(websocket: WebSocket):
                         for item in raw_pins
                         if isinstance(item, str) and item.strip() and os.path.isabs(item.strip())
                     }
-                    mention_paths = _workspace_mention_paths(
-                        data.get("workspace_mentions", []),
-                        skip_real_paths=pin_identity_set,
-                    )
+                    focus_root = _focus_root()
+                    if focus_root:
+                        mention_paths = _focus_mention_paths(
+                            data.get("focus_mentions", []),
+                            skip_real_paths=pin_identity_set,
+                        )
+                    else:
+                        mention_paths = _workspace_mention_paths(
+                            data.get("workspace_mentions", []),
+                            skip_real_paths=pin_identity_set,
+                        )
                     attached_paths = _canonical_attachment_paths(
                         data.get("attached_files", [])
                     ) if "attached_files" in data else []
@@ -2143,12 +2361,18 @@ async def ws_endpoint(websocket: WebSocket):
                 effective_mentions = [p for p in mention_paths if p not in attachment_set]
                 if "attached_files" in data:
                     content = _attachment_content(user_query, effective_attachments)
-                content = _augment_query_with_workspace_mention_paths(content, effective_mentions)
+                content = (
+                    _augment_query_with_focus_mention_paths(content, effective_mentions)
+                    if focus_root
+                    else _augment_query_with_workspace_mention_paths(content, effective_mentions)
+                )
+                focus_folder = focus_root or ""
                 turn_context = {
                     "pinned_files": pinned_paths,
                     "pinned_failures": pinned_failures,
                     "pinned_user_query": user_query,
-                } if (pinned_paths or pinned_failures) else None
+                    "focus_folder": focus_folder,
+                } if (pinned_paths or pinned_failures or focus_folder) else None
                 if len(content) > CONTEXT_MAX_CHARS:
                     await websocket.send_json({
                         "type": "error",
@@ -2353,25 +2577,59 @@ async def ws_endpoint(websocket: WebSocket):
                     "files": _list_workspace_mentions(),
                 })
 
+            elif msg_type == "get_focus_mentions":
+                await websocket.send_json({
+                    "type": "focus_mentions",
+                    "files": _list_focus_mentions(),
+                    "root": _focus_root() or "",
+                })
+
+            elif msg_type == "get_approved_edit_folders":
+                await websocket.send_json(_edit_access_payload())
+
+            elif msg_type == "add_approved_edit_folders":
+                await websocket.send_json(
+                    await _apply_add_approved_edit_folders(data.get("folders", []))
+                )
+
+            elif msg_type == "remove_approved_edit_folder":
+                await websocket.send_json(
+                    await _apply_remove_approved_edit_folder(data.get("folder", ""))
+                )
+
+            elif msg_type == "set_focus_folder":
+                result = await _apply_focus_folder(data.get("folder", ""))
+                await websocket.send_json(result)
+                await websocket.send_json({
+                    "type": "focus_mentions",
+                    "files": _list_focus_mentions(),
+                    "root": _focus_root() or "",
+                })
+
             elif msg_type == "get_files":
-                req_path = data.get("path", WORKSPACE)
-                real = _safe_real(req_path) or os.path.realpath(WORKSPACE)
-                ws_root = os.path.realpath(WORKSPACE)
+                scope = str(data.get("scope") or "workspace")
+                req_path = data.get("path") or (_focus_root() if scope == "focus" else WORKSPACE)
+                real = _safe_scoped_real(req_path, scope)
+                if real is None or not os.path.isdir(real):
+                    await websocket.send_json({"type": "error", "msg": "Access denied"})
+                    continue
+                root = _focus_root() if scope == "focus" else os.path.realpath(WORKSPACE)
                 await websocket.send_json({
                     "type": "files", "files": _list_dir(real),
-                    "path": real, "root": ws_root,
+                    "path": real, "root": root or "", "scope": scope,
                 })
 
             elif msg_type == "open_file":
                 path = data.get("path", "")
-                real = _safe_real(path)
+                scope = str(data.get("scope") or "workspace")
+                real = _safe_scoped_real(path, scope)
                 if real is None:
                     await websocket.send_json({"type": "error", "msg": "Access denied"})
                 elif os.path.isdir(real):
-                    ws_root = os.path.realpath(WORKSPACE)
+                    root = _focus_root() if scope == "focus" else os.path.realpath(WORKSPACE)
                     await websocket.send_json({
                         "type": "files", "files": _list_dir(real),
-                        "path": real, "root": ws_root,
+                        "path": real, "root": root or "", "scope": scope,
                     })
                 elif _is_image(real):
                     data_url = await asyncio.get_running_loop().run_in_executor(
@@ -2389,17 +2647,18 @@ async def ws_endpoint(websocket: WebSocket):
 
             elif msg_type == "delete_file":
                 path = data.get("path", "")
-                real = _safe_real(path)
+                scope = str(data.get("scope") or "workspace")
+                real = _safe_scoped_real(path, scope)
                 if real is None or os.path.isdir(real):
                     await websocket.send_json({"type": "error", "msg": "ลบไม่ได้: path ไม่ถูกต้อง"})
                 else:
                     try:
                         os.remove(real)
-                        ws_root = os.path.realpath(WORKSPACE)
+                        root = _focus_root() if scope == "focus" else os.path.realpath(WORKSPACE)
                         parent = os.path.dirname(real)
                         await websocket.send_json({
                             "type": "files", "files": _list_dir(parent),
-                            "path": parent, "root": ws_root,
+                            "path": parent, "root": root or "", "scope": scope,
                             "deleted": real,
                         })
                     except Exception as e:
@@ -2408,7 +2667,7 @@ async def ws_endpoint(websocket: WebSocket):
             elif msg_type == "open_with_os":
                 import subprocess
                 path = data.get("path", "")
-                real = _safe_real(path)
+                real = _safe_scoped_real(path, data.get("scope", "workspace"))
                 if real is None:
                     await websocket.send_json({"type": "error", "msg": "Access denied"})
                 else:

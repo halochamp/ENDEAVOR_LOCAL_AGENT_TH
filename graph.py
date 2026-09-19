@@ -587,6 +587,62 @@ def _last_human_content(messages: list) -> str:
     return ""
 
 
+_FOCUS_FOLDER_DIRECTIVE = (
+    "[FOCUS FOLDER ACTIVE — temporary edit access]\n"
+    "Focus Folder: {folder}\n"
+    "This is a temporary user-selected context and edit grant while it remains focused; "
+    "it is not a persistent Approved Edit Folder. Do not assume it remains available after "
+    "the user changes or clears Focus. Keep writes within the workspace, explicitly approved "
+    "folders, or this currently focused folder, and respect all protected-path rules."
+)
+
+
+def _focus_folder_for_config(config: RunnableConfig | None) -> str:
+    """Resolve the current focus without making prompt state client-owned."""
+    configurable = dict(((config or {}).get("configurable") or {}))
+    if "focus_folder" in configurable:
+        raw = configurable.get("focus_folder")
+    else:
+        try:
+            from tools.edit_access import get_focus_folder
+            raw = get_focus_folder()
+        except Exception:
+            raw = ""
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    resolved = os.path.realpath(os.path.abspath(raw.strip()))
+    return resolved if os.path.isdir(resolved) else ""
+
+
+def _inject_focus_folder_prompt(
+    messages: list, config: RunnableConfig | None = None,
+) -> list:
+    """Prefix the latest human turn ephemerally with the active Focus Folder.
+
+    The returned list is only the model invocation window; the original user
+    message in graph state is never replaced or persisted.
+    """
+    folder = _focus_folder_for_config(config)
+    if not folder:
+        return messages
+    idx = next((i for i in range(len(messages) - 1, -1, -1)
+                if isinstance(messages[i], HumanMessage)), None)
+    if idx is None:
+        return messages
+    original = messages[idx]
+    directive = _FOCUS_FOLDER_DIRECTIVE.format(folder=folder)
+    content = original.content
+    if isinstance(content, str):
+        updated_content = directive + "\n\n" + content
+    elif isinstance(content, list):
+        updated_content = [{"type": "text", "text": directive}] + list(content)
+    else:
+        updated_content = directive + "\n\n" + str(content or "")
+    patched = list(messages)
+    patched[idx] = original.model_copy(update={"content": updated_content})
+    return patched
+
+
 def react_node(state: V2State, config: RunnableConfig) -> dict:
     """Run one outer turn with independent read-image/computer lifecycles."""
     thread_id = (config.get("configurable") or {}).get("thread_id")
@@ -714,6 +770,12 @@ def _react_node_impl(state: V2State, config: RunnableConfig) -> dict:
         if not _DESTRUCTIVE_INTENT_RE.search(_human_text):
             from tools.computer_use import set_computer_turn_scope
             set_computer_turn_scope(block_destructive=True)
+
+    # Focus is an ephemeral model-context/authorization hint. It is injected
+    # only into this invocation window; the original user message and graph
+    # history remain unchanged, so changing/clearing Focus revokes the old
+    # temporary grant on the next turn.
+    trimmed = _inject_focus_folder_prompt(trimmed, config)
 
     # Persistent Pin is a hard current-turn evidence phase: validate in the
     # backend, read every file here before ReAct, then discard raw tool evidence

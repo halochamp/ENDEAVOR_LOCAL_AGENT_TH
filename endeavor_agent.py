@@ -53,6 +53,13 @@ from tools import ALL_TOOLS, SKILL_TOOLS
 from tools import _summarize as _summarize_tool
 from tools._progress import set_callback as set_progress_callback, set_phase_callback, set_plan_callback
 from tools.web_cache import web_count_reset as _reset_web_counter
+from tools._safety import validate_approved_edit_folder as _validate_approved_edit_folder
+from tools.edit_access import (
+    add_approved_edit_folders as _add_approved_edit_folders,
+    load_edit_access_state as _load_edit_access_state,
+    remove_approved_edit_folder as _remove_approved_edit_folder,
+    save_focus_folder as _save_focus_folder,
+)
 from agent_log import AgentLogger
 from ui_cli import (
     Spinner, print_header, print_divider, print_user_prompt,
@@ -61,6 +68,7 @@ from ui_cli import (
     extract_refs_from_search_result, prompt_user,
     print_mode_menu, print_special_commands, print_skill_help,
     print_runtime_settings_menu, print_runtime_choices,
+    print_edit_access_menu,
     print_startup_hint,
     setup_skill_completer, update_ctx_info, print_compact_notice,
     _SPINNER_LABELS,
@@ -525,6 +533,22 @@ def _apply_cli_runtime_settings(
     return changed
 
 
+def _apply_cli_edit_access_action(action: str, value: str = "") -> dict:
+    """Apply one CLI edit-access action through the shared backend state."""
+    action = str(action or "").strip().lower()
+    if action == "add":
+        folder = _validate_approved_edit_folder(value)
+        return _add_approved_edit_folders([folder])
+    if action == "remove":
+        return _remove_approved_edit_folder(value)
+    if action == "focus":
+        folder = _validate_approved_edit_folder(value) if str(value or "").strip() else ""
+        return _save_focus_folder(folder)
+    if action == "clear_focus":
+        return _save_focus_folder("")
+    raise ValueError(f"unsupported edit-access action: {action}")
+
+
 def main() -> None:
     runtime = config.get_runtime_settings()
     if not runtime.get("runtime_locked"):
@@ -806,6 +830,40 @@ def main() -> None:
                     if thread_id != _MEMORY_THREAD:
                         _purge_thread(_db_conn, thread_id)
                     break
+            elif choice == "5":
+                while True:
+                    edit_state = _load_edit_access_state()
+                    print_edit_access_menu(edit_state)
+                    sub = (prompt_user() or "").strip().lower()
+                    if sub in ("b", "back", "/exit"):
+                        break
+                    try:
+                        if sub == "1":
+                            raw = (prompt_user() or "").strip()
+                            _apply_cli_edit_access_action("add", raw)
+                            print(" Approved Edit Folder บันทึกแล้ว\n")
+                        elif sub == "2":
+                            folders = list(edit_state.get("folders") or [])
+                            if not folders:
+                                print(f" {C_META}ยังไม่มี Approved Edit Folder{R}\n")
+                                continue
+                            raw = (prompt_user() or "").strip()
+                            idx = int(raw) - 1
+                            if idx < 0 or idx >= len(folders):
+                                raise ValueError("หมายเลขโฟลเดอร์ไม่ถูกต้อง")
+                            _apply_cli_edit_access_action("remove", folders[idx])
+                            print(" ลบ Approved Edit Folder แล้ว\n")
+                        elif sub == "3":
+                            raw = (prompt_user() or "").strip()
+                            _apply_cli_edit_access_action("focus", raw)
+                            print(" Focus Folder บันทึกแล้ว (เป็นสิทธิ์ชั่วคราว ไม่เพิ่ม approval)\n")
+                        elif sub == "4":
+                            _apply_cli_edit_access_action("clear_focus")
+                            print(" ล้าง Focus Folder แล้ว\n")
+                        else:
+                            print(f" {C_WARN}⚠ เลือก 1, 2, 3, 4 หรือ b{R}\n")
+                    except (OSError, TypeError, ValueError) as exc:
+                        print(f" {C_WARN}⚠ แก้ไข edit access ไม่สำเร็จ: {exc}{R}\n")
             elif choice.lower() in ("q", "quit", "exit", "ออก", "บาย"):
                 print("\n Bye.\n")
                 if thread_id != _MEMORY_THREAD:

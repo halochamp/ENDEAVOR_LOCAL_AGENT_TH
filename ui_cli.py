@@ -384,7 +384,30 @@ def print_mode_menu() -> None:
     print(f"   {C_ORANGE}[2]{R} Skills")
     print(f"   {C_ORANGE}[3]{R} Special Commands")
     print(f"   {C_ORANGE}[4]{R} Model / Think Budget / Port")
+    print(f"   {C_ORANGE}[5]{R} Approved Edit Folders / Focus Folder")
     print(f"   {C_ORANGE}[q]{R} Quit")
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print()
+
+
+def print_edit_access_menu(state: dict) -> None:
+    folders = list(state.get("folders") or [])
+    focus = str(state.get("focus_folder") or "")
+    max_folders = int(state.get("max_folders") or 10)
+    print()
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print(f"   {BOLD}{C_HEADER}Approved Edit Folders / Focus Folder{R}")
+    print(f"   {C_META}Persistent approvals:{R} {C_AGENT}{len(folders)} / {max_folders}{R}")
+    for idx, folder in enumerate(folders, 1):
+        print(f"      {C_ORANGE}{idx}.{R} {C_AGENT}{folder}{R}")
+    print(f"   {C_META}Focus:{R} {C_AGENT}{focus or 'Not set'}{R}")
+    print(f"   {C_DIM}Focus is temporary and never auto-adds to persistent approvals.{R}")
+    print()
+    print(f"   {C_ORANGE}[1]{R} เพิ่ม Approved Edit Folder")
+    print(f"   {C_ORANGE}[2]{R} ลบ Approved Edit Folder")
+    print(f"   {C_ORANGE}[3]{R} ตั้ง Focus Folder")
+    print(f"   {C_ORANGE}[4]{R} ล้าง Focus Folder")
+    print(f"   {C_ORANGE}[b]{R} Back")
     print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
     print()
 

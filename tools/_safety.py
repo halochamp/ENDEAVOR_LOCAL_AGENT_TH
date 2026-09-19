@@ -45,6 +45,9 @@ _PROTECTED_PATHS = [
         # can contain SMS/iMessage-delivered 2FA/OTP codes
     # WebSocket auth token — parent of workspace, reachable via "../.agent_token"
     os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".agent_token")),
+    # User edit-access state must never be directly edited through the agent.
+    os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "approved_edit_folders.json")),
+    os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "approved_edit_folders.json.lock")),
 ]
 
 
@@ -85,6 +88,27 @@ def _in_workspace(abs_path: str) -> bool:
     return abs_path == ws_abs or abs_path.startswith(ws_abs + os.sep)
 
 
+def validate_approved_edit_folder(path: str) -> str:
+    """Return a canonical user-selected folder or raise a safe validation error."""
+    raw = str(path or "").strip()
+    if not raw or not os.path.isabs(raw):
+        raise ValueError("folder path must be absolute")
+    if any(ord(char) < 32 for char in raw):
+        raise ValueError("folder path contains control characters")
+    resolved = os.path.realpath(raw)
+    if _protected_hit(resolved):
+        raise ValueError("folder is protected")
+    if not os.path.isdir(resolved):
+        raise ValueError("folder must be an existing directory")
+    return resolved
+
+
+def _in_approved_edit_folder(path: str) -> bool:
+    from .edit_access import path_is_approved_for_edit
+
+    return path_is_approved_for_edit(path)
+
+
 def check_path(path: str) -> str | None:
     """คืน error string ถ้าเขียน IN-PLACE ที่ path นี้ไม่ได้, None ถ้าเขียนได้
     นโยบายนอก workspace = create-only: ไฟล์ใหม่/working copy (*.edited.*) ผ่าน,
@@ -106,7 +130,9 @@ def check_path(path: str) -> str | None:
     )
 
 
-def plan_write(path: str) -> tuple[str, str | None, str | None]:
+def plan_write(
+    path: str, *, allow_approved_edit: bool = False
+) -> tuple[str, str | None, str | None]:
     """วางแผน write หนึ่งครั้ง — คืน (effective_path, err, note)
     err ≠ None    → ห้ามเขียนทุกรูปแบบ (protected path)
     note ≠ None   → target เป็นไฟล์เดิมนอก workspace: effective_path ถูก redirect
@@ -117,19 +143,29 @@ def plan_write(path: str) -> tuple[str, str | None, str | None]:
     hit = _protected_hit(abs_path)
     if hit:
         return resolved, f"[BLOCKED] protected path: {hit}", None
-    if os.getenv("V2_ALLOW_OUTSIDE") or _in_workspace(abs_path):
+    if _in_workspace(abs_path):
         return resolved, None, None
-    if not os.path.exists(abs_path) or is_edited_copy(abs_path):
+    if os.getenv("V2_ALLOW_OUTSIDE"):
+        # Preserve the documented operator-level legacy bypass. Normal UI/CLI
+        # operation does not set it and therefore remains approval-gated below.
         return resolved, None, None
-    copy = edited_copy_path(resolved)
-    hit = _protected_hit(os.path.realpath(copy))
-    if hit:
-        return copy, f"[BLOCKED] protected path: {hit}", None
-    note = (
-        "original file outside workspace is never modified in place — "
-        f"changes were written to the working copy: {copy}"
-    )
-    return copy, None, note
+    if allow_approved_edit and _in_approved_edit_folder(abs_path):
+        return resolved, None, "approved edit folder"
+    if not os.getenv("V2_ALLOW_OUTSIDE"):
+        if allow_approved_edit:
+            return resolved, "[BLOCKED] edit target is outside workspace and outside Approved Edit Folders", None
+        if not os.path.exists(abs_path) or is_edited_copy(abs_path):
+            return resolved, None, None
+        copy = edited_copy_path(resolved)
+        hit = _protected_hit(os.path.realpath(copy))
+        if hit:
+            return copy, f"[BLOCKED] protected path: {hit}", None
+        note = (
+            "original file outside workspace is never modified in place — "
+            f"changes were written to the working copy: {copy}"
+        )
+        return copy, None, note
+    return resolved, None, None
 
 
 def resolve_path(path: str) -> str:

@@ -22,6 +22,8 @@ developer/
 # Secrets / runtime state
 .env
 .agent_token
+approved_edit_folders.json
+approved_edit_folders.json.lock
 
 # Workspace + memory (user data, not source)
 workspace/*

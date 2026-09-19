@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteFile: (p) => ipcRenderer.invoke('delete-file', p),
   showOpenDialog: () => ipcRenderer.invoke('show-open-dialog'),
   showPinDialog: () => ipcRenderer.invoke('show-pin-dialog'),
+  showApprovedEditFolderDialog: () => ipcRenderer.invoke('show-approved-edit-folder-dialog'),
   pdfToTextStart: (rewriteThai) => ipcRenderer.invoke('pdf-to-text-start', !!rewriteThai),
   pdfToTextStatus: (jobId) => ipcRenderer.invoke('pdf-to-text-status', String(jobId || '')),
   setCompact: (compact) => ipcRenderer.send('set-compact', compact),

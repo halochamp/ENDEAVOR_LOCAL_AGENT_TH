@@ -201,7 +201,8 @@ def edit(path: str, old_string: str = "", new_string: str = "", replace_all: boo
     against the file as already changed by earlier hunks in the SAME batch — order
     line-based hunks bottom-to-top (highest line_start first) if a batch mixes them.
     Use write_file for new files, or write_file with overwrite=true for full rewrites.
-    Files OUTSIDE the workspace are never modified in place: the edit is applied to a
+    Files OUTSIDE the workspace are modified in place only when the user has explicitly
+    approved the folder or currently focused it; otherwise the edit is applied to a
     sibling working copy "name.edited.ext" (created from the original on the first edit,
     reused by later edits) — the result reports the copy's path.
     .py files get an inline syntax check after a successful write (✓/⚠ appended to
@@ -234,7 +235,7 @@ def edit(path: str, old_string: str = "", new_string: str = "", replace_all: boo
             "line_start": line_start, "line_end": line_end,
         }]
 
-    target, err, note = plan_write(path)
+    target, err, note = plan_write(path, allow_approved_edit=True)
     if err:
         return err
     try:

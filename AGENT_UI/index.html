@@ -301,6 +301,16 @@ body {
 .settings-select:focus { border-color:var(--accent); }
 .settings-select:disabled { opacity:.55; }
 .settings-runtime-status { grid-column:2; min-height:12px; font-size:9px; color:var(--text-faint); overflow-wrap:anywhere; }
+.approved-folder-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:10px; color:var(--text-dim); }
+.approved-folder-count { color:var(--text-faint); font:9px var(--mono); }
+.approved-folder-list { display:flex; flex-direction:column; gap:4px; max-height:96px; overflow-y:auto; }
+.approved-folder-item { display:flex; align-items:center; gap:5px; min-width:0; }
+.approved-folder-path { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-faint); font:9px var(--mono); }
+.approved-folder-remove { flex:0 0 auto; padding:2px 5px; font-size:9px; }
+.approved-folder-actions { display:flex; gap:6px; }
+.approved-folder-actions .btn { flex:1; min-width:0; }
+.approved-folder-empty { color:var(--text-faint); font-size:9px; }
+.approved-focus-block { display:flex; flex-direction:column; gap:5px; padding-top:7px; border-top:1px solid var(--border); }
 
 /* ── Files panel ───────────────────────────────────────── */
 #file-list { flex: 1; overflow-y: auto; padding: 4px; }
@@ -322,6 +332,12 @@ body {
 .file-act:hover { opacity: 1; background: var(--bg4); }
 .file-size { color: var(--text-faint); font-size: 10px; font-family: var(--mono); flex-shrink: 0; }
 .files-empty { padding: 10px; font-size: 11px; color: var(--text-faint); text-align: center; }
+.focus-header { gap: 5px; }
+.focus-header .focus-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focus-header .focus-action { flex: 0 0 auto; background:none; border:1px solid var(--border); border-radius:3px; color:var(--text-faint); font-size:9px; padding:2px 5px; cursor:pointer; }
+.focus-header .focus-action:hover { color:var(--text); background:var(--bg3); }
+.focus-header .focus-action:disabled { opacity:.45; cursor:default; }
+.focus-empty { padding: 14px 10px; font-size: 11px; color: var(--text-faint); text-align: center; }
 .files-open-btn {
   margin: 4px 8px; padding: 4px;
   background: none; border: 1px solid var(--border);
@@ -667,6 +683,10 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       <span class="icon-btn-icon">📁</span>
       <span class="icon-btn-label">Work<br>space</span>
     </button>
+    <button class="icon-btn" id="btn-focus" title="Focus Folder">
+      <span class="icon-btn-icon">🎯</span>
+      <span class="icon-btn-label">Focus</span>
+    </button>
     <button class="icon-btn" id="btn-activity" title="Tool Activity">
       <span class="icon-btn-icon">⚡</span>
       <span class="icon-btn-label">Activity</span>
@@ -699,6 +719,18 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       </div>
       <div id="file-list"></div>
       <button class="files-open-btn">เปิดใน Finder</button>
+    </div>
+
+    <!-- Focus view: temporary scope, separate from persistent approvals. -->
+    <div id="left-focus" class="left-view">
+      <div class="panel-hdr focus-header">
+        <span>🎯</span>
+        <span class="focus-path" id="focus-files-path">No Focus Folder</span>
+        <button class="focus-action" id="focus-files-back" style="display:none">⬆</button>
+        <button class="focus-action" id="focus-files-select">Select</button>
+        <button class="focus-action" id="focus-files-clear" disabled>Clear</button>
+      </div>
+      <div id="focus-file-list"></div>
     </div>
 
     <!-- Activity view -->
@@ -777,6 +809,28 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
           </div>
           <div class="settings-help" id="model-server-error" style="color:var(--red);display:none"></div>
         </div>
+        <div class="settings-section" id="edit-access-section">
+          <div class="settings-title">Edit Access</div>
+          <div class="settings-help">Approved Edit Folders are persistent user-added folders. Focus Folder is temporary and does not add to approvals.</div>
+          <div class="approved-folder-heading">
+            <span>Approved Edit Folders</span>
+            <span class="approved-folder-count" id="approved-edit-folders-count">0 / 10</span>
+          </div>
+          <div class="approved-folder-list" id="approved-edit-folders-list"></div>
+          <button class="btn btn-ghost" id="approved-edit-folders-add">Add Folder</button>
+          <div class="approved-focus-block">
+            <div class="approved-folder-heading">
+              <span>Focus Folder</span>
+              <span class="approved-folder-count" id="focus-folder-state">Not set</span>
+            </div>
+            <div class="approved-folder-path" id="focus-folder-path">No Focus Folder</div>
+            <div class="approved-folder-actions">
+              <button class="btn btn-ghost" id="focus-folder-select">Set Focus</button>
+              <button class="btn btn-ghost" id="focus-folder-clear">Clear</button>
+            </div>
+          </div>
+          <div class="settings-help" id="approved-edit-folders-status"></div>
+        </div>
       </div>
     </div>
 
@@ -842,6 +896,7 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
 <script src="lib/waiting_status.js"></script>
 <script src="lib/workspace_mentions.js"></script>
 <script src="lib/pinned_files.js"></script>
+<script src="lib/edit_access.js"></script>
 <script src="renderer.js"></script>
 </body>
 </html>
