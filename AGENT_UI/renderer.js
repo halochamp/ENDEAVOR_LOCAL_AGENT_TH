@@ -218,9 +218,16 @@ function handleEvent(ev) {
       applyModelServerStatus(ev)
       break
     case 'files':
-      if (ev.root) workspaceRoot = ev.root
-      if (ev.path) currentDirPath = ev.path
-      renderFiles(ev.files || [], ev.path || '', ev.root || '')
+      if (ev.scope === 'focus') {
+        if (ev.root) focusRoot = ev.root
+        if (ev.path) focusDirPath = ev.path
+        renderFiles(ev.files || [], ev.path || '', ev.root || '', 'focus')
+        renderFocusHeader()
+      } else {
+        if (ev.root) workspaceRoot = ev.root
+        if (ev.path) currentDirPath = ev.path
+        renderFiles(ev.files || [], ev.path || '', ev.root || '', 'workspace')
+      }
       break
     case 'workspace_mentions': {
       workspaceMentionFiles = Array.isArray(ev.files) ? ev.files : []
