@@ -63,8 +63,14 @@ def main() -> None:
     from scripts.apc_tool_call_template_patch import apply_for_model
     if not apply_for_model(owner_model):
         raise RuntimeError(
-            "Qwen3.6 APC tool-call template stabilization seam is unavailable"
+            "APC tool-call template stabilization seam is unavailable for the owner model"
         )
+    try:
+        from scripts.apc_self_check_patch import apply as _apply_apc_self_check
+    except Exception as exc:
+        raise RuntimeError("APC self-check compatibility seam is unavailable") from exc
+    if not _apply_apc_self_check():
+        raise RuntimeError("APC self-check compatibility seam could not be installed")
     from mlx_vlm.server import main as server_main
 
     server_main()

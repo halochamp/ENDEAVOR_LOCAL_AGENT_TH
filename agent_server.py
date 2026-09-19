@@ -492,6 +492,14 @@ def _sync_runtime_settings_from_owner_file_if_idle() -> bool:
     return True
 
 
+def _sync_watchdog_owner_file_if_idle() -> bool:
+    """Adopt external owner settings before watchdog status/reconcile work."""
+    if _busy.locked() or _model_server_action_lock.locked():
+        return False
+    _sync_runtime_settings_from_owner_file_if_idle()
+    return True
+
+
 async def _apply_model_server_action(action: str) -> dict:
     action = str(action or "").strip().lower()
     if action not in {"start", "stop", "reset"}:
@@ -661,6 +669,8 @@ async def _model_server_watchdog_loop() -> None:
     while True:
         try:
             await asyncio.sleep(_MODEL_WATCHDOG_INTERVAL_SECONDS)
+            if not _sync_watchdog_owner_file_if_idle():
+                continue
             if get_server_mode() != "standalone":
                 continue
             control = _get_model_server_control_settings()

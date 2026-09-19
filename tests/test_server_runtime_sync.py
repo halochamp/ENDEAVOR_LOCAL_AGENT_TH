@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
@@ -98,6 +99,38 @@ class ServerRuntimeSyncTests(unittest.TestCase):
         self.assertEqual(srv._config.get_thinking_budget(), 512)
         self.assertEqual(srv._config.get_server_port(), 8091)
         rebuild.assert_called_once_with()
+
+    def test_watchdog_sync_adopts_external_standalone_model_before_reconcile(self) -> None:
+        model = srv._config.COMPACT_VLM_MODEL
+        self._write(model=model, budget=512)
+        events = []
+        original_sync = srv._sync_runtime_settings_from_owner_file_if_idle
+
+        def sync_owner_file():
+            events.append("sync")
+            changed = original_sync()
+            events.append(("model", srv._config.get_model()))
+            return changed
+
+        with patch.object(srv, "_sync_runtime_settings_from_owner_file_if_idle", side_effect=sync_owner_file), \
+             patch.object(srv, "_rebuild_runtime_llms"):
+            self.assertTrue(srv._sync_watchdog_owner_file_if_idle())
+        self.assertEqual(events, ["sync", ("model", model)])
+        self.assertEqual(srv._config.get_model(), model)
+
+    def test_watchdog_sync_runs_before_status_reconciliation(self) -> None:
+        source = inspect.getsource(srv._model_server_watchdog_loop)
+        sync_call = source.index("if not _sync_watchdog_owner_file_if_idle()")
+        status_call = source.index("if get_server_mode() != \"standalone\"", sync_call)
+        self.assertLess(sync_call, status_call)
+
+    def test_watchdog_sync_refuses_while_busy_or_action_lock_is_held(self) -> None:
+        with patch.object(srv, "_sync_runtime_settings_from_owner_file_if_idle") as sync:
+            with patch.object(srv._busy, "locked", return_value=True):
+                self.assertFalse(srv._sync_watchdog_owner_file_if_idle())
+            with patch.object(srv._model_server_action_lock, "locked", return_value=True):
+                self.assertFalse(srv._sync_watchdog_owner_file_if_idle())
+        sync.assert_not_called()
 
     def test_shared_sync_adopts_actual_max_model(self) -> None:
         self._write(

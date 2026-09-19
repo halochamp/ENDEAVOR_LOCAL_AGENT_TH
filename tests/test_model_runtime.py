@@ -62,6 +62,15 @@ class ModelRuntimeOwnershipTests(unittest.TestCase):
         self.assertIn("apc_tool_call_template_patch", source)
         self.assertIn("apply_for_model(owner_model)", source)
 
+    def test_owned_launcher_installs_generic_apc_self_check_before_server_import(self) -> None:
+        source = Path(runtime._LAUNCHER).read_text(encoding="utf-8")
+        self.assertIn("apc_self_check_patch", source)
+        self.assertIn("APC self-check compatibility seam", source)
+        self.assertLess(
+            source.index("apc_self_check_patch"),
+            source.index("from mlx_vlm.server import main"),
+        )
+
     def test_owned_standalone_launcher_gets_explicit_apc_policy(self) -> None:
         with mock.patch.dict(runtime.os.environ, {
             "APC_ENABLED": "0",
