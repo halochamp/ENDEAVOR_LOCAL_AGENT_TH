@@ -590,17 +590,21 @@ def _last_human_content(messages: list) -> str:
 
 
 _FOCUS_FOLDER_DIRECTIVE = (
-    "[FOCUS FOLDER ACTIVE — temporary edit access]\n"
-    "Focus Folder: {folder}\n"
+    "[ACTIVE WORKSPACE — temporary edit access]\n"
+    "Active Workspace: {folder}\n"
     "This is a temporary user-selected context and edit grant while it remains focused; "
     "it is not a persistent Approved Edit Folder. Do not assume it remains available after "
-    "the user changes or clears Focus. Keep writes within the workspace, explicitly approved "
-    "folders, or this currently focused folder, and respect all protected-path rules."
+    "the user changes or clears Active Workspace. Keep writes within the workspace, explicitly approved "
+    "folders, or the current Active Workspace, and respect all protected-path rules."
+)
+_ACTIVE_WORKSPACE_NOT_SET_DIRECTIVE = (
+    "[ACTIVE WORKSPACE]\n"
+    "Active Workspace: Not set"
 )
 
 
-def _focus_folder_for_config(config: RunnableConfig | None) -> str:
-    """Resolve the current focus without making prompt state client-owned."""
+def _focus_folder_for_config(config: RunnableConfig | None) -> str | None:
+    """Resolve Active Workspace; ``None`` means state lookup itself failed."""
     configurable = dict(((config or {}).get("configurable") or {}))
     if "focus_folder" in configurable:
         raw = configurable.get("focus_folder")
@@ -609,7 +613,7 @@ def _focus_folder_for_config(config: RunnableConfig | None) -> str:
             from tools.edit_access import get_focus_folder
             raw = get_focus_folder()
         except Exception:
-            raw = ""
+            return None
     if not isinstance(raw, str) or not raw.strip():
         return ""
     resolved = os.path.realpath(os.path.abspath(raw.strip()))
@@ -619,20 +623,23 @@ def _focus_folder_for_config(config: RunnableConfig | None) -> str:
 def _inject_focus_folder_prompt(
     messages: list, config: RunnableConfig | None = None,
 ) -> list:
-    """Prefix the latest human turn ephemerally with the active Focus Folder.
+    """Prefix the latest human turn ephemerally with the Active Workspace.
 
     The returned list is only the model invocation window; the original user
     message in graph state is never replaced or persisted.
     """
     folder = _focus_folder_for_config(config)
-    if not folder:
+    if folder is None:
         return messages
     idx = next((i for i in range(len(messages) - 1, -1, -1)
                 if isinstance(messages[i], HumanMessage)), None)
     if idx is None:
         return messages
     original = messages[idx]
-    directive = _FOCUS_FOLDER_DIRECTIVE.format(folder=folder)
+    directive = (
+        _FOCUS_FOLDER_DIRECTIVE.format(folder=folder)
+        if folder else _ACTIVE_WORKSPACE_NOT_SET_DIRECTIVE
+    )
     content = original.content
     if isinstance(content, str):
         updated_content = directive + "\n\n" + content

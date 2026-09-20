@@ -166,6 +166,26 @@ class EditAccessStateTests(unittest.TestCase):
 
 
 class FocusPromptTests(unittest.TestCase):
+    def test_unset_active_workspace_is_explicit_without_edit_grant(self) -> None:
+        original = HumanMessage(content="Which workspace is active?")
+        messages = [original]
+        injected = graph._inject_focus_folder_prompt(
+            messages,
+            {"configurable": {"focus_folder": ""}},
+        )
+        self.assertIsNot(injected, messages)
+        self.assertEqual(original.content, "Which workspace is active?")
+        self.assertIn("Active Workspace: Not set", injected[0].content)
+        self.assertNotIn("temporary edit access", injected[0].content)
+
+    def test_active_workspace_lookup_failure_does_not_claim_not_set(self) -> None:
+        original = HumanMessage(content="Which workspace is active?")
+        messages = [original]
+        with patch.object(edit_access, "get_focus_folder", side_effect=OSError("state unavailable")):
+            injected = graph._inject_focus_folder_prompt(messages, None)
+        self.assertIs(injected, messages)
+        self.assertEqual(original.content, "Which workspace is active?")
+
     def test_focus_prompt_is_ephemeral_and_uses_configured_focus(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             original = HumanMessage(content="Please edit the draft")

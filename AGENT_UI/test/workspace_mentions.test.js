@@ -63,7 +63,7 @@ test('Electron sidebar calls the tab Workspace and loads the mention helper befo
   const root = path.join(__dirname, '..')
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8')
   const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')
-  assert.match(html, /id="btn-workspace"[\s\S]*icon-btn-label">Work<br>space</)
+  assert.match(html, /id="btn-workspace"[\s\S]*icon-btn-label">Agent<br>Workspace</)
   assert.ok(html.indexOf('lib/workspace_mentions.js') < html.indexOf('renderer.js'))
   assert.match(renderer, /type: 'get_workspace_mentions'/)
   assert.match(renderer, /workspace_mentions: workspaceMentions/)

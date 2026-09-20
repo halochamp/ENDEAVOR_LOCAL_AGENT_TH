@@ -162,7 +162,7 @@ body {
 
 /* ── Icon sidebar ──────────────────────────────────────── */
 #icon-bar {
-  width: 48px; flex-shrink: 0;
+  width: 52px; flex-shrink: 0;
   background: var(--bg2);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column;
@@ -170,7 +170,7 @@ body {
   padding: 8px 0; gap: 2px;
 }
 .icon-btn {
-  width: 40px; height: 46px;
+  width: 44px; height: 50px;
   background: none; border: none; cursor: pointer; border-radius: 6px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 3px; color: var(--text-faint);
@@ -180,7 +180,7 @@ body {
 .icon-btn:hover { background: var(--bg3); color: var(--text-dim); }
 .icon-btn.active { background: var(--accent-tint-strong); color: var(--accent); }
 .icon-btn-icon { font-size: 17px; line-height: 1; }
-.icon-btn-label { font-size: 8px; letter-spacing: 0.3px; text-transform: uppercase; font-weight: 500; }
+.icon-btn-label { display: block; width: 100%; box-sizing: border-box; padding: 0 1px; font-size: 6.8px; line-height: 1.02; letter-spacing: 0.08px; text-align: center; text-transform: uppercase; font-weight: 500; white-space: normal; }
 
 /* ── Left panel ────────────────────────────────────────── */
 #left-panel {
@@ -679,13 +679,13 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
 
   <!-- Icon sidebar -->
   <div id="icon-bar">
-    <button class="icon-btn" id="btn-workspace" title="Workspace">
+    <button class="icon-btn" id="btn-workspace" title="Agent Workspace">
       <span class="icon-btn-icon">📁</span>
-      <span class="icon-btn-label">Work<br>space</span>
+      <span class="icon-btn-label">Agent<br>Workspace</span>
     </button>
-    <button class="icon-btn" id="btn-focus" title="Focus Folder">
+    <button class="icon-btn" id="btn-focus" title="Active Workspace">
       <span class="icon-btn-icon">🎯</span>
-      <span class="icon-btn-label">Focus</span>
+      <span class="icon-btn-label">Active<br>Workspace</span>
     </button>
     <button class="icon-btn" id="btn-activity" title="Tool Activity">
       <span class="icon-btn-icon">⚡</span>
@@ -725,7 +725,7 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
     <div id="left-focus" class="left-view">
       <div class="panel-hdr focus-header">
         <span>🎯</span>
-        <span class="focus-path" id="focus-files-path">No Focus Folder</span>
+        <span class="focus-path" id="focus-files-path">No Active Workspace</span>
         <button class="focus-action" id="focus-files-back" style="display:none">⬆</button>
         <button class="focus-action" id="focus-files-select">Select</button>
         <button class="focus-action" id="focus-files-clear" disabled>Clear</button>
@@ -811,7 +811,7 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
         </div>
         <div class="settings-section" id="edit-access-section">
           <div class="settings-title">Edit Access</div>
-          <div class="settings-help">Approved Edit Folders are persistent user-added folders. Focus Folder is temporary and does not add to approvals.</div>
+          <div class="settings-help">Approved Edit Folders are persistent user-added folders. Active Workspace is temporary and does not add to approvals.</div>
           <div class="approved-folder-heading">
             <span>Approved Edit Folders</span>
             <span class="approved-folder-count" id="approved-edit-folders-count">0 / 10</span>
@@ -820,12 +820,12 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
           <button class="btn btn-ghost" id="approved-edit-folders-add">Add Folder</button>
           <div class="approved-focus-block">
             <div class="approved-folder-heading">
-              <span>Focus Folder</span>
+              <span>Active Workspace</span>
               <span class="approved-folder-count" id="focus-folder-state">Not set</span>
             </div>
-            <div class="approved-folder-path" id="focus-folder-path">No Focus Folder</div>
+            <div class="approved-folder-path" id="focus-folder-path">No Active Workspace</div>
             <div class="approved-folder-actions">
-              <button class="btn btn-ghost" id="focus-folder-select">Set Focus</button>
+              <button class="btn btn-ghost" id="focus-folder-select">Set Active Workspace</button>
               <button class="btn btn-ghost" id="focus-folder-clear">Clear</button>
             </div>
           </div>

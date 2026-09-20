@@ -969,15 +969,15 @@ function renderFiles(files, currentPath, root, scope = 'workspace') {
   const crumb = document.getElementById(isFocus ? 'focus-files-path' : 'files-crumb')
   const backBtn = document.getElementById(isFocus ? 'focus-files-back' : 'files-back')
   if (root && currentPath) {
-    const rel = currentPath === root ? (isFocus ? 'Focus Folder' : 'workspace') : currentPath.replace(root, '').replace(/^\//, '')
-    if (crumb) crumb.textContent = rel || (isFocus ? 'Focus Folder' : 'workspace')
+    const rel = currentPath === root ? (isFocus ? 'Active Workspace' : 'workspace') : currentPath.replace(root, '').replace(/^\//, '')
+    if (crumb) crumb.textContent = rel || (isFocus ? 'Active Workspace' : 'workspace')
     if (backBtn) backBtn.style.display = currentPath !== root ? 'inline' : 'none'
   } else if (crumb && isFocus) {
-    crumb.textContent = 'No Focus Folder'
+    crumb.textContent = 'No Active Workspace'
   }
 
   if (!files.length) {
-    list.innerHTML = `<div class="${isFocus ? 'focus-empty' : 'files-empty'}">${isFocus && !root ? 'ยังไม่ได้ตั้ง Focus Folder' : 'โฟลเดอร์ว่างเปล่า'}</div>`
+    list.innerHTML = `<div class="${isFocus ? 'focus-empty' : 'files-empty'}">${isFocus && !root ? 'ยังไม่ได้ตั้ง Active Workspace' : 'โฟลเดอร์ว่างเปล่า'}</div>`
     return
   }
   for (const f of files) {
@@ -1496,7 +1496,7 @@ function renderFocusHeader() {
   const clear = document.getElementById('focus-files-clear')
   const focus = String(editAccessState.focus_folder || focusRoot || '')
   if (pathEl) {
-    pathEl.textContent = focus || 'No Focus Folder'
+    pathEl.textContent = focus || 'No Active Workspace'
     pathEl.title = focus
   }
   if (clear) clear.disabled = !focus
@@ -1556,7 +1556,7 @@ function renderApprovedEditFolders() {
       : (focus ? 'Temporary' : 'Not set')
   }
   if (focusPath) {
-    focusPath.textContent = focus || 'No Focus Folder'
+    focusPath.textContent = focus || 'No Active Workspace'
     focusPath.title = focus
   }
   if (focusClear) focusClear.disabled = !focus
@@ -1582,7 +1582,7 @@ async function setFocusFolder() {
   const paths = Array.isArray(result && result.paths) ? result.paths : []
   if (paths.length) wsSend({ type: 'set_focus_folder', folder: paths[0] })
   else if (result && result.rejected) {
-    applyApprovedEditFolders({ ...editAccessState, error: 'เลือก Focus Folder ไม่สำเร็จ' })
+    applyApprovedEditFolders({ ...editAccessState, error: 'เลือก Active Workspace ไม่สำเร็จ' })
   }
 }
 

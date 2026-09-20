@@ -410,7 +410,7 @@ async def _apply_focus_folder(raw_folder: object) -> dict:
     if raw_folder is None:
         raw_folder = ""
     if not isinstance(raw_folder, str):
-        return _edit_access_payload(error="focus folder path must be a string")
+        return _edit_access_payload(error="active workspace path must be a string")
     try:
         normalized = "" if not raw_folder.strip() else _validate_approved_edit_folder(raw_folder)
         # Focus is process/session state only. It deliberately never calls the
@@ -1635,10 +1635,10 @@ def _safe_real(path: str) -> str | None:
 
 
 def _focus_root() -> str | None:
-    """Return the live, canonical Focus root or ``None`` when Focus is unset.
+    """Return the live, canonical Active Workspace root or ``None`` when it is unset.
 
-    Focus is deliberately revalidated on every request.  This keeps a cleared
-    or replaced Focus from retaining edit/read access in a stale websocket.
+    Active Workspace is deliberately revalidated on every request.  This keeps a cleared
+    or replaced Active Workspace from retaining edit/read access in a stale websocket.
     """
     raw = _get_focus_folder()
     if not raw:
@@ -1820,7 +1820,7 @@ def _focus_mention_paths(
         raise ValueError(f"tag ไฟล์ได้สูงสุด {_WORKSPACE_MENTION_PER_TURN_MAX} ไฟล์ต่อข้อความ")
     root = _focus_root()
     if root is None:
-        raise ValueError("Focus Folder ยังไม่ได้ตั้งค่าหรือใช้งานไม่ได้")
+        raise ValueError("Active Workspace ยังไม่ได้ตั้งค่าหรือใช้งานไม่ได้")
     resolved: list[str] = []
     seen: set[str] = set()
     for item in raw_mentions:
@@ -1831,7 +1831,7 @@ def _focus_mention_paths(
             raise ValueError("focus mention path ไม่ถูกต้อง")
         real = _safe_focus_real(os.path.join(root, rel))
         if real is None or not os.path.isfile(real):
-            raise ValueError(f"ไม่พบไฟล์ที่ tag ใน Focus Folder: {item}")
+            raise ValueError(f"ไม่พบไฟล์ที่ tag ใน Active Workspace: {item}")
         if skip_real_paths and real in skip_real_paths:
             continue
         if real not in seen:
@@ -1856,7 +1856,7 @@ def _augment_query_with_workspace_mention_paths(content: str, paths: list[str]) 
 def _augment_query_with_focus_mention_paths(content: str, paths: list[str]) -> str:
     if not paths:
         return content
-    lines = ["ผู้ใช้ tag ไฟล์จาก Focus Folder โดยตรง:"]
+    lines = ["ผู้ใช้ tag ไฟล์จาก Active Workspace โดยตรง:"]
     for index, path in enumerate(paths, 1):
         lines.append(f"{index}. {path}")
     lines.append(

@@ -27,7 +27,7 @@
 
   function focusStatus(state) {
     const normalized = normalizeState(state)
-    if (!normalized.focus_folder) return 'No Focus Folder'
+    if (!normalized.focus_folder) return 'No Active Workspace'
     return focusIsPersistent(normalized) ? 'Approved + focused' : 'Temporary'
   }
 

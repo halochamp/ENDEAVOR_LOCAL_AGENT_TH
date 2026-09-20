@@ -856,10 +856,10 @@ def main() -> None:
                         elif sub == "3":
                             raw = (prompt_user() or "").strip()
                             _apply_cli_edit_access_action("focus", raw)
-                            print(" Focus Folder บันทึกแล้ว (เป็นสิทธิ์ชั่วคราว ไม่เพิ่ม approval)\n")
+                            print(" Active Workspace บันทึกแล้ว (เป็นสิทธิ์ชั่วคราว ไม่เพิ่ม approval)\n")
                         elif sub == "4":
                             _apply_cli_edit_access_action("clear_focus")
-                            print(" ล้าง Focus Folder แล้ว\n")
+                            print(" ล้าง Active Workspace แล้ว\n")
                         else:
                             print(f" {C_WARN}⚠ เลือก 1, 2, 3, 4 หรือ b{R}\n")
                     except (OSError, TypeError, ValueError) as exc:
