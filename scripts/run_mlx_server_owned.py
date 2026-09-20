@@ -17,6 +17,8 @@ _PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
 
+from model_registry import ModelRegistryError, get_native_apc_contract
+
 
 def _option_value(argv: Sequence[str], option: str) -> str:
     for index, arg in enumerate(argv):
@@ -53,24 +55,37 @@ def _install_owner_model_gate(owner_model: str) -> None:
 def main() -> None:
     owner_model = _option_value(sys.argv, "--model")
     _install_owner_model_gate(owner_model)
-    # Apply only the generic, in-memory APC seam. Incompatible mlx-vlm builds
-    # keep their native APC behavior; the patch module is fail-closed.
     try:
-        from scripts.apc_extra_hash_patch import apply as _apply_apc_patch
-        _apply_apc_patch()
-    except Exception:
-        pass
-    from scripts.apc_tool_call_template_patch import apply_for_model
-    if not apply_for_model(owner_model):
+        apc_contract = get_native_apc_contract(owner_model)
+    except ModelRegistryError as exc:
         raise RuntimeError(
-            "APC tool-call template stabilization seam is unavailable for the owner model"
-        )
-    try:
-        from scripts.apc_self_check_patch import apply as _apply_apc_self_check
-    except Exception as exc:
-        raise RuntimeError("APC self-check compatibility seam is unavailable") from exc
-    if not _apply_apc_self_check():
-        raise RuntimeError("APC self-check compatibility seam could not be installed")
+            "owner model has no declarative runtime contract in model_registry.json"
+        ) from exc
+
+    if apc_contract.enabled:
+        # Native APC is capability-driven rather than repo-ID-driven. Future
+        # models inherit this path by declaring a validated registry contract.
+        try:
+            from scripts.apc_extra_hash_patch import apply as _apply_apc_patch
+        except Exception as exc:
+            raise RuntimeError("APC request-policy/salt seam is unavailable") from exc
+        if not _apply_apc_patch():
+            raise RuntimeError("APC request-policy/salt seam could not be installed")
+
+        from scripts.apc_tool_call_template_patch import apply_policy
+        if not apply_policy(apc_contract.template_policy):
+            raise RuntimeError(
+                "APC template policy could not be installed: "
+                f"{apc_contract.template_policy!r}"
+            )
+
+        try:
+            from scripts.apc_self_check_patch import apply as _apply_apc_self_check
+        except Exception as exc:
+            raise RuntimeError("APC self-check compatibility seam is unavailable") from exc
+        if not _apply_apc_self_check():
+            raise RuntimeError("APC self-check compatibility seam could not be installed")
+
     from mlx_vlm.server import main as server_main
 
     server_main()

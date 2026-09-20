@@ -149,15 +149,19 @@ def stop_model_server(timeout: float = _STOP_TIMEOUT, *, port: int | None = None
     _wait_until_port_free(timeout, port=target_port)
 
 
-def _server_env() -> dict[str, str]:
+def _server_env(model: str) -> dict[str, str]:
     """Environment for the TH-owned Standalone launcher only.
 
-    Shared MAX is never started through this function and therefore never gets
-    these values mutated by TH.
+    APC settings come from the model registry rather than repo-ID branches, so
+    a future model inherits the same owner lifecycle by declaring its native
+    APC contract in model_registry.json. Shared MAX never receives these values.
     """
+    from model_registry import get_native_apc_contract
+
+    contract = get_native_apc_contract(model)
     env = dict(os.environ)
-    env["APC_ENABLED"] = "1"
-    env["APC_EXACT_CACHE_ENTRIES"] = "2"
+    env["APC_ENABLED"] = "1" if contract.enabled else "0"
+    env["APC_EXACT_CACHE_ENTRIES"] = str(contract.exact_cache_entries)
     env["APC_EXACT_PREFIX_GUARD_TOKENS"] = env.get("APC_EXACT_PREFIX_GUARD_TOKENS", "64")
     return env
 
@@ -185,7 +189,7 @@ def start_model_server(model: str, *, port: int | None = None) -> subprocess.Pop
                 "--enable-thinking",
             ],
             cwd=str(_PROJECT_DIR),
-            env=_server_env(),
+            env=_server_env(model),
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,

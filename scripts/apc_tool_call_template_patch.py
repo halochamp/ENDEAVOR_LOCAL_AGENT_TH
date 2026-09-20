@@ -10,6 +10,8 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable
 
+from model_registry import REGISTRY, ModelRegistryError, get_native_apc_contract
+
 
 _UPSTREAM_CONDITION = (
     "(preserve_thinking is defined and preserve_thinking is true) "
@@ -37,26 +39,25 @@ _QWEN3_NESTED_PATCHED_TAG = (
     "or (message.tool_calls is defined and message.tool_calls) %}"
 )
 _QWEN3_TOOL_TAG = "{%- if message.tool_calls %}"
+_NATIVE_STABLE_CONDITION = (
+    "preserve_thinking is undefined or preserve_thinking is true "
+    "or loop.index0 > ns.last_query_index"
+)
+_NATIVE_PATCH_MARKER = "_endeavor_th_native_preserve_thinking_apc_patch"
 
 _PATCH_MARKERS = {
     "qwen36_tool_call": "_endeavor_th_qwen36_tool_call_apc_patch",
     "qwen35_tool_call": "_endeavor_th_qwen35_tool_call_apc_patch",
     "qwen3_tool_call": "_endeavor_th_qwen3_tool_call_apc_patch",
 }
-SUPPORTED_TEMPLATE_POLICIES = frozenset(_PATCH_MARKERS)
+SUPPORTED_TEMPLATE_POLICIES = frozenset({*_PATCH_MARKERS, "native_preserve"})
 
-from config import (  # noqa: E402 (constants form the public model policy)
-    COMPACT_VLM_MODEL,
-    DEFAULT_MODEL,
-    HIGH_QUALITY_MODEL,
-    LIGHT_VLM_MODEL,
-)
-
+# Compatibility/introspection view only. Runtime selection is contract-driven
+# through model_registry.json; this module never branches on repo IDs.
 MODEL_TEMPLATE_POLICIES = {
-    HIGH_QUALITY_MODEL: "qwen36_tool_call",
-    COMPACT_VLM_MODEL: "qwen35_tool_call",
-    LIGHT_VLM_MODEL: "qwen35_tool_call",
-    DEFAULT_MODEL: "qwen3_tool_call",
+    spec.repo_id: spec.native_apc.template_policy
+    for spec in REGISTRY.selectable_models
+    if spec.native_apc.enabled
 }
 
 
@@ -171,17 +172,65 @@ def _get_chat_template_seam(prompt_utils: Any):
     return current
 
 
-def apply_for_model(model: str) -> bool:
-    """Install the public model's APC template policy, or fail closed.
+def _validate_native_template_text(template: str) -> None:
+    if not isinstance(template, str) or not template:
+        raise TemplatePatchError("chat template is missing or not a string")
+    if template.count(_NATIVE_STABLE_CONDITION) != 1:
+        raise TemplatePatchError(
+            "expected exactly one native preserve-thinking condition"
+        )
+    if _QWEN35_TOOL_PREDICATE not in template:
+        raise TemplatePatchError("native tool-call rendering predicate is missing")
 
-    The model mapping is declarative, while validation remains lazy so the
-    launcher does not need private snapshot paths. An explicit caller-supplied
-    ``chat_template`` is left untouched; only the owner processor/tokenizer
-    template is rewritten after its exact policy is validated.
-    """
-    policy = MODEL_TEMPLATE_POLICIES.get(str(model or "").strip())
-    if policy is None:
+
+def _apply_native_preserve() -> bool:
+    """Lock an already-stable native template to preserve thinking history."""
+    try:
+        from mlx_vlm import prompt_utils
+    except Exception:
+        return False
+    current = _get_chat_template_seam(prompt_utils)
+    if current is None:
+        return False
+    if getattr(current, _NATIVE_PATCH_MARKER, False):
         return True
+    original = current
+
+    def patched_get_chat_template(
+        processor,
+        messages,
+        add_generation_prompt,
+        tokenize=False,
+        **kwargs,
+    ):
+        if kwargs.get("chat_template") is None:
+            template = _processor_template(processor)
+            if template is None:
+                raise TemplatePatchError("owner processor exposes no string chat template")
+            _validate_native_template_text(template)
+            kwargs["preserve_thinking"] = True
+        return original(
+            processor,
+            messages,
+            add_generation_prompt,
+            tokenize=tokenize,
+            **kwargs,
+        )
+
+    setattr(patched_get_chat_template, _NATIVE_PATCH_MARKER, True)
+    setattr(patched_get_chat_template, "_endeavor_th_apc_template_policy", "native_preserve")
+    setattr(patched_get_chat_template, "_endeavor_original", original)
+    prompt_utils.get_chat_template = patched_get_chat_template
+    return True
+
+
+def apply_policy(policy: str) -> bool:
+    """Install one declarative native-AR APC template policy."""
+    policy = str(policy or "").strip()
+    if policy not in SUPPORTED_TEMPLATE_POLICIES:
+        return False
+    if policy == "native_preserve":
+        return _apply_native_preserve()
     patcher = _POLICY_PATCHERS[policy]
     marker = _PATCH_MARKERS[policy]
 
@@ -229,6 +278,17 @@ def apply_for_model(model: str) -> bool:
     return True
 
 
+def apply_for_model(model: str) -> bool:
+    """Compatibility wrapper resolving policy from the declarative registry."""
+    try:
+        contract = get_native_apc_contract(str(model or "").strip())
+    except ModelRegistryError:
+        return True
+    if not contract.enabled:
+        return True
+    return apply_policy(contract.template_policy)
+
+
 def apply(model: str) -> bool:
     """Compatibility alias for callers that use the launcher-facing name."""
     return apply_for_model(model)
@@ -240,6 +300,7 @@ __all__ = [
     "TemplatePatchError",
     "apply",
     "apply_for_model",
+    "apply_policy",
     "patch_qwen3_template_text",
     "patch_qwen35_template_text",
     "patch_template_text",

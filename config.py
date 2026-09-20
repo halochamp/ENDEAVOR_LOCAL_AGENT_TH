@@ -17,6 +17,8 @@ import tempfile
 import threading
 from pathlib import Path
 
+from model_registry import REGISTRY, get_model_spec
+
 # Auto-load .env from project root (silent if not found; shell exports take priority)
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -28,11 +30,15 @@ except ImportError:
 _DEFAULT_SERVER_PORT = 8085
 _SHARED_MAX_TEST_PORT = 8085
 _DEFAULT_URL = f"http://localhost:{_DEFAULT_SERVER_PORT}/v1"
-DEFAULT_MODEL = "Qwen/Qwen3-14B-MLX-4bit"
-LIGHT_VLM_MODEL = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
-COMPACT_VLM_MODEL = "mlx-community/Qwen3.5-9B-4bit"
-HIGH_QUALITY_MODEL = "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit"
-LOW_RAM_WARNING_BYTES = 24 * 1024 * 1024 * 1024
+_DEFAULT_MODEL_SPEC = REGISTRY.role("default")
+_LIGHT_MODEL_SPEC = REGISTRY.role("light")
+_COMPACT_MODEL_SPEC = REGISTRY.role("compact")
+_HIGH_QUALITY_MODEL_SPEC = REGISTRY.role("high_quality")
+DEFAULT_MODEL = REGISTRY.default_model
+LIGHT_VLM_MODEL = _LIGHT_MODEL_SPEC.repo_id
+COMPACT_VLM_MODEL = _COMPACT_MODEL_SPEC.repo_id
+HIGH_QUALITY_MODEL = _HIGH_QUALITY_MODEL_SPEC.repo_id
+LOW_RAM_WARNING_BYTES = int((_HIGH_QUALITY_MODEL_SPEC.ram_warning_below_gib or 0) * 1024**3)
 SERVER_MODES = ("standalone", "shared_max")
 SERVER_MODE_LABELS = {
     "standalone": "Standalone · managed locally",
@@ -66,18 +72,8 @@ APC_BACKGROUND_TENANT = os.getenv("V2_APC_BACKGROUND_TENANT", "endeavor-th-backg
 # Agent TH owns its standalone model-server lifecycle. A special read-only
 # shared-test mode may attach to Agent MAX VLM's current test server (default
 # :8085) without taking process/model ownership from MAX VLM.
-MODEL_CHOICES = (
-    DEFAULT_MODEL,
-    LIGHT_VLM_MODEL,
-    COMPACT_VLM_MODEL,
-    HIGH_QUALITY_MODEL,
-)
-MODEL_LABELS = {
-    DEFAULT_MODEL: "Qwen3 14B · text",
-    LIGHT_VLM_MODEL: "Qwen3.5 2B · VLM",
-    COMPACT_VLM_MODEL: "Qwen3.5 9B · VLM",
-    HIGH_QUALITY_MODEL: "Qwen3.6 35B · VLM",
-}
+MODEL_CHOICES = tuple(spec.repo_id for spec in REGISTRY.selectable_models)
+MODEL_LABELS = {spec.repo_id: spec.label for spec in REGISTRY.selectable_models}
 
 TEMPERATURE     = float(os.getenv("V2_TEMPERATURE",     "0.1"))
 MAX_TOKENS      = int(os.getenv("V2_MAX_TOKENS",        "4096"))  # 8192→4096: caps thinking+response at ~230s (was 449s); thinking tokens count toward this limit
@@ -124,9 +120,15 @@ def physical_memory_bytes() -> int:
 
 
 def high_quality_model_warning_required(model: str, *, ram_bytes: int | None = None) -> bool:
-    """Warn (never block) before selecting 35B on machines below 24 GB RAM."""
+    """Warn (never block) when the selected registry model declares a RAM floor."""
+    try:
+        warning_gib = get_model_spec(str(model or "").strip()).ram_warning_below_gib
+    except ValueError:
+        return False
+    if warning_gib is None:
+        return False
     total = physical_memory_bytes() if ram_bytes is None else int(ram_bytes)
-    return str(model or "").strip() == HIGH_QUALITY_MODEL and 0 < total < LOW_RAM_WARNING_BYTES
+    return 0 < total < int(warning_gib) * 1024**3
 
 
 def _validate_server_port(server_port: int) -> int:

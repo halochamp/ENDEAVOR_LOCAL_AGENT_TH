@@ -36,6 +36,7 @@ class APCTemplatePatchTests(unittest.TestCase):
 
     def test_declarative_mapping_covers_all_public_models(self):
         self.assertEqual(set(patcher.MODEL_TEMPLATE_POLICIES), set(config.MODEL_CHOICES))
+        self.assertIn("native_preserve", patcher.SUPPORTED_TEMPLATE_POLICIES)
         self.assertEqual(
             patcher.MODEL_TEMPLATE_POLICIES,
             {
@@ -153,6 +154,29 @@ class APCTemplatePatchTests(unittest.TestCase):
             "mlx_vlm.prompt_utils": prompt_utils,
         }):
             self.assertFalse(patcher.apply_for_model(config.DEFAULT_MODEL))
+
+    def test_native_preserve_policy_is_model_name_agnostic(self):
+        captured = {}
+
+        def original(processor, messages, add_generation_prompt, tokenize=False, **kwargs):
+            captured.update(kwargs)
+            return "ok"
+
+        mlx, prompt_utils = self._fake_prompt_utils(original)
+        processor = types.SimpleNamespace(
+            chat_template=(
+                patcher._NATIVE_STABLE_CONDITION
+                + "\n"
+                + patcher._QWEN35_TOOL_PREDICATE
+            )
+        )
+        with patch.dict(sys.modules, {
+            "mlx_vlm": mlx,
+            "mlx_vlm.prompt_utils": prompt_utils,
+        }):
+            self.assertTrue(patcher.apply_policy("native_preserve"))
+            self.assertEqual(prompt_utils.get_chat_template(processor, [], True), "ok")
+        self.assertTrue(captured["preserve_thinking"])
 
     def test_non_target_model_is_a_noop(self):
         def original(processor, messages, add_generation_prompt, tokenize=False, **kwargs):

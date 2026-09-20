@@ -57,10 +57,13 @@ class ModelRuntimeOwnershipTests(unittest.TestCase):
         self.assertTrue(runtime._is_owned_model_server(owned))
         self.assertFalse(runtime._is_owned_model_server(generic))
 
-    def test_owned_launcher_installs_qwen36_template_patch_at_owner_boundary(self) -> None:
+    def test_owned_launcher_installs_registry_driven_apc_at_owner_boundary(self) -> None:
         source = Path(runtime._LAUNCHER).read_text(encoding="utf-8")
+        self.assertIn("get_native_apc_contract(owner_model)", source)
         self.assertIn("apc_tool_call_template_patch", source)
-        self.assertIn("apply_for_model(owner_model)", source)
+        self.assertIn("apply_policy(apc_contract.template_policy)", source)
+        for model in config.MODEL_CHOICES:
+            self.assertNotIn(f'owner_model == {model!r}', source)
 
     def test_owned_launcher_installs_generic_apc_self_check_before_server_import(self) -> None:
         source = Path(runtime._LAUNCHER).read_text(encoding="utf-8")
@@ -76,7 +79,7 @@ class ModelRuntimeOwnershipTests(unittest.TestCase):
             "APC_ENABLED": "0",
             "APC_EXACT_CACHE_ENTRIES": "9",
         }, clear=False):
-            env = runtime._server_env()
+            env = runtime._server_env(config.DEFAULT_MODEL)
         self.assertEqual(env["APC_ENABLED"], "1")
         self.assertEqual(env["APC_EXACT_CACHE_ENTRIES"], "2")
 

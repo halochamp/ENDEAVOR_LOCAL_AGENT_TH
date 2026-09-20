@@ -220,6 +220,8 @@ START → react (agent คุมเองทั้งหมด) → END
 | `APC_EXACT_CACHE_ENTRIES` | 2 | เก็บ exact snapshots 2 ช่อง — เหมาะกับบทสนทนาเส้นตรงแบบ guarded prefix |
 | `APC_EXACT_PREFIX_GUARD_TOKENS` | 64 | เก็บ reusable checkpoint ก่อน variable tail 64 tokens |
 
+Native AR APC ของ Agent TH เป็น **registry-driven** ผ่าน `model_registry.json` ไม่ผูก logic กับชื่อ model ใน launcher: model ที่เปิด APC ต้องประกาศ `exact_cache_entries: 2` และ `template_policy` ที่รองรับ (`qwen3_tool_call`, `qwen35_tool_call`, `qwen36_tool_call`, `native_preserve`). ดังนั้นการเพิ่ม model ใหม่ที่ใช้ template family เดิมทำได้โดยเพิ่ม metadata ใน registry โดยไม่ต้องเพิ่ม `if model == ...` ใน APC runtime; registry validation จะ fail closed ถ้า capacity/policy ไม่ตรง contract. ถ้า model family ใหม่มี chat-template semantics แบบใหม่จริง ๆ จึงค่อยเพิ่ม template policy ใหม่แทนการ hard-code repo ID.
+
 ---
 
 ## เทคโนโลยีที่ใช้
