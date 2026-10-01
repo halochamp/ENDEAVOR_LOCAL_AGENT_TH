@@ -76,17 +76,23 @@ MODEL_CHOICES = tuple(spec.repo_id for spec in REGISTRY.selectable_models)
 MODEL_LABELS = {spec.repo_id: spec.label for spec in REGISTRY.selectable_models}
 
 TEMPERATURE     = float(os.getenv("V2_TEMPERATURE",     "0.1"))
-MAX_TOKENS      = int(os.getenv("V2_MAX_TOKENS",        "4096"))  # 8192→4096: caps thinking+response at ~230s (was 449s); thinking tokens count toward this limit
+MAX_TOKENS      = int(os.getenv("V2_MAX_TOKENS",        "8192"))  # Shared ceiling for thinking + response; enough answer headroom at Max budget.
 # mlx_vlm.server accepts thinking_budget as a top-level request field.
-THINKING_BUDGET = int(os.getenv("V2_THINKING_BUDGET",   "1536"))
+THINKING_BUDGET = int(os.getenv("V2_THINKING_BUDGET",   "1024"))
+# Older .env files can still explicitly request the retired xhigh=1536.
+if THINKING_BUDGET == 1536:
+    THINKING_BUDGET = 2048
 THINKING_BUDGET_LEVELS = (
     ("Low", 256),
     ("Medium", 512),
     ("High", 1024),
-    ("xhigh", 1536),
-    ("Max", 2048),
+    ("xhigh", 2048),
+    ("Max", 4096),
 )
 _THINKING_BUDGET_VALUES = frozenset(value for _label, value in THINKING_BUDGET_LEVELS)
+# Versioned owner state distinguishes old Max=2048 from new xhigh=2048.
+_THINKING_PRESET_VERSION = 2
+_LEGACY_THINKING_BUDGETS = {1536: 2048, 2048: 4096}
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 _runtime_settings_override = os.getenv("V2_RUNTIME_SETTINGS_PATH", "").strip()
 _RUNTIME_SETTINGS_PATH = (
@@ -150,6 +156,7 @@ def _runtime_payload(
         "model": model,
         "standalone_model": standalone_model,
         "thinking_budget": int(thinking_budget),
+        "thinking_preset_version": _THINKING_PRESET_VERSION,
         "server_mode": str(server_mode),
         "server_port": int(server_port),
     }
@@ -179,6 +186,11 @@ def _read_runtime_settings_file() -> dict | None:
     standalone_model = payload.get("standalone_model", model)
     try:
         budget = int(payload.get("thinking_budget"))
+        preset_version = int(payload.get("thinking_preset_version", 1))
+        if preset_version not in (1, _THINKING_PRESET_VERSION):
+            raise ValueError("unsupported thinking preset version")
+        if preset_version == 1:
+            budget = _LEGACY_THINKING_BUDGETS.get(budget, budget)
         mode = str(payload.get("server_mode") or "standalone")
         port = _validate_server_port(payload.get("server_port", _DEFAULT_SERVER_PORT))
         _validate_runtime_values(model, budget, mode, port)

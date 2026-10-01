@@ -121,7 +121,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 - รันใน terminal — เบา เร็ว เหมาะกับงานที่ต้องทำซ้ำ ๆ หรือเปิดทิ้งไว้นาน ๆ
 - ระหว่าง agent ทำงาน จะเห็น **spinner 2 บรรทัด** ตลอดเวลา พร้อม context status bar แบบ real-time
-- พิมพ์ `menu` → **Model / Think Budget / Port** เพื่อเลือก model, ระดับ Low 256 / Medium 512 / High 1024 / xhigh 1536 / Max 2048 และ Model Server Port จาก config กลางเดียวกับ Electron
+- พิมพ์ `menu` → **Model / Think Budget / Port** เพื่อเลือก model, ระดับ Low 256 / Medium 512 / High 1024 (ค่าเริ่มต้น) / xhigh 2048 / Max 4096 และ Model Server Port จาก config กลางเดียวกับ Electron
 - CLI ใช้ owner state เดียวกับ Electron; ใน `Standalone` Agent TH จะ start/reconcile/restart model server ของตัวเองได้โดยตรงและเคารพ intentional Stop
 - ถ้า runtime อยู่ใน `Shared MAX` Model จะถูกล็อกตาม model ที่ MAX VLM โหลดอยู่; Think Budget ของ TH ยังเปลี่ยนได้ แต่ CLI จะไม่เปลี่ยนหรือหยุด process ของ MAX
 
@@ -213,12 +213,15 @@ START → react (agent คุมเองทั้งหมด) → END
 | พารามิเตอร์ | ค่า default | ผลลัพธ์ |
 |---|---|---|
 | `TEMPERATURE` | 0.1 | คำตอบ deterministic, เหมาะกับ tool calling |
-| `THINKING_BUDGET` | 1536 tokens | จำกัดเวลาที่โมเดล "คิด" ก่อนตอบ — ค่าเดียวกับ production profile |
+| `THINKING_BUDGET` | 1024 tokens (High) | จำกัดการคิดก่อนตอบ; เลือก Low 256 / Medium 512 / High 1024 / xhigh 2048 / Max 4096 ผ่าน Settings |
+| `MAX_TOKENS` | 8192 tokens | เพดานรวมของ thinking และคำตอบ (ไม่ใช่งบคิดเพียงอย่างเดียว) |
 | `REPETITION_PENALTY` | 1.05 | กัน thinking loop ซ้ำ ๆ โดยไม่กระทบ JSON ของ tool call |
 | `RECURSION_LIMIT` | 60 | จำนวน step สูงสุดต่อ 1 query (รองรับ research 4 ขั้นตอน × ~12 tool calls) |
 | `APC_ENABLED` | 1 | เปิด mlx_vlm Automatic Prefix Caching |
 | `APC_EXACT_CACHE_ENTRIES` | 2 | เก็บ exact snapshots 2 ช่อง — เหมาะกับบทสนทนาเส้นตรงแบบ guarded prefix |
 | `APC_EXACT_PREFIX_GUARD_TOKENS` | 64 | เก็บ reusable checkpoint ก่อน variable tail 64 tokens |
+
+**Thinking Budget (Native AR):** `llm.py` ส่ง `thinking_budget` เป็น top-level field ในคำขอ OpenAI-compatible ไปยัง local `mlx_vlm.server` โดยใช้การสร้างข้อความแบบ native autoregressive เท่านั้น ไม่มี DFlash/speculative hook ใน Agent TH. ค่า Think Budget ที่บันทึกไว้ก่อนปรับ preset จะรักษาระดับเดิม: legacy `1536` (xhigh) → `2048`, legacy `2048` (Max) → `4096` โดย owner file เวอร์ชันใหม่ใช้ `thinking_preset_version=2` เพื่อไม่แปลงซ้ำหลังเลือกค่าใหม่. ในโหมด Shared MAX นั้น TH ยังเป็น client read-only ไม่แก้ไขกระบวนการหรือการตั้งค่าของ MAX.
 
 Native AR APC ของ Agent TH เป็น **registry-driven** ผ่าน `model_registry.json` ไม่ผูก logic กับชื่อ model ใน launcher: model ที่เปิด APC ต้องประกาศ `exact_cache_entries: 2` และ `template_policy` ที่รองรับ (`qwen3_tool_call`, `qwen35_tool_call`, `qwen36_tool_call`, `native_preserve`). ดังนั้นการเพิ่ม model ใหม่ที่ใช้ template family เดิมทำได้โดยเพิ่ม metadata ใน registry โดยไม่ต้องเพิ่ม `if model == ...` ใน APC runtime; registry validation จะ fail closed ถ้า capacity/policy ไม่ตรง contract. ถ้า model family ใหม่มี chat-template semantics แบบใหม่จริง ๆ จึงค่อยเพิ่ม template policy ใหม่แทนการ hard-code repo ID.
 

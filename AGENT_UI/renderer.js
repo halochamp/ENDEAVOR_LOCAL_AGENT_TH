@@ -42,7 +42,7 @@ let currentToolName = ''
 let pendingTurnQuery = ''
 let waitingSummaryTimer = null
 let runtimeSettings = {
-  model: '', thinking_budget: 1536, server_mode: 'standalone', server_port: 8085,
+  model: '', thinking_budget: 1024, server_mode: 'standalone', server_port: 8085,
   shared_server: false, model_locked: false, runtime_locked: false,
   switching: false, switch_state: 'idle', error: '',
   model_options: [], thinking_options: [], server_mode_options: [],
@@ -1646,7 +1646,7 @@ function applyRuntimeSettings(ev) {
   runtimeSettings = {
     ...runtimeSettings,
     model: String(ev.model || runtimeSettings.model || ''),
-    thinking_budget: Number(ev.thinking_budget || runtimeSettings.thinking_budget || 1536),
+    thinking_budget: Number(ev.thinking_budget || runtimeSettings.thinking_budget || 1024),
     server_mode: String(ev.server_mode || runtimeSettings.server_mode || 'standalone'),
     server_port: Number(ev.server_port || runtimeSettings.server_port || 8085),
     shared_server: !!ev.shared_server,

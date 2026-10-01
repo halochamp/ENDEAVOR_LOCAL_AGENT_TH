@@ -57,6 +57,19 @@ class ModelRuntimeOwnershipTests(unittest.TestCase):
         self.assertTrue(runtime._is_owned_model_server(owned))
         self.assertFalse(runtime._is_owned_model_server(generic))
 
+    def test_owned_standalone_uses_native_ar_without_draft_or_speculative_hook(self) -> None:
+        with mock.patch.object(runtime, "_listener_pids", return_value=[]), \
+             mock.patch.object(runtime, "_LOG_PATH", Path(self._tmp.name) / "native_ar.log"), \
+             mock.patch.object(runtime.subprocess, "Popen") as spawn:
+            runtime.start_model_server(config.DEFAULT_MODEL)
+        argv = spawn.call_args.args[0]
+        self.assertEqual(argv[argv.index("--model") + 1], config.DEFAULT_MODEL)
+        self.assertIn("--enable-thinking", argv)
+        self.assertFalse(any("draft" in arg.lower() or "speculative" in arg.lower() for arg in argv))
+        launcher_source = Path(runtime._LAUNCHER).read_text(encoding="utf-8")
+        self.assertNotIn("dflash_thinking_budget_patch", launcher_source)
+        self.assertNotIn("_apply_dflash_budget", launcher_source)
+
     def test_owned_launcher_installs_registry_driven_apc_at_owner_boundary(self) -> None:
         source = Path(runtime._LAUNCHER).read_text(encoding="utf-8")
         self.assertIn("get_native_apc_contract(owner_model)", source)

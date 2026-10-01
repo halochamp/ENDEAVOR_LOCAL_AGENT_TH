@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import config
 import endeavor_agent
+import llm as agent_llm
 import runtime_model
 import ui_cli
 
@@ -65,8 +66,66 @@ class SharedRuntimeConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             [(x["label"], x["value"]) for x in settings["thinking_options"]],
-            [("Low", 256), ("Medium", 512), ("High", 1024), ("xhigh", 1536), ("Max", 2048)],
+            [("Low", 256), ("Medium", 512), ("High", 1024), ("xhigh", 2048), ("Max", 4096)],
         )
+
+    def test_legacy_thinking_preset_migration_preserves_selected_level(self) -> None:
+        owner_file = Path(config._RUNTIME_SETTINGS_PATH)
+        for legacy_budget, expected_budget, expected_label in (
+            (1536, 2048, "xhigh"),
+            (2048, 4096, "Max"),
+        ):
+            legacy = {
+                "owner": "agent_th",
+                "model": config.HIGH_QUALITY_MODEL,
+                "standalone_model": config.DEFAULT_MODEL,
+                "thinking_budget": legacy_budget,
+                "server_mode": "shared_max",
+                "server_port": 8085,
+            }
+            owner_file.write_text(json.dumps(legacy), encoding="utf-8")
+            self.assertEqual(
+                config.get_persisted_runtime_settings()["thinking_budget"],
+                expected_budget,
+            )
+            self.assertTrue(config.refresh_runtime_settings_from_file())
+            self.assertEqual(config.get_thinking_budget(), expected_budget)
+            self.assertEqual(config.get_thinking_budget_label(), expected_label)
+            self.assertEqual(config.get_server_mode(), "shared_max")
+            self.assertEqual(config.get_standalone_model(), config.DEFAULT_MODEL)
+            # The first explicit owner write establishes the new preset
+            # version; later refreshes must never re-map xhigh into Max.
+            config.set_runtime_settings(
+                model=config.HIGH_QUALITY_MODEL,
+                thinking_budget=expected_budget,
+                server_mode="shared_max",
+            )
+            persisted = json.loads(owner_file.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["thinking_preset_version"], 2)
+            self.assertEqual(persisted["thinking_budget"], expected_budget)
+            self.assertEqual(
+                config.get_persisted_runtime_settings()["thinking_budget"],
+                expected_budget,
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported thinking budget"):
+            config.set_runtime_settings(
+                model=config.HIGH_QUALITY_MODEL, thinking_budget=1536,
+                server_mode="shared_max",
+            )
+
+    def test_th_client_sends_selected_thinking_budget_and_preserves_no_think(self) -> None:
+        config._current_thinking_budget = 2048
+        with patch.object(
+            agent_llm, "VisionFallbackChatOpenAI", side_effect=lambda **kw: kw,
+        ):
+            thinking = agent_llm.build_llm()
+            no_think = agent_llm.build_llm(
+                extra_body={"enable_thinking": False},
+            )
+        self.assertEqual(thinking["extra_body"]["thinking_budget"], 2048)
+        self.assertEqual(thinking["max_tokens"], 8192)
+        self.assertNotIn("thinking_budget", no_think["extra_body"])
+        self.assertIs(no_think["extra_body"]["enable_thinking"], False)
 
     def test_default_model_is_qwen3_14b_and_2b_9b_vlms_are_selectable(self) -> None:
         self.assertEqual(config.DEFAULT_MODEL, "Qwen/Qwen3-14B-MLX-4bit")
@@ -92,6 +151,7 @@ class SharedRuntimeConfigTests(unittest.TestCase):
             "model": config.DEFAULT_MODEL,
             "standalone_model": config.DEFAULT_MODEL,
             "thinking_budget": 512,
+            "thinking_preset_version": 2,
             "server_mode": "standalone",
             "server_port": 8091,
         })
@@ -149,7 +209,7 @@ class SharedRuntimeConfigTests(unittest.TestCase):
         new = config.COMPACT_VLM_MODEL
         with patch.object(endeavor_agent, "get_model_server_control_settings", return_value={"desired_state": "running"}), \
              patch.object(endeavor_agent, "restart_owner_model_server", return_value={"healthy": True}) as restart:
-            changed = endeavor_agent._apply_cli_runtime_settings(new, 1536)
+            changed = endeavor_agent._apply_cli_runtime_settings(new, 2048)
         self.assertTrue(changed["model_changed"])
         self.assertEqual(config.get_model(), new)
         restart.assert_called_once_with(timeout=240.0, previous_port=8085)
