@@ -5,10 +5,11 @@
 from __future__ import annotations
 import json
 import os
-import shutil
+import tempfile
 from pathlib import Path
+from typing import Literal
 from langchain_core.tools import tool
-from ._safety import plan_write, resolve_path
+from ._safety import plan_write
 
 
 def _normalize_lines(text: str) -> str:
@@ -185,88 +186,152 @@ def _py_syntax_check(p: Path) -> str:
         return ""
 
 
+def _atomic_replace(path: Path, content: str) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.chmod(temporary, path.stat().st_mode & 0o777)
+        except OSError:
+            pass
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _atomic_create(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # link() is atomic and fails if a file or symlink raced into place; unlike
+        # replace(), it can never silently overwrite an existing create target.
+        os.link(temporary, path, follow_symlinks=False)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
 @tool
-def edit(path: str, old_string: str = "", new_string: str = "", replace_all: bool = False,
-          near_line: int = 0, line_start: int = 0, line_end: int = 0,
-          edits: list | str | None = None) -> str:
-    """Modify an EXISTING file. Three modes — pick one:
+def edit(path: str, mode: Literal["", "create", "replace", "line", "batch"] = "",
+         content: str = "", old_string: str = "", new_string: str = "",
+         replace_all: bool = False, near_line: int = 0, line_start: int = 0,
+         line_end: int = 0, edits: list | str | None = None) -> str:
+    """Create or atomically modify a file in the internal or explicitly enabled workspace.
+
+    MODES:
+    CREATE: mode="create" with content; creates a new target and refuses to overwrite.
+    REPLACE: mode="replace" with content; explicitly replaces an existing whole file.
     STRING (default): old_string→new_string; old_string must be a unique substring of
     the file (or replace_all=true). near_line disambiguates when old_string matches >1 place.
-    LINE: set line_start (1-indexed). line_end>=line_start replaces that inclusive range
+    LINE: mode="line" and line_start (1-indexed). line_end>=line_start replaces that inclusive range
     (empty new_string deletes it); line_end omitted inserts new_string as new line(s)
     after line_start (new_string required for insert).
-    BATCH: pass edits=[{...}, ...] — each item uses the same fields as above (old_string
+    BATCH: mode="batch" with edits=[{...}, ...] — each item uses the same fields as above (old_string
     OR line_start, not both). Applied in order to ONE file, atomically: any hunk failure
     discards the whole batch, nothing is written. A later hunk's line numbers are resolved
     against the file as already changed by earlier hunks in the SAME batch — order
     line-based hunks bottom-to-top (highest line_start first) if a batch mixes them.
-    Use write_file for new files, or write_file with overwrite=true for full rewrites.
-    Files OUTSIDE the workspace are modified in place only when the user has explicitly
-    approved the folder or currently focused it; otherwise the edit is applied to a
-    sibling working copy "name.edited.ext" (created from the original on the first edit,
-    reused by later edits) — the result reports the copy's path.
+    Read an existing target with read_file first. Relative paths use Active Workspace if set;
+    otherwise they use the internal workspace. Active Workspace and Approved Edit Folders
+    are shared with guarded Bash; protected paths and symlink traversal are always blocked.
     .py files get an inline syntax check after a successful write (✓/⚠ appended to
     the result) — a syntax error is reported but NOT reverted; no separate bash
     round-trip needed just to catch it."""
     if not path:
         return "[error] path is required"
 
-    if edits is not None:
-        if isinstance(edits, str):
-            # Some tool-calling models double-encode a nested array argument as a
-            # JSON string instead of a native array. Recover instead of bouncing a
-            # raw pydantic ValidationError back at the model.
-            try:
-                edits = json.loads(edits)
-            except Exception:
-                return "[error] edits must be a list of hunk objects — could not parse it as JSON"
-        if not isinstance(edits, list) or not edits:
-            return "[error] edits must be a non-empty list of hunk objects"
-        for i, h in enumerate(edits):
-            if not isinstance(h, dict):
-                return f"[error] edits[{i}] must be an object, got {type(h).__name__}"
-        hunks = edits
-    else:
-        if not old_string and not line_start:
-            return "[error] old_string is required (or set line_start for LINE mode, or edits for BATCH mode)"
-        hunks = [{
-            "old_string": old_string, "new_string": new_string,
-            "replace_all": replace_all, "near_line": near_line,
-            "line_start": line_start, "line_end": line_end,
-        }]
+    mode = mode or ("batch" if edits is not None else "line" if line_start else "string")
+    if mode not in {"create", "replace", "line", "batch", "string"}:
+        return f"[error] unsupported edit mode: {mode}"
 
-    target, err, note = plan_write(path, allow_approved_edit=True)
+    target, err, _note = plan_write(path, allow_approved_edit=True)
     if err:
         return err
-    try:
-        p = Path(target)
-        if note and not p.exists():
-            src = Path(resolve_path(path))
-            if not src.exists():
-                return f"[error] file not found: {path}"
-            shutil.copy2(src, p)
-        if not p.exists():
-            return f"[error] file not found: {path}"
-        shown = str(p) if note else path
-        cow = f"\nNOTE: {note}" if note else ""
+    p = Path(target)
 
-        content = p.read_text(encoding="utf-8")
+    try:
+        if mode == "create":
+            if p.exists() or p.is_symlink():
+                return f"[error] create target already exists: {p} — use mode=replace or a precise edit"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            target, err, _note = plan_write(path, allow_approved_edit=True)
+            if err:
+                return err
+            p = Path(target)
+            if p.exists() or p.is_symlink():
+                return f"[error] create target already exists: {p} — use mode=replace or a precise edit"
+            _atomic_create(p, content)
+            tail = _py_syntax_check(p) if p.suffix == ".py" else ""
+            return f"created {p}{tail}"
+
+        if mode == "replace":
+            if not p.is_file() or p.is_symlink():
+                return f"[error] replace mode requires an existing regular file: {p}"
+            _atomic_replace(p, content)
+            tail = _py_syntax_check(p) if p.suffix == ".py" else ""
+            return f"replaced {p} ({len(content)} chars){tail}"
+
+        if mode == "batch":
+            if edits is None:
+                return "[error] mode=batch requires edits"
+            if isinstance(edits, str):
+                try:
+                    edits = json.loads(edits)
+                except Exception:
+                    return "[error] edits must be a list of hunk objects — could not parse it as JSON"
+            if not isinstance(edits, list) or not edits:
+                return "[error] edits must be a non-empty list of hunk objects"
+            for i, h in enumerate(edits):
+                if not isinstance(h, dict):
+                    return f"[error] edits[{i}] must be an object, got {type(h).__name__}"
+            hunks = edits
+        elif mode == "line":
+            if not line_start:
+                return "[error] mode=line requires line_start"
+            hunks = [{"new_string": new_string, "line_start": line_start, "line_end": line_end}]
+        else:
+            if not old_string:
+                return "[error] old_string is required for string mode"
+            hunks = [{
+                "old_string": old_string, "new_string": new_string,
+                "replace_all": replace_all, "near_line": near_line,
+            }]
+
+        if not p.is_file() or p.is_symlink():
+            return f"[error] edit target must be an existing regular file: {p}"
+        content_before = p.read_text(encoding="utf-8")
+        updated = content_before
         descriptions = []
         for i, hunk in enumerate(hunks):
-            new_content, herr, desc = _apply_hunk(content, hunk)
+            new_content, herr, desc = _apply_hunk(updated, hunk)
             if herr:
-                prefix = f"edit batch failed at hunk {i}: " if edits is not None else ""
+                prefix = f"edit batch failed at hunk {i}: " if mode == "batch" else ""
                 return f"[error] {prefix}{herr}"
-            content = new_content
+            updated = new_content
             descriptions.append(desc)
 
-        tmp = p.with_suffix(p.suffix + ".tmp")
-        tmp.write_text(content, encoding="utf-8")
-        os.replace(tmp, p)
-
+        target, err, _note = plan_write(path, allow_approved_edit=True)
+        if err:
+            return err
+        p = Path(target)
+        if not p.is_file() or p.is_symlink():
+            return f"[error] edit target changed while preparing mutation: {p}"
+        _atomic_replace(p, updated)
         summary = "; ".join(descriptions)
-        batch_note = f" ({len(hunks)} hunks)" if len(hunks) > 1 else ""
+        batch_note = f" ({len(hunks)} hunks)" if mode == "batch" and len(hunks) > 1 else ""
         tail = _py_syntax_check(p) if p.suffix == ".py" else ""
-        return f"edited {shown} — {summary}{batch_note}{cow}{tail}"
+        return f"edited {p} — {summary}{batch_note}{tail}"
     except Exception as e:
         return f"[error] edit failed: {e}"

@@ -7,9 +7,11 @@
 from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
+import inspect
 import datetime
 import json as _json
 import logging
+import os
 from langgraph.prebuilt import create_react_agent, ToolNode
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from config import CONTEXT_MAX_CHARS
@@ -121,6 +123,219 @@ def _guard_repeated_tool_call(request, execute):
         name, fingerprint[:500],
     )
     raise ToolLoopDetected(name)
+
+
+def _tool_message_block(request, message: str):
+    call = request.tool_call or {}
+    return ToolMessage(
+        content=message,
+        tool_call_id=str(call.get("id") or ""),
+        name=str(call.get("name") or "tool"),
+    )
+
+
+def _filesystem_calls_are_parallel(messages: list, call_id: str, intent_kind: str) -> bool:
+    """ToolNode may execute one AIMessage's calls concurrently; serialize writes by refusing batches."""
+    if not call_id:
+        return False
+    for message in reversed(messages):
+        calls = getattr(message, "tool_calls", None) or []
+        if not any(str(item.get("id") or "") == call_id for item in calls):
+            continue
+        writers = []
+        for item in calls:
+            name = str(item.get("name") or "")
+            args = item.get("args") or {}
+            args = args if isinstance(args, dict) else {}
+            writes = name in {"edit", "write_file"}
+            writes = writes or (intent_kind in {"exact", "tree"} and name in {"bash", "python_exec"})
+            writes = writes or (name == "bash_bg" and str(args.get("action", "start")) == "start")
+            writes = writes or (name == "tool_loop" and (
+                bool(args.get("output_file")) or str(args.get("action", "")) == "bash_each"
+            ))
+            if writes:
+                writers.append(item)
+        return len(writers) > 1
+    return False
+
+
+def _write_roots_for_mutation(intent, authorized_roots: list[str]) -> tuple[str, ...]:
+    """Narrow shared authorization to the root(s) implicated by this mutation."""
+    from tools._safety import _is_within
+
+    if intent.kind == "tree":
+        root = os.path.realpath(os.path.abspath(intent.tree_root))
+        return (root,) if any(_is_within(root, allowed) for allowed in authorized_roots) else ()
+    if intent.kind != "exact":
+        return ()
+
+    selected: list[str] = []
+    for target in intent.targets:
+        candidates = [root for root in authorized_roots if _is_within(target, root)]
+        if not candidates:
+            return ()
+        root = max(candidates, key=len)
+        if root not in selected:
+            selected.append(root)
+    return tuple(selected)
+
+
+def _guard_filesystem_tool_call(request, execute):
+    """Enforce shared write access and current-turn reads at the ToolNode boundary."""
+    from pathlib import Path
+    from tools import edit_access
+    from tools._mutation_guard import (
+        classify_mutation_intent,
+        has_current_read,
+        shell_command_creates_symlink,
+        shell_command_looks_mutating,
+        tool_mutates_bypass,
+    )
+    from tools._safety import (
+        _authorized_write_roots,
+        validate_write_target,
+    )
+
+    call = request.tool_call or {}
+    name = str(call.get("name") or "")
+    args = call.get("args") or {}
+    args = args if isinstance(args, dict) else {}
+    call_id = str(call.get("id") or "")
+    state = request.state
+    messages = list(state.get("messages") or []) if isinstance(state, dict) else list(getattr(state, "messages", None) or [])
+    intent = classify_mutation_intent(messages)
+
+    if _filesystem_calls_are_parallel(messages, call_id, intent.kind):
+        return _tool_message_block(
+            request,
+            "[BLOCKED] submit one filesystem mutation tool call at a time so each change can be checked safely",
+        )
+
+    if intent.kind == "none" and name == "bash" and shell_command_looks_mutating(args.get("command", "")):
+        return _tool_message_block(
+            request,
+            "[BLOCKED] a requested file change must be explicit so the host can apply shared workspace guards",
+        )
+
+    blocked_executor = name in {"edit", "write_file", "bash", "python_exec"}
+    blocked_executor = blocked_executor or (
+        name == "bash_bg" and str(args.get("action", "start")) == "start"
+    )
+    blocked_executor = blocked_executor or (
+        name == "tool_loop" and (
+            bool(args.get("output_file")) or str(args.get("action", "")) == "bash_each"
+        )
+    )
+    if intent.kind == "blocked_explicit" and blocked_executor:
+        return _tool_message_block(request, intent.reason or "[BLOCKED] unsafe explicit mutation target")
+
+    if name in {"edit", "write_file"}:
+        raw_path = args.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            return _tool_message_block(request, "[BLOCKED] a file path is required")
+        target, error = validate_write_target(raw_path)
+        if error:
+            return _tool_message_block(request, error)
+        target_abs = str(Path(target).absolute())
+        if intent.kind == "exact" and target_abs not in intent.targets:
+            return _tool_message_block(request, "[BLOCKED] file target does not match the user's requested file")
+        exists = Path(target).exists() or Path(target).is_symlink()
+        if name == "edit" and exists and args.get("mode", "") == "create":
+            return _tool_message_block(request, "[BLOCKED] create mode cannot overwrite an existing target")
+        replaces_existing = exists and (
+            name == "edit" or bool(args.get("overwrite"))
+        )
+        if replaces_existing:
+            if Path(target).is_symlink() or not Path(target).is_file():
+                return _tool_message_block(request, "[BLOCKED] existing mutation target must be a regular non-symlink file")
+            if not call_id or not has_current_read(messages, call_id, target_abs):
+                return _tool_message_block(
+                    request,
+                    "[BLOCKED] read the existing target with read_file earlier in this turn before modifying it",
+                )
+        return execute(request)
+
+    if intent.kind in {"exact", "tree"} and tool_mutates_bypass(name, args):
+        return _tool_message_block(
+            request,
+            "[BLOCKED] use edit or guarded bash for this requested file change; nested/background/Python execution cannot receive mutation authority",
+        )
+
+    if name == "tool_loop" and args.get("output_file"):
+        from tools._safety import resolve_path, validate_write_target
+        fname = os.path.basename(str(args.get("output_file") or "")) or "output.md"
+        if "." not in fname:
+            fname += ".md"
+        target, error = validate_write_target(fname)
+        if error:
+            return _tool_message_block(request, error)
+        if intent.kind == "exact" and os.path.abspath(target) not in intent.targets:
+            return _tool_message_block(request, "[BLOCKED] loop output does not match the user's requested file")
+        if os.path.exists(target):
+            if not call_id or not has_current_read(messages, call_id, os.path.abspath(target)):
+                return _tool_message_block(
+                    request,
+                    "[BLOCKED] read the existing loop output target with read_file earlier in this turn",
+                )
+
+    if name == "tool_loop" and intent.kind == "none" and str(args.get("action", "")) == "bash_each":
+        items = args.get("items") or []
+        if isinstance(items, list) and any(shell_command_looks_mutating(item) for item in items):
+            return _tool_message_block(request, "[BLOCKED] background file writes require an explicit mutation request")
+
+    if name == "bash_bg" and intent.kind == "none" and str(args.get("action", "start")) == "start":
+        if shell_command_looks_mutating(args.get("command", "")):
+            return _tool_message_block(request, "[BLOCKED] background file writes require an explicit mutation request")
+
+    if name == "bash" and intent.kind in {"exact", "tree"}:
+        if shell_command_creates_symlink(args.get("command", "")):
+            return _tool_message_block(
+                request,
+                "[BLOCKED] symlink creation is not allowed during a guarded Bash mutation",
+            )
+        if intent.kind == "exact":
+            for target in intent.targets:
+                path, error = validate_write_target(target)
+                if error:
+                    return _tool_message_block(request, error)
+                p = Path(path)
+                if p.exists() or p.is_symlink():
+                    if p.is_symlink() or not p.is_file():
+                        return _tool_message_block(request, "[BLOCKED] existing requested target must be a regular non-symlink file")
+                    if not call_id or not has_current_read(messages, call_id, str(p.absolute())):
+                        return _tool_message_block(
+                            request,
+                            f"[BLOCKED] read the existing requested target with read_file before Bash mutation: {p.name}",
+                        )
+        roots = _write_roots_for_mutation(intent, _authorized_write_roots())
+        if not roots:
+            return _tool_message_block(request, "[BLOCKED] no authorized filesystem write root matches this mutation")
+        scope = {
+            "kind": intent.kind,
+            "targets": tuple(intent.targets),
+            "tree_root": intent.tree_root,
+            "write_roots": tuple(roots),
+        }
+        def invoke_in_scope(req):
+            with edit_access.bash_mutation_scope(scope):
+                result = execute(req)
+                if inspect.isawaitable(result):
+                    async def await_with_scope():
+                        with edit_access.bash_mutation_scope(scope):
+                            return await result
+                    return await_with_scope()
+                return result
+        return invoke_in_scope(request)
+
+    return execute(request)
+
+
+def _guard_tool_call(request, execute):
+    """Compose filesystem policy with the existing duplicate-call circuit breaker."""
+    return _guard_repeated_tool_call(
+        request,
+        lambda req: _guard_filesystem_tool_call(req, execute),
+    )
 
 
 # Main agent system prompt — Thai output, tool guidance, complex-routing, synthesize rules
@@ -290,5 +505,5 @@ def build_react_agent(checkpointer=None, memory: str = "", tools=None, **llm_ove
                 break
         return [_SM(content=base_prompt)] + msgs
 
-    tool_node = ToolNode(active_tools, wrap_tool_call=_guard_repeated_tool_call)
+    tool_node = ToolNode(active_tools, wrap_tool_call=_guard_tool_call)
     return create_react_agent(llm, tool_node, prompt=dynamic_prompt, checkpointer=checkpointer)

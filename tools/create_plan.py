@@ -43,7 +43,8 @@ def format_plan(steps: list[str]) -> str:
         f"  save result → write_file\n"
         f"  synthesize (after all steps complete) → answer from tool results in context\n\n"
         f"FORBIDDEN during plan execution:\n"
-        f"  bash — not allowed at all. bash cannot search the web and has no research capability.\n"
+        f"  bash for web research or fetching sources — use web_search/browse tools.\n"
+        f"  bash for a requested file transform, generator, formatter, multi-file coding change, or test/build step is allowed when materially simpler; shared filesystem guards still apply.\n"
         f"  create_plan again — this plan is final.\n\n"
         f"Start step 1 now. No announcements, no echo, call the tool directly."
     )

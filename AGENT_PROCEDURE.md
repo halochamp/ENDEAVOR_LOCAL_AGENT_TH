@@ -69,10 +69,10 @@ Any auth change requires explicit negative tests/verification for missing and in
 
 For tool/path/process changes, preserve:
 
-- writes confined to the documented workspace unless an explicit dev-only mode is intentionally used;
+- writes confined to the internal workspace, current temporary Active Workspace, or persistent Approved Edit Folders, using one shared edit-access policy;
 - protected credential/system paths remain blocked;
-- path checks use canonicalized paths and resist symlink/`..` traversal;
-- process execution remains sandboxed according to the documented policy;
+- path checks reject lexical symlink components before canonicalization and resist `..` traversal;
+- process execution remains sandboxed; a requested Bash mutation receives only the request-relevant subset of shared authorized roots and yields host-observed delta evidence;
 - timeouts/bounded execution remain enforced;
 - errors/logs do not disclose sensitive local content unnecessarily.
 

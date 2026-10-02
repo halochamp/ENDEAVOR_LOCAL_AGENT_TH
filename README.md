@@ -247,7 +247,7 @@ Native AR APC ของ Agent TH เป็น **registry-driven** ผ่าน `
 | **Vision + OCR assist** | mlx-vlm + Apple Vision Framework (`pyobjc`) | โมเดล vision เห็น pixels โดยตรง; เรียก OCR/table/QR ช่วยอ่านข้อความเมื่อต้องการ — ถ้า backend เป็น text-only `read_image` จะ fallback เป็น full OCR แต่ `computer` จะถูกปิด |
 | **Persistence** | SQLite (`langgraph.checkpoint.sqlite`) | เก็บ conversation history แบบ persistent |
 | **Config** | `python-dotenv` | โหลด `.env` อัตโนมัติ — ปรับ config ได้โดยไม่แก้ code |
-| **Sandboxing** | macOS `sandbox-exec` | จำกัด `bash` tool ให้เขียนไฟล์ได้เฉพาะใน workspace |
+| **Sandboxing** | macOS `sandbox-exec` + shared path guard | Bash mutations use the internal workspace, current Active Workspace, or Approved Edit Folders |
 
 ---
 
@@ -263,7 +263,9 @@ Agent ตัวนี้ออกแบบมาให้ "เขียนได
 
 ### หลักการ
 
-- **เขียนไฟล์ได้เฉพาะใน `workspace/`** — เครื่องมือ `write_file`, `edit`, และ `bash`/`python_exec` (เมื่อ spawn process เขียนไฟล์) ถูกจำกัดให้เขียนได้แค่ภายใต้ `workspace/` เท่านั้น พยายามเขียนไฟล์นอก workspace จะถูก block ทันที (เว้นแต่ตั้ง `V2_ALLOW_OUTSIDE=1` ซึ่งเป็น dev-only flag)
+- **สิทธิ์เขียนใช้ร่วมกัน** — `edit`, `write_file` และ guarded `bash` เขียนได้ใน internal `workspace/`, Active Workspace ชั่วคราว หรือ Approved Edit Folders ที่ผู้ใช้อนุมัติไว้เท่านั้น. Bash จำกัดสิทธิ์ของแต่ละ call ให้แคบลงตามไฟล์หรือ tree ที่ร้องขอ. `bash_bg` และ `python_exec` คง sandbox ปกติและไม่ได้รับสิทธิ์แก้ artifact ที่ผู้ใช้ร้องขอ
+- **อ่านก่อนแก้ไฟล์เดิม** — การแก้ไฟล์เดิมผ่านเครื่องมือ agent ต้องมี `read_file` ที่สำเร็จใน turn ปัจจุบันก่อน. `edit` รองรับ atomic `create`, `replace`, `line`, `batch`; create จะไม่เขียนทับไฟล์เดิม
+- **Bash mutation ต้องมีหลักฐานจาก disk** — exit code หรือ stdout ไม่ถือว่าเขียนไฟล์สำเร็จ. Host ตรวจ delta แบบจำกัดขนาดและแนบ path/type/SHA-256 เฉพาะเมื่อพบการเปลี่ยนแปลงจริง
 - **อ่านไฟล์ได้กว้างกว่า แต่ไม่ใช่ทุกที่** — `read_file`/`read_image`/`grep` อ่านไฟล์นอก `workspace/` ได้ (เช่นให้ agent ช่วยอ่านโค้ดในโปรเจคอื่น หรือเอกสารบนเครื่อง) แต่ path ที่เข้าข่าย "ระบบ/credentials" จะถูก block เสมอ ไม่ว่าจะตั้ง flag ใดก็ตาม
 - **Path ที่ block ทั้งอ่านและเขียนเสมอ** — `/etc`, `/usr`, `/bin`, `/sbin`, `/lib`, `/System`, `/Library`, `/Applications`, `~/.ssh`, `~/.aws`, `~/.gnupg`
 - **กัน symlink/`../` traversal** — ทุก path ผ่าน `os.path.realpath()` ก่อนเช็ค ป้องกัน trick เช่น สร้าง symlink ใน workspace ชี้ออกไป `~/.ssh` หรือใช้ `../../etc/passwd`
@@ -274,7 +276,7 @@ Tool ที่ spawn process จริง (`bash`, `bash_bg`, `python_exec`) ถ
 
 - `(deny file-write*)` ครอบ `/etc`, `/usr`, `/bin`, `/sbin`, `/System`, `/Library`, `/Applications`, และโฟลเดอร์ผู้ใช้ที่สำคัญ — `~/Desktop`, `~/Documents`, `~/Downloads`, `~/Movies`, `~/Music`, `~/Pictures`, `~/Library`, `~/.ssh`, `~/.aws`, `~/.config`, `~/.gnupg`
 - `(deny file-read*)` ครอบ `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.claude`, `~/.config`, และไฟล์เฉพาะที่ทุก process อ่านได้ตามสิทธิ์ระบบแต่มีความเสี่ยง — `/etc/passwd`, `/etc/group` (world-readable ตาม design ของ Unix, ไม่ใช่ credential แต่ enumerate user account ได้), `/etc/master.passwd`, `/etc/shadow`, `/etc/sudoers` — **ไม่ block ทั้งโฟลเดอร์ `/etc`** เพราะ deny ทั้งพาธจะพัง `/etc/ssl` (TLS trust store ที่ curl/git ต้องใช้) โดยไม่มีทางเปิด exception กลับมาได้ — sandbox-exec ให้ deny ชนะ allow เสมอเมื่อ path ซ้อนกัน ไม่ว่าจะเขียนก่อนหรือหลังใน profile ก็ตาม จึงต้อง block เฉพาะไฟล์ (`literal`) แทนที่จะ block ทั้งโฟลเดอร์ (`subpath`)
-- `(allow file-write*)` เปิดเฉพาะ `workspace/` และ `/private/tmp`
+- คำสั่งปกติเปิดเขียนเฉพาะ `workspace/` และ `/private/tmp`; สำหรับ guarded Bash mutation host สร้าง sandbox ชั่วคราวที่เริ่มจาก deny-all แล้วเปิดเฉพาะ shared authorized roots และ `/private/tmp`. Protected paths ยังคงถูก deny
 - ทุก process มี **timeout** (`bash` default 30s, `python_exec` ปรับตาม workload) — กัน infinite loop ค้าง resource; งานที่ต้องรันนานกว่านั้นใช้ `bash_bg` แทน (register-then-poll, ไม่บล็อก)
 
 ### สรุป
@@ -282,7 +284,7 @@ Tool ที่ spawn process จริง (`bash`, `bash_bg`, `python_exec`) ถ
 | สิ่งที่ทำได้ | สิ่งที่ทำไม่ได้ |
 |---|---|
 | อ่านไฟล์/โค้ด/เอกสารทั่วเครื่อง (นอก system paths) | อ่าน/เขียน `~/.ssh`, `~/.aws`, `~/.gnupg`, `/etc`, `/System` ฯลฯ |
-| เขียน/แก้/รันโค้ดใน `workspace/` | เขียนไฟล์นอก `workspace/` (รวม Desktop, Documents, Downloads ผ่าน `bash`) |
+| เขียน/แก้ไฟล์ใน `workspace/`, Active Workspace หรือ Approved Edit Folders | เขียนนอกสามขอบเขตนั้น หรือผ่าน symlink ไปยังที่อื่น |
 | รัน shell command / python script ผ่าน sandbox | escape sandbox ด้วย symlink หรือ `../` traversal |
 
 ผลคือ agent ทำงานอัตโนมัติ (รัน loop, เรียก tool ต่อเนื่อง) ได้เต็มที่โดยไม่ต้องกังวลว่าจะไปลบ/แก้ไฟล์สำคัญของเครื่อง หรือหลุดอ่าน credentials โดยไม่ตั้งใจ
@@ -310,8 +312,8 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 | Tool | คำอธิบาย |
 |---|---|
 | `read_file` | อ่านไฟล์ text/code รวมถึง PDF, Word, Excel — แปลงเป็น markdown อัตโนมัติ; ส่ง `path` เป็น list 2-4 ไฟล์เพื่ออ่านแบบ parallel หรือใช้ `requests` เมื่อแต่ละไฟล์มี filter/range ต่างกัน |
-| `write_file` | สร้างไฟล์ใหม่ใน workspace (สำหรับไฟล์ที่ยังไม่มี) |
-| `edit` | แก้ไขไฟล์ที่มีอยู่แบบ find & replace (รองรับ replace ทั้งหมด) |
+| `write_file` | สร้างไฟล์ใหม่หรือแทนที่ทั้งไฟล์ใน workspace ที่อนุญาต; การแทนที่ไฟล์เดิมต้องอ่านก่อน |
+| `edit` | atomic create / full replace / line / batch / find & replace; อ่านไฟล์เดิมก่อนแก้ |
 | `grep` | ค้นหา regex pattern ข้ามไฟล์ในโฟลเดอร์ — คืนผลแบบ `file:line: content` |
 | `workspace_ls` | แสดงรายการไฟล์ทั้งหมดใน workspace แบบ recursive tree |
 
@@ -320,7 +322,7 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 | Tool | คำอธิบาย |
 |---|---|
 | `python_exec` | รัน Python code ใน interpreter เดียวกับ agent — `pandas`, `numpy`, `matplotlib` พร้อมใช้ทันที |
-| `bash` | รันคำสั่ง bash บนเครื่อง (cwd = workspace) สำหรับงาน system-level — รันใน macOS sandbox จำกัดการเขียนไฟล์นอก workspace, timeout 30s |
+| `bash` | รันคำสั่งและ test/build; สำหรับ transform ที่ผู้ใช้ขอ ใช้ guarded mutation ใน workspace ที่อนุญาต พร้อม delta จาก disk; timeout 30s |
 | `bash_bg` | รันคำสั่งที่ใช้เวลานานกว่า `bash`'s timeout แบบ background — start แล้ว poll/list/kill ทีหลังได้ ไม่บล็อก agent ระหว่างรอ (เหมาะกับ dev server, งาน build ยาว ๆ) |
 | `plot` | สร้างกราฟด้วย matplotlib จาก Python code — รองรับฟอนต์ไทยเต็มรูปแบบ, บันทึกและเปิดไฟล์ให้อัตโนมัติ |
 

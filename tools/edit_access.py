@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import threading
+from contextvars import ContextVar
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
@@ -22,6 +23,49 @@ APPROVED_EDIT_FOLDERS_PATH = str(_PROJECT_DIR / "approved_edit_folders.json")
 _STATE_LOCK_PATH = f"{APPROVED_EDIT_FOLDERS_PATH}.lock"
 _STATE_GUARD = threading.RLock()
 _SESSION_FOCUS_FOLDER = ""
+
+# Per-call capability installed only by the normal-turn ToolNode guard.  It is
+# deliberately not part of persistent edit-access state or prompt/history.
+_BASH_MUTATION_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "th_bash_mutation_scope", default=None
+)
+
+
+@contextmanager
+def bash_mutation_scope(scope: dict[str, Any]):
+    token = _BASH_MUTATION_SCOPE.set(dict(scope))
+    try:
+        yield
+    finally:
+        _BASH_MUTATION_SCOPE.reset(token)
+
+
+def get_bash_mutation_scope() -> dict[str, Any] | None:
+    scope = _BASH_MUTATION_SCOPE.get()
+    return dict(scope) if scope is not None else None
+
+
+def authorized_write_roots(workspace: str | None = None) -> list[str]:
+    """Return the canonical roots shared by edit and guarded Bash.
+
+    The internal workspace is always available. Active Workspace is temporary;
+    Approved Edit Folders remain persistent. This function creates no separate
+    Bash allowlist.
+    """
+    if workspace is None:
+        from config import WORKSPACE
+        workspace = WORKSPACE
+    state = load_edit_access_state()
+    candidates = [workspace]
+    if state["focus_folder"]:
+        candidates.append(state["focus_folder"])
+    candidates.extend(state["folders"])
+    roots: list[str] = []
+    for candidate in candidates:
+        root = os.path.realpath(os.path.abspath(candidate))
+        if root not in roots and os.path.isdir(root):
+            roots.append(root)
+    return roots
 
 
 def _normalize_folder(value: str, *, must_exist: bool) -> str:

@@ -47,7 +47,7 @@ Preserve:
 
 - local model/API use by default;
 - authenticated Web/WS access;
-- workspace-only writes and protected sensitive paths;
+- shared internal-workspace, Active Workspace, and Approved Edit Folder writes with protected sensitive paths;
 - process-level sandboxing and bounded execution;
 - symlink/traversal defenses;
 - shared runtime semantics across front ends;

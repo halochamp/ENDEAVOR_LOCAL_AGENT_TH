@@ -139,18 +139,18 @@ def _bash_each(command: str, idx: int, total: int) -> dict:
 
 # ── Output writer ───────────────────────────────────────────────────────────────
 
-def _write_output(path: str, results: list[dict], context: str, action: str) -> None:
+def _render_output(results: list[dict], context: str, action: str) -> str:
     today = datetime.date.today().strftime("%Y-%m-%d")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(f"# {context or 'Loop Results'}\nDate: {today} | Action: {action} | Items: {len(results)}\n\n---\n\n")
-        for i, r in enumerate(results, 1):
-            title = r.get("title", f"Item {i}")
-            summary = r.get("summary", "")
-            ref = r.get("url", r.get("path", r.get("cmd", "")))
-            f.write(f"## {i}. {title}\n")
-            if ref and ref != title:
-                f.write(f"*{ref}*\n\n")
-            f.write(f"{summary}\n\n---\n\n")
+    parts = [f"# {context or 'Loop Results'}\nDate: {today} | Action: {action} | Items: {len(results)}\n\n---\n\n"]
+    for i, r in enumerate(results, 1):
+        title = r.get("title", f"Item {i}")
+        summary = r.get("summary", "")
+        ref = r.get("url", r.get("path", r.get("cmd", "")))
+        parts.append(f"## {i}. {title}\n")
+        if ref and ref != title:
+            parts.append(f"*{ref}*\n\n")
+        parts.append(f"{summary}\n\n---\n\n")
+    return "".join(parts)
 
 
 # ── Main tool ───────────────────────────────────────────────────────────────────
@@ -179,8 +179,8 @@ _SYNTAX_MANUAL = (
     "PARAMETERS:\n"
     "  context     — always set to the user's primary goal, in the user's own words "
     "(e.g. \"สรุปข่าว AI funding ไทย 2026\") → keeps summaries on-topic; empty → off-topic.\n"
-    "  output_file — user says \"บันทึก / เก็บ / เขียนไฟล์\" → set output_file=\"filename.md\" (written in "
-    "workspace/); omitted → results are lost when the turn ends.\n"
+    "  output_file — legacy convenience for saving loop results; it uses the shared writable-folder policy. "
+    "For an existing target, read it earlier in this turn. Omitted → results are returned in the tool response.\n"
     "  max_n       — cap on items processed (default 50; web actions capped at 100).\n"
     "AFTER TOOL RETURNS — tool returns a preview (first 5 titles + ok/error counts): always synthesize the "
     "real content for the user — never paste raw \"✅ done X/Y items\"; if some items errored, tell the user "
@@ -247,13 +247,20 @@ def _tool_loop_impl(
         # Write output file if requested
         out_path = ""
         if output_file:
-            from config import WORKSPACE
+            from ._safety import resolve_path
+            from .write_file import write_file as _write_file
             fname = os.path.basename(output_file) or "output.md"
             if "." not in fname:
                 fname += ".md"
-            out_path = os.path.join(WORKSPACE, fname)
+            out_path = resolve_path(fname)
             _phase("✍️ เขียนไฟล์…")
-            _write_output(out_path, results, context, action)
+            write_result = _write_file.invoke({
+                "path": fname,
+                "content": _render_output(results, context, action),
+                "overwrite": os.path.exists(out_path),
+            })
+            if isinstance(write_result, str) and write_result.startswith("[error]"):
+                return write_result
 
         ok = sum(1 for r in results if not r.get("error"))
         err = total - ok
