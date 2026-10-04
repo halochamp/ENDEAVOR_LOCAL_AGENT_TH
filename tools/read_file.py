@@ -814,8 +814,8 @@ def _ocr_pdf(
 
 def _transcribe_to_state(p: Path, path: str, user_query: str = "") -> str:
     """Transcribe an audio/video file: save the full raw transcript to workspace,
-    return a summary + saved path for state (same shape as scrape_table.py's
-    saved-file + in-state-summary return)."""
+    return a summary + saved path for state. Web table extraction instead returns
+    bounded CSV directly in tool state and does not write a workspace file."""
     from ._transcribe import transcribe_media
     from ._summarize import summarize
 

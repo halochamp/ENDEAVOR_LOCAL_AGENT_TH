@@ -9,7 +9,7 @@
 #   2. สร้าง/activate conda env ชื่อ "mlx" (Python 3.11) ถ้ายังไม่มี
 #   3. pip install -r install_library/requirements.txt
 #   4. ตรวจและติดตั้ง Thai font สำหรับกราฟ (Noto Sans Thai ผ่าน Homebrew)
-#   5. playwright install chromium (สำหรับ scrape_table / browser_use)
+#   5. playwright install chromium (สำหรับ browse_url table extraction / browser_use)
 #   6. แสดงคำสั่งรันถัดไป (mlx_vlm.server + python endeavor_agent.py)
 
 set -euo pipefail

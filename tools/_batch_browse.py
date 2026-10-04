@@ -2,7 +2,7 @@
 # License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-"""batch_browse.py — fetch หลาย URLs แล้วคืน summaries รวมใน 1 tool call
+"""Internal URL-batch engine used only by the public browse_url tool.
 
 Architecture:
   Phase 1 (parallel):   HTTP fetch เท่านั้น — ไม่มี LLM ใน thread
@@ -20,7 +20,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langchain_core.tools import tool
 from tools.browse_url import _fetch_body
 from tools._summarize import summarize, summarize_batch
 from config import (
@@ -33,13 +32,13 @@ from tools import web_cache
 from tools.web_cache import web_count_check as _wc_check, web_count_check_and_inc as _wc_check_and_inc, web_count_remaining as _wc_remaining
 
 
-def _http_only(url: str) -> tuple[str, str]:
+def _http_only(url: str, query: str) -> tuple[str, str]:
     """HTTP fetch เท่านั้น ไม่มี LLM — safe ใน thread"""
-    return url, _fetch_body(url)
+    return url, _fetch_body(url, query)
 
 
 def _extract_url(entry: str) -> str:
-    """ดึง URL จาก entry ที่ model อาจ copy ทั้งบรรทัดจาก fetch_sitemap ("date  url"):
+    """ดึง URL จาก entry ที่ model อาจ copy ทั้งบรรทัดจาก browse_url sitemap mode ("date  url"):
     เอา token แรกที่ขึ้นต้น http; ไม่มี → token แรก (bare domain ให้ขั้น https:// prefix จัดการต่อ)"""
     tokens = entry.split()
     if not tokens:
@@ -47,15 +46,8 @@ def _extract_url(entry: str) -> str:
     return next((t for t in tokens if t.startswith("http")), tokens[0])
 
 
-@tool
-def batch_browse(urls: list, user_query: str = "") -> str:
-    """Fetch multiple URLs and return combined summaries in ONE tool call.
-    Use instead of one-by-one browse_url when you have a URL list from fetch_sitemap or search results.
-
-    urls: list of URLs to fetch (max BATCH_BROWSE_MAX_URLS, default 8)
-    user_query: the current question — keeps summaries on-topic
-    Returns: combined summaries of all URLs, or "[error] reason"
-    """
+def browse_urls(urls: list, user_query: str = "") -> str:
+    """Fetch a bounded URL list while retaining TH cache and budget semantics."""
     if not urls:
         return "[error] urls is required"
 
@@ -75,9 +67,11 @@ def batch_browse(urls: list, user_query: str = "") -> str:
     pending: list[dict] = []  # [{"url", "raw", "is_new"}]
     to_fetch: list[str] = []
     for u in clean:
-        hit_sum = web_cache.get_summary(u, uq) or web_cache.get_summary(u, "")
+        hit_sum = web_cache.get_summary(u, uq)
         if hit_sum is not None:
-            results[u] = f"[web:{u}] {hit_sum}"
+            raw = web_cache.get(u) or ""
+            from tools.browse_url import _append_table_evidence
+            results[u] = _append_table_evidence(f"[web:{u}] {hit_sum}", raw)
             continue
         hit_raw = web_cache.get(u)
         if hit_raw is not None:
@@ -114,7 +108,7 @@ def batch_browse(urls: list, user_query: str = "") -> str:
         try:
             pool = ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, n_fetch))
             try:
-                futures = {pool.submit(_http_only, u): u for u in to_fetch}
+                futures = {pool.submit(_http_only, u, uq): u for u in to_fetch}
                 done = 0
                 for future in as_completed(futures, timeout=35):
                     try:
@@ -147,7 +141,8 @@ def batch_browse(urls: list, user_query: str = "") -> str:
         if p["is_new"]:
             web_cache.put(p["url"], p["raw"])
         web_cache.put_summary(p["url"], uq, s, raw=p["raw"])
-        results[p["url"]] = f"[web:{p['url']}] {s}"
+        from tools.browse_url import _append_table_evidence
+        results[p["url"]] = _append_table_evidence(f"[web:{p['url']}] {s}", p["raw"])
 
     need_llm = [p for p in pending if len(p["raw"].strip()) > SUMMARY_SKIP_LLM_BELOW]
     skip_llm = [p for p in pending if p not in need_llm]
@@ -167,7 +162,7 @@ def batch_browse(urls: list, user_query: str = "") -> str:
         _finish(p, summarize(p["raw"], url=p["url"], user_query=uq or None))
 
     # ── รวม results ตาม order เดิม ────────────────────────────────────
-    lines = [f"[batch_browse] {len(clean)} URLs ({n_fetch} fetched, {len(clean) - n_fetch} cached)"]
+    lines = [f"[browse_url batch] {len(clean)} URLs ({n_fetch} fetched, {len(clean) - n_fetch} cached)"]
     for u in clean:
         lines.append(results.get(u, f"[error] missing: {u}"))
 

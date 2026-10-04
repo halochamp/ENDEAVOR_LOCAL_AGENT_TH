@@ -126,7 +126,7 @@ so generic custom clients are not forced to consume desktop-only status frames. 
 | install.sh exits at `[1/6]` | not Apple Silicon / not macOS | this project requires M1+ Mac |
 | agent says model offline | Standalone owner failed to start, or Shared MAX server is offline/wrong port | check Settings / `python model_runtime.py status`; Shared MAX must already be running |
 | out of memory / swap thrashing | selected model is too large for available memory | use Qwen3.5-2B-OptiQ-4bit for lightweight testing/diagnostic; on a 16GB Mac choose Qwen3.5-9B-4bit for normal compact use; Qwen3-14B remains the fresh default and Qwen3.6-35B remains optional |
-| `playwright install chromium` fails | network/proxy issue | retry; required only for `browse_url`/`scrape_table`/`browser_use` tools |
+| `playwright install chromium` fails | network/proxy issue | retry; required only for rendered table extraction in `browse_url` and interactive `browser_use` |
 | Thai text broken on plot (squares / floating vowels) | pyobjc not installed correctly | run `python -c "import Quartz, CoreText"` in the mlx env — if it fails, re-run `pip install pyobjc-framework-Quartz pyobjc-framework-CoreText` |
 | Thai text OK but font looks wrong | Thonburi missing or wrong font picked | install Noto Sans Thai via `brew install --cask font-noto-sans-thai` and rebuild font cache |
 

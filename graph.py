@@ -52,8 +52,7 @@ _SYNTH_RETRY_PROMPT = (
 # Explicit research/search VERBS only — NOT bare "หา" (avoids matching "หาค่าเฉลี่ย" = compute).
 # Negative lookahead excludes retrospective phrasing ("...ค้นหาที่ผ่านมา" = "past
 # searches", a meta-question about history, not a new search request) so it doesn't
-# wrongly inject _SEARCH_DIRECTIVE for questions like "tool_loop มีประโยชน์ไหม
-# ในการค้นหาที่ผ่านมา".
+# wrongly inject _SEARCH_DIRECTIVE for meta-questions about earlier searches.
 _SEARCH_VERB_RE = re.compile(
     r"(?:ทำวิจัย|วิจัย|ค้นหา|ค้นคว้า|สืบค้น|หาข้อมูล|หาข่าว|เช็คข้อมูล|ค้นจาก|หาจาก|search)"
     r"(?!\s*(?:ที่ผ่านมา|ก่อนหน้า))"

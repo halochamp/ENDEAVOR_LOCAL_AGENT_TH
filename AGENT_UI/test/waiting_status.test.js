@@ -21,10 +21,10 @@ test('toolDisplay gives friendly web_search label/sub', () => {
   assert.match(out.sub, /Fed rate cut today/)
 })
 
-test('toolDisplay gives friendly rag_search fallback text', () => {
-  const out = toolDisplay('rag_search', '')
-  assert.strictEqual(out.label, 'กำลังค้น knowledge base…')
-  assert.match(out.sub, /KB/)
+test('toolDisplay gives friendly generic MCP labels', () => {
+  const out = toolDisplay('mcp_call_tool', 'library/search')
+  assert.strictEqual(out.label, 'กำลังเรียก MCP tool…')
+  assert.strictEqual(out.sub, 'library/search')
 })
 
 test('friendlyProgress rewrites cache hit and batch counters', () => {
@@ -37,18 +37,14 @@ test('friendlyProgress rewrites cache hit and batch counters', () => {
     'ได้ข้อมูลครบจาก 3 แหล่ง กำลังสรุปต่อ…'
   )
   assert.strictEqual(
-    friendlyProgress('batch_browse', 'HTTP 2/4: https://example.com/a'),
+    friendlyProgress('browse_url', 'HTTP 2/4: https://example.com/a'),
     'กำลังเปิดเว็บ 2/4'
   )
 })
 
-test('friendlyProgress rewrites rag coverage and scrape fallback', () => {
+test('friendlyProgress routes batch and rendered table work through browse_url', () => {
   assert.strictEqual(
-    friendlyProgress('rag_search', 'found 4 chunk(s)'),
-    'เจอ chunk ที่เกี่ยวข้อง 4 ส่วน'
-  )
-  assert.strictEqual(
-    friendlyProgress('scrape_table', 'ไม่พบ <table> — ลอง ARIA role fallback'),
+    friendlyProgress('browse_url', 'ไม่พบ <table> — ลอง ARIA role fallback'),
     'ไม่พบตาราง HTML ตรง ๆ กำลังลองอ่านจาก ARIA role'
   )
   assert.strictEqual(

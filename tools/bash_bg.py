@@ -5,9 +5,8 @@
 """bash_bg.py — background bash jobs: start long-running commands, poll/list/kill.
 
 Separate tool from `bash` (run-now, blocks until done or timeout) — background jobs
-are register-then-poll, same reasoning as awake vs tool_loop's separation (mixing a
-run-now and a register-then-return contract in one docstring blurs the model's tool
-choice). Runs under the SAME sandbox profile as `bash` (workspace + /tmp writable only).
+are register-then-poll. Keeping those contracts distinct makes the model's choice
+clear. Runs under the SAME sandbox profile as `bash` (workspace + /tmp writable only).
 """
 from __future__ import annotations
 import fcntl

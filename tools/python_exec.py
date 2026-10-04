@@ -194,7 +194,7 @@ def python_exec(code: str, timeout: int = _TIMEOUT_DEFAULT, max_chars: int = _MA
 
     LIBRARIES available: pandas, numpy, matplotlib, scipy, scikit-learn, statsmodels.
 
-    NOT for: shell commands (use bash), file I/O without Python (use read_file/write_file),
+    NOT for: shell commands (use bash), file I/O without Python (use read_file/edit),
     standalone chart requests (use plot — see CAPABILITIES above).
 
     Output cap: printed output over max_chars (default 10,000) is truncated to the last

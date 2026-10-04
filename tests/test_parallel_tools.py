@@ -173,7 +173,7 @@ class ParallelToolTests(unittest.TestCase):
 
         self.assertEqual("executed", react._guard_repeated_tool_call(first_request, execute))
         hint = react._guard_repeated_tool_call(second_request, execute)
-        self.assertIn("[tool_loop_hint]", hint.content)
+        self.assertIn("[repeat_tool_hint]", hint.content)
         with self.assertRaises(react.ToolLoopDetected):
             react._guard_repeated_tool_call(third_request, execute)
         self.assertEqual(["call-1"], executed)

@@ -6,8 +6,7 @@
 
 This tool ONLY writes/reads the shared registry via `awake_engine.Registry` — it
 never schedules anything itself. The host-level `AwakeEngine` (awake_engine.py)
-owns the tick loop and fires synthetic turns. Kept as a separate tool from
-`tool_loop` (which runs N items NOW, same turn) — awake registers a trigger and
+owns the tick loop and fires synthetic turns. Awake registers a trigger and
 returns immediately; the real work happens in a FUTURE turn the engine starts.
 """
 from __future__ import annotations
@@ -257,8 +256,7 @@ def awake(
     run_at: str = "",
     delay_minutes: int = 0,
 ) -> str:
-    """Register/list/stop a STANDING trigger that fires a NEW agent turn later — this is not tool_loop
-    (which runs N items NOW, same turn). Calling awake() just registers the trigger and ends THIS turn
+    """Register/list/stop a STANDING trigger that fires a NEW agent turn later. Calling awake() just registers the trigger and ends THIS turn
     immediately; the real work happens automatically in a future turn when the trigger condition is met.
     การลงทะเบียนจบ turn ทันที — งานจริงจะเกิดใน turn ใหม่อัตโนมัติเมื่อ trigger เข้าเงื่อนไข.
 

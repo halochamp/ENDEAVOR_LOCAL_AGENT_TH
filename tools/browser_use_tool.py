@@ -628,7 +628,7 @@ def _browser_use_impl(url: str = "", task: str = "", user_query: str = "",
         return ("[error] browser_use ไม่สามารถบันทึก lifecycle reservation ได้อย่างปลอดภัย — "
                 "ไม่ได้เปิดหรือ reconnect browser ใหม่ กรุณาตรวจสอบสิทธิ์/พื้นที่ของ registry แล้วลองใหม่")
 
-    err = _wc_check_and_inc()   # นับเฉพาะ browser launch จริง — cache hit ไม่นับ (ตาม batch_browse)
+    err = _wc_check_and_inc()   # นับเฉพาะ browser launch จริง — cache hit ไม่นับ
     if err:
         if not _rollback_lifecycle_reservation(state, live):
             err += " (lifecycle reservation ถูกเก็บไว้เพื่อป้องกันการเปิด browser ซ้ำ)"

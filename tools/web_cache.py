@@ -67,7 +67,7 @@ def web_count_set_limit(n: int) -> None:
 
 def web_count_check() -> str | None:
     """Read-only peek — does not reserve a slot. Safe for fast-path bail-outs
-    that aren't paired 1:1 with an increment (e.g. batch_browse's pre-fetch
+    that aren't paired 1:1 with an increment (e.g. a bounded URL batch's pre-fetch
     early exit). Do NOT use this immediately before a real fetch; use
     web_count_check_and_inc() there to avoid the TOCTOU race below."""
     with _LOCK:
@@ -106,7 +106,7 @@ def web_count_remaining() -> int:
 def web_count_ensure_headroom(extra: int, hard_max: int) -> int:
     """Atomically raise the per-turn limit to fit `extra` more calls if needed.
 
-    Used by tool_loop before a large batch: reads current count + limit under
+    Used before a large bounded batch: reads current count + limit under
     _LOCK in one step so there is no TOCTOU gap between reading _WEB_COUNT and
     calling web_count_set_limit (which previously let two concurrent ToolNode
     tool-calls each see a stale count and over-raise the limit independently).
@@ -235,7 +235,7 @@ def get_summary(url: str, query: str = "") -> str | None:
             return None
         _SUMMARY_CACHE.move_to_end(key)  # LRU: mark as recently used
         # A summary hit is a use of its parent raw generation. Most callers
-        # (browse_url, batch_browse, web_search, browser_use) return straight
+        # (browse_url, web_search, browser_use) return straight
         # from here and never call get(), so without this the URL ranks as
         # the oldest raw entry and _evict_one_locked() drops it — together
         # with every summary keyed off it — while genuinely cold URLs

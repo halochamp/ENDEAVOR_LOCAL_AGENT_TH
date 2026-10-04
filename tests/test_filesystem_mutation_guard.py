@@ -19,9 +19,6 @@ from tools.bash_bg import bash_bg as bash_bg_tool
 from tools.edit import edit as edit_tool
 from tools.python_exec import python_exec as python_tool
 from tools.read_file import read_file as read_tool
-from tools.write_file import write_file as write_tool
-from tools.tool_loop import tool_loop as tool_loop_tool
-from tools import ALL_TOOLS
 from tools._safety import _PROTECTED_PATHS
 
 
@@ -44,7 +41,7 @@ class FilesystemMutationGuardTests(unittest.TestCase):
         edit_access.save_focus_folder(str(self.focus))
         self._workspace_patch = patch.object(config, "WORKSPACE", str(self.internal))
         self._workspace_patch.start()
-        tools = [read_tool, edit_tool, write_tool, bash_tool, bash_bg_tool, python_tool, tool_loop_tool]
+        tools = [read_tool, edit_tool, bash_tool, bash_bg_tool, python_tool]
         builder = StateGraph(MessagesState)
         builder.add_node("tools", ToolNode(tools, wrap_tool_call=react._guard_tool_call))
         builder.add_edge(START, "tools")
@@ -113,8 +110,7 @@ class FilesystemMutationGuardTests(unittest.TestCase):
         self.assertIn("edited", str(result.content))
         self.assertEqual(target.read_text(encoding="utf-8"), "value = 2\n")
 
-    def test_structured_replace_line_and_batch_modes_and_write_file_compatibility(self):
-        self.assertIn(write_tool, ALL_TOOLS)
+    def test_structured_replace_line_and_batch_modes(self):
         target = self.focus / "modes.txt"
         target.write_text("one\ntwo\nthree\n", encoding="utf-8")
         prompt = "Update modes.txt with the requested content"
@@ -151,34 +147,6 @@ class FilesystemMutationGuardTests(unittest.TestCase):
         self.assertEqual(outside.read_text(encoding="utf-8"), before)
         self.assertEqual(getattr(result, "artifact", {}).get("provenance_type"), "bash_filesystem_delta_v1")
         self.assertEqual([Path(item["path"]).name for item in result.artifact["changed_paths"]], ["inside.txt"])
-
-    def test_tool_loop_output_uses_shared_focus_and_read_before_replace(self):
-        prompt = "Summarize the command and save the result as loop.md"
-        result, _ = self.call(prompt, "tool_loop", {
-            "items": ["pwd"], "action": "bash_each", "context": "loop test",
-            "output_file": "loop.md", "max_n": 1,
-        })
-        target = self.focus / "loop.md"
-        self.assertTrue(target.is_file())
-        self.assertIn("Items: 1", target.read_text(encoding="utf-8"))
-        self.assertNotIn("[BLOCKED]", str(result.content))
-
-        target.write_text("old output", encoding="utf-8")
-        blocked, _ = self.call(prompt, "tool_loop", {
-            "items": ["pwd"], "action": "bash_each", "context": "loop test",
-            "output_file": "loop.md", "max_n": 1,
-        })
-        self.assertIn("read the existing loop output target", str(blocked.content))
-        self.assertEqual(target.read_text(encoding="utf-8"), "old output")
-
-        history = [HumanMessage(content=prompt)]
-        _, history = self.read(prompt, "loop.md", history)
-        saved, _ = self.call(prompt, "tool_loop", {
-            "items": ["pwd"], "action": "bash_each", "context": "loop test",
-            "output_file": "loop.md", "max_n": 1,
-        }, history)
-        self.assertNotIn("[BLOCKED]", str(saved.content))
-        self.assertIn("Items: 1", target.read_text(encoding="utf-8"))
 
     def test_tree_scope_sandbox_blocks_directory_symlink_escape(self):
         external = self.outside / "linked"
@@ -278,11 +246,11 @@ class FilesystemMutationGuardTests(unittest.TestCase):
         self.assertTrue(all("one filesystem mutation tool call at a time" in str(item.content) for item in results))
         self.assertEqual(target.read_text(encoding="utf-8"), "old")
 
-    def test_nested_tool_loop_bash_batch_cannot_inherit_mutation_authority(self):
+    def test_python_exec_cannot_inherit_mutation_authority(self):
         target = self.focus / "calc.py"
         target.write_text("old", encoding="utf-8")
-        result, _ = self.call("Fix calc.py to say new", "tool_loop", {
-            "items": ["printf new > calc.py"], "action": "bash_each", "max_n": 1,
+        result, _ = self.call("Fix calc.py to say new", "python_exec", {
+            "code": "from pathlib import Path; Path('calc.py').write_text('new')",
         })
         self.assertIn("cannot receive mutation authority", str(result.content))
         self.assertEqual(target.read_text(encoding="utf-8"), "old")
@@ -574,7 +542,7 @@ class FilesystemMutationGuardTests(unittest.TestCase):
         prompt = "Show the current directory"
         first, first_history = self.call(prompt, "bash", {"command": "pwd"})
         result, _ = self.call(prompt, "bash", {"command": "pwd"}, first_history)
-        self.assertIn("tool_loop_hint", str(result.content))
+        self.assertIn("repeat_tool_hint", str(result.content))
 
 
 if __name__ == "__main__":

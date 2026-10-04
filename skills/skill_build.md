@@ -13,10 +13,10 @@
 ```
 เหตุผล: abstract instruction → agent ตีความเอง → ใช้ training แทน tool
 
-**R2 — write_file ก่อน web_search เสมอ (ถ้า skill สร้างไฟล์)**
+**R2 — edit(mode="create") ก่อน web_search เสมอ (ถ้า skill สร้างไฟล์)**
 ```
-❌  web_search → browse_url → ... → write_file
-✅  write_file (สร้างไฟล์ว่าง) → web_search → browse_url → edit
+❌  web_search → browse_url → ... → edit(mode="create")
+✅  edit(mode="create", path="report.md", content="# Report\n") → web_search → browse_url → edit
 ```
 เหตุผล: ถ้า search มาก่อน agent มีข้อมูล snippets พอสรุปได้ → ข้าม browse ทั้งหมด ไฟล์ไม่ถูกสร้าง
 
@@ -120,7 +120,7 @@ Q3: "ขั้นตอนการทำงานมีอะไรบ้าง
 **STEP 2 — วิเคราะห์งานและเลือก patterns:**
 
 ถาม (ใน head ไม่ต้องถาม user):
-- skill ต้องสร้างไฟล์ไหม? → ถ้าใช่: R2 (write_file ก่อน)
+- skill ต้องสร้างไฟล์ไหม? → ถ้าใช่: R2 (edit(mode="create") ก่อน)
 - skill วนซ้ำหลาย items ไหม? → ถ้าใช่: R4 (verify+retry) + พิจารณา R5 (checkpoint)
 - skill collect จากหลาย items/sources แล้วสรุปไหม? → ถ้าใช่: R3 (synthesis gate)
   - **1 topic + ค้นหา 1 รอบ → ข้าม R3** (ไม่ต้องมี STEP ตรวจนับ/retry) เว้นแต่ user ขอ verification ชัดเจน
@@ -161,19 +161,19 @@ agent เรียก: web_search("ราคาหุ้น SCB 2026") ← ผ�
 
 ## Workflow
 STEP 1 — สร้างไฟล์ก่อน (R2):
-- write_file("<topic>_notes.md", "# <topic>\n") สร้างก่อนค้นหาเสมอ
+- edit(mode="create", path="<topic>_notes.md", content="# <topic>\n") สร้างก่อนค้นหาเสมอ
 
 STEP 2 — ค้นหา (R1):
 - web_search("<topic> ล่าสุด 2026") → สกัดประเด็นสำคัญ
 
 STEP 3 — บันทึก (R1):
-- edit("<topic>_notes.md", append ประเด็นที่ค้นพบ)
+- read_file(path="<topic>_notes.md") แล้วใช้ edit(mode="line", line_start=<บรรทัดสุดท้าย>, new_string=...) เพิ่มประเด็น
 
 STEP 4 — แจ้ง user:
 - ตอบว่าบันทึกแล้วที่ <filename> พร้อมสรุปสั้นๆ
 
 ## Tools allowed
-web_search, write_file, edit
+web_search, edit
 
 ## Output format
 ตอบภาษาไทย — แจ้ง path + สรุป 3-5 ประเด็น
@@ -186,7 +186,7 @@ web_search, write_file, edit
 
 ## Workflow
 STEP 1 — ตรวจหาไฟล์ (R1):
-- ถ้าไม่ระบุ filename → workspace_ls() เลือกไฟล์ล่าสุด
+- ถ้าไม่ระบุ filename → bash("rg --files") แล้วเลือกไฟล์จากผลลัพธ์ล่าสุด
 - read_file("<filename>") อ่านเนื้อหา
 
 STEP 2 — วิเคราะห์ (R1):
@@ -196,7 +196,7 @@ STEP 3 — ตอบ user:
 - สรุปเนื้อหา, key findings, คำแนะนำ
 
 ## Tools allowed
-read_file, workspace_ls, python_exec
+read_file, bash, python_exec
 
 ## Output format
 ตอบภาษาไทย — สรุปเนื้อหา + key findings
@@ -212,20 +212,20 @@ STEP 1 — รับรายชื่อหุ้น:
 - รับรายชื่อหุ้น 10 ตัวจาก user (ถ้าไม่ระบุ → ถาม)
 
 STEP 2 — สร้างไฟล์ก่อน (R2):
-- write_file("stock_report.md") สร้างไฟล์ว่างก่อนค้นหาข้อมูล
+- edit(mode="create", path="stock_report.md", content="# Stock report\n") สร้างไฟล์ก่อนค้นหาข้อมูล
 
 STEP 3 — ดึงราคาหุ้น (R1):
-- สำหรับแต่ละหุ้น: web_search("<SYMBOL> ราคาหุ้น ล่าสุด") → สกัดราคา → edit append
+- สำหรับแต่ละหุ้น: web_search("<SYMBOL> ราคาหุ้น ล่าสุด") → สกัดราคา → read_file แล้ว edit(mode="line", line_start=<บรรทัดสุดท้าย>, new_string=...) เพิ่มข้อมูล
 
 STEP 4 — Synthesis Gate (R3):
 - python_exec ตรวจว่าไฟล์มีข้อมูลครบ 10 หุ้น
 - ถ้าขาด → retry หุ้นที่ขาด (R4)
 
 STEP 5 — สรุป:
-- read_file → วิเคราะห์ → edit append Summary
+- read_file → วิเคราะห์ → edit(mode="line", line_start=<บรรทัดสุดท้าย>, new_string=...) เพิ่ม Summary
 
 ## Tools allowed
-web_search, write_file, edit, read_file, python_exec
+web_search, edit, read_file, python_exec
 
 ## Output format
 ตอบภาษาไทย — ตาราง: หุ้น | ราคา | %เปลี่ยนแปลง | สรุป
@@ -258,52 +258,10 @@ web_search, write_file, edit, read_file, python_exec
 - ถาม: "บันทึกเป็น /<name> เลยไหม?"
 
 **STEP 5 — บันทึกไฟล์:**
-ถ้า user ตกลง → **python_exec เท่านั้น** — ไม่มีวิธีอื่น:
-
-❌ WRONG — method อื่นทั้งหมด block หรือ path ผิด:
-```
-write_file("skills/reminder.md", ...)    ← เขียนไปที่ workspace/skills/ ไม่ใช่ skills/
-bash('cat > .../skills/reminder.md ...')  ← sandbox block ออกนอก workspace
-```
-
-✅ ONLY CORRECT — python_exec เท่านั้น:
-```python
-import os
-# python_exec รันจาก workspace/ → dirname ขึ้นไปหา project root
-project_root = os.path.dirname(os.getcwd())
-path = os.path.join(project_root, "skills", "NAME.md")
-open(path, "w", encoding="utf-8").write("""CONTENT""")
-print("saved:", path)
-```
+ถ้า user ตกลง → ใช้ `edit(mode="create", path="skills/NAME.md", content=...)` เฉพาะเมื่อ path นี้อยู่ใน internal workspace, Active Workspace หรือ Approved Edit Folder ที่อนุญาตแล้ว. ถ้าอยู่นอก authorized roots ให้หยุดการบันทึกและอธิบายว่าต้องอนุมัติ folder ผ่าน edit-access settings ก่อน. ห้ามใช้ `python_exec` หรือ guarded bash เพื่อเลี่ยงสิทธิ์เขียน.
 
 **STEP 6 — Verify:**
-python_exec ตรวจสอบทันทีหลัง save:
-```python
-import os
-project_root = os.path.dirname(os.getcwd())
-path = os.path.join(project_root, "skills", "NAME.md")
-exists = os.path.exists(path)
-size = os.path.getsize(path) if exists else 0
-print("exists:", exists, "| size:", size, "bytes")
-with open(path) as f:
-    print("first line:", f.readline().strip())
-```
-ถ้า `exists: False` → แจ้ง user ว่า save ไม่สำเร็จ อย่าแจ้ง "เสร็จแล้ว" จนกว่า verify ผ่าน
-
-**STEP 7 — ตรวจ structure ของ skill ที่สร้าง:**
-python_exec ตรวจ 3 sections บังคับ:
-```python
-import os
-project_root = os.path.dirname(os.getcwd())
-path = os.path.join(project_root, "skills", "NAME.md")
-content = open(path).read()
-missing = [s for s in ["## Role", "## Workflow", "## Tools allowed"] if s not in content]
-if missing:
-    print("MISSING sections:", missing, "→ skill จะทำงานผิดปกติ")
-else:
-    print("structure OK — all 3 required sections present")
-```
-ถ้า missing → แก้ skill content และ save ใหม่ก่อนแจ้ง user
+ใช้ `read_file(path="skills/NAME.md")` ตรวจว่ามีเนื้อหาที่บันทึกจริงและมี sections `## Role`, `## Workflow`, `## Tools allowed`, `## Output format`. ถ้าสร้างไม่สำเร็จหรือขาด section ให้แก้ด้วย `edit` หลังอ่านไฟล์ใน turn ปัจจุบัน แล้วตรวจซ้ำ.
 
 แจ้ง: "สร้าง /<name> เสร็จแล้ว — พิมพ์ /exit แล้วพิมพ์ /<name> ได้ทันที (ไม่ต้องรีสตาร์ท)"
 
@@ -313,16 +271,24 @@ else:
 เลือก tool เฉพาะที่ skill ต้องการจริงๆ:
 
 — เว็บ —
-web_search, browse_url, fetch_sitemap, batch_browse, recall_web, scrape_table, browser_use
+web_search, browse_url, browser_use, recall_web
 
 — ไฟล์ —
-read_file, write_file, edit, grep, workspace_ls
+read_file, edit, bash
 
 — โค้ด —
-python_exec, bash, plot
+python_exec, plot, bash_bg, create_plan
 
 — ภาพ —
-read_image
+read_image, computer
+
+— memory/audio/automation —
+remember, speak, awake
+
+— MCP —
+mcp_list_tools, mcp_call_tool, mcp_add_server, mcp_remove_server
+
+`browse_url` รองรับ URL เดียว, `urls=[...]`, `mode="sitemap"`, และ `table_index`; อ่าน RAG/knowledge base ผ่าน MCP ที่ผู้ใช้กำหนดเท่านั้น.
 
 — memory/plan —
 remember, create_plan
@@ -337,12 +303,12 @@ research_orchestrator  : ค้นหาข่าว N แหล่ง + เข�
 ## Anti-patterns — ห้ามในกระบวนการ skill_build:
 - **เสนอ choices ให้ user เลือก skill ก่อนถาม Q1 → ข้าม workflow ใช้ไม่ได้**
 - **read file / run bash / search ก่อนได้ Q1/Q2/Q3 ครบ → ห้ามทำก่อนถาม**
-- **บันทึก skill file ด้วย write_file หรือ bash → path ผิดหรือ sandbox block — python_exec เท่านั้น (STEP 5)**
+- **บันทึก skill file ด้วย python_exec หรือ bash → เลี่ยง edit-access guard; ใช้ edit เฉพาะใน authorized roots (STEP 5)**
 - **แจ้ง "เสร็จแล้ว" ก่อน verify (STEP 6) → file อาจไม่ได้ถูกสร้าง**
 
 ## Anti-patterns — ห้ามใส่ใน skill ที่สร้าง:
 - tool ที่ไม่อยู่ใน Tool Reference → agent call ไม่ได้
-- web_search ก่อน write_file ใน skill ที่ต้องสร้างไฟล์ → agent ข้าม browse
+- web_search ก่อน edit(mode="create") ใน skill ที่ต้องสร้างไฟล์ → agent ข้าม browse
 - ไม่มี gate ก่อน synthesis ใน skill ที่ collect data → agent สรุปก่อนครบ
 - loop โดยไม่มี verify → silent failure
 - **LLM-driven BATCH LOOP > 3 batches → agent ออกจาก loop ตอบ user กลางทาง ใช้ R7 แทน**

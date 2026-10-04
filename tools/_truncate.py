@@ -27,7 +27,7 @@ def truncate_with_save(
 
     `marker_first`: put the marker BEFORE the cut content instead of after.
     Use this when a caller may apply its own secondary hard cut on top of this
-    result (e.g. tool_loop._bash_each's 2,000-char cap) — a trailing marker can
+    result (e.g. a caller's per-item output cap) — a trailing marker can
     get sliced off entirely, silently dropping the recovery-file path; a
     leading marker survives any such secondary cut.
 

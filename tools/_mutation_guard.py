@@ -211,8 +211,6 @@ def tool_mutates_bypass(name: str, args: dict[str, Any]) -> bool:
         return True
     if name == "bash_bg":
         return str(args.get("action", "start")) == "start"
-    if name == "tool_loop":
-        return str(args.get("action", "")) == "bash_each"
     return False
 
 

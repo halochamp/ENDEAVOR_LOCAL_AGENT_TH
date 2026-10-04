@@ -136,7 +136,7 @@ def _fetch_and_summarize_batch(batch: list[str], topic: str) -> list[dict]:
         # Reserve budget before fetching, not after — this used to fetch every
         # uncached URL first and meter afterward, so it could blow past the
         # per-turn web cap or fetch anyway once another tool already exhausted
-        # it. Mirrors batch_browse.py's check-then-inc pattern.
+        # it. Mirrors browse_url's check-then-increment budget policy.
         err = _wc_check()
         if err:
             for url in need_raw:

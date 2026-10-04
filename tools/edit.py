@@ -140,9 +140,9 @@ def _apply_hunk(content: str, hunk: dict) -> tuple[str | None, str | None, str]:
             idx = content.index(old_string, start)
             offsets.append(idx)
             start = idx + len(old_string)
-        # read_file/grep number lines via splitlines() (which recognizes form-feed,
+        # read_file and line-numbered search output number lines via splitlines() (which recognizes form-feed,
         # vertical-tab, NEL, LS/PS as breaks, not just \n); match that here so a
-        # near_line the agent read from those tools lands on the same occurrence.
+        # near_line the agent read from either source lands on the same occurrence.
         # The "\x00" sentinel is required so a match sitting immediately after a
         # break is counted on the NEXT line — a bare splitlines() would drop the
         # trailing empty element and under-count by one. (edit reads via read_text()

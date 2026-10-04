@@ -382,49 +382,6 @@ function handleEvent(ev) {
     case 'history_list':
       renderHistory(ev.pairs || [], ev.total || 0)
       break
-    case 'rag_rebuild_ok': {
-      removeThinking()
-      setBusy(false)
-      const issues = ev.health_issues || []
-      const ghostCount = ev.ghost_count || 0
-      let healthLine = '\n\n✓ self-check: no anomalies'
-      if (issues.length || ghostCount) {
-        const lines = issues.map(i => `  - ${i}`)
-        if (ghostCount) lines.push(`  - ${ghostCount} registered file(s) have zero chunks (dedup ghosts, informational)`)
-        healthLine = `\n\n⚠ self-check found anomalies:\n${lines.join('\n')}`
-      }
-      if (ev.total === 0) {
-        addSystem(`build_index — folder: ${ev.data_dir || 'knowledge'}\nไม่มีไฟล์ให้ index${healthLine}`)
-      } else {
-        const topicList = (ev.topics || []).join(' | ')
-        addSystem(`build_index — folder: ${ev.data_dir || 'knowledge'}\nfound: ${ev.total} file(s)\nTopics: ${topicList || '(ไม่มี topic)'}${healthLine}`)
-      }
-      break
-    }
-    case 'build_kb_ok': {
-      removeThinking()
-      setBusy(false)
-      const issues = ev.health_issues || []
-      const ghostCount = ev.ghost_count || 0
-      let healthLine = '\n\n✓ self-check: no anomalies'
-      if (issues.length || ghostCount) {
-        const lines = issues.map(i => `  - ${i}`)
-        if (ghostCount) lines.push(`  - ${ghostCount} registered file(s) have zero chunks (dedup ghosts, informational)`)
-        healthLine = `\n\n⚠ self-check found anomalies:\n${lines.join('\n')}`
-      }
-      const counts = ev.counts || {}
-      const countLine = ['new', 'changed', 'skip', 'error']
-        .filter(k => counts[k])
-        .map(k => `${k}: ${counts[k]}`)
-        .join('  ')
-      const elapsed = typeof ev.elapsed === 'number' ? `${ev.elapsed.toFixed(1)}s` : '?'
-      if (!ev.total) {
-        addSystem(`build_kb — folder: ${ev.data_dir || 'knowledge'}\nไม่มีไฟล์ให้ build${healthLine}`)
-      } else {
-        addSystem(`build_kb — folder: ${ev.data_dir || 'knowledge'}\nfound: ${ev.total} file(s)  (${countLine})  — ${elapsed}${healthLine}`)
-      }
-      break
-    }
     case 'skill_change':
       // A handoff frame carries `handoff`/`label`; a skill frame carries `skill`.
       // They are mutually exclusive — entering one clears the other.
@@ -529,13 +486,11 @@ function addActivitySeparator() {
 
 const TOOL_ICONS = {
   web_search: '🔍', browse_url: '🌐', browser_use: '🌐', recall_web: '📋',
-  write_file: '✏️', read_file: '📖', edit: '✏️', bash: '⚡',
-  python_exec: '🐍', grep: '🔎', create_plan: '📋', workspace_ls: '📁',
-  rag_search: '🗂', remember: '🧠', research_orchestrator: '🔬',
-  fetch_sitemap: '🗺', batch_browse: '📦',
-  plot: '📊', scrape_table: '📊', read_image: '🖼', tool_loop: '🔁',
-  security_scan: '🛡', rag_ls: '🗂', rag_list_knowledge: '🗂',
-  rag_rebuild_index: '🗂',
+  read_file: '📖', edit: '✏️', bash: '⚡',
+  python_exec: '🐍', create_plan: '📋', remember: '🧠',
+  research_orchestrator: '🔬', plot: '📊', read_image: '🖼', computer: '🖥',
+  speak: '🔊', awake: '⏰', mcp_list_tools: '🔌', mcp_call_tool: '🔌',
+  mcp_add_server: '🔌', mcp_remove_server: '🔌',
 }
 
 function addActivity(name, detail) {
@@ -780,11 +735,9 @@ function sendMessage() {
     // Slow blocking commands hold the server's _busy lock — lock the input too, or
     // the user can fire a query that the server rejects with a confusing
     // "agent กำลังทำงานอยู่" while the UI shows no busy state. The matching response
-    // events (compact_result / memory_ok / rag_rebuild_ok) and 'error' all clear it.
+    // events (compact_result / memory_ok) and 'error' all clear it.
     if (cmd === '/compact') { setBusy(true); showThinking(); updateThinkingLabel('กำลังบีบอัด context…') }
     else if (cmd === '/history') { setBusy(true); showThinking(); updateThinkingLabel('กำลังโหลดความจำ…') }
-    else if (cmd === '/build_index') { setBusy(true); showThinking(); updateThinkingLabel('กำลังสร้าง RAG index…') }
-    else if (cmd === '/build_kb') { setBusy(true); showThinking(); updateThinkingLabel('กำลังสร้าง knowledge base…') }
     return
   }
 

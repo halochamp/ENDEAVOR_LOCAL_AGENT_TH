@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 # a corrective hint without executing the expensive/side-effectful tool; a
 # third identical call stops the turn deterministically.
 _REPEAT_TOOL_HINT_TEXT = (
-    "[tool_loop_hint] เรียก {name} ด้วย query/arguments เดิมซ้ำ 2 รอบติด; "
+    "[repeat_tool_hint] เรียก {name} ด้วย query/arguments เดิมซ้ำ 2 รอบติด; "
     "รอบนี้จึงไม่รัน tool ซ้ำ. ต้องเปลี่ยน query/arguments หรือเปลี่ยนเครื่องมือก่อนทำต่อ. "
     "ห้ามเรียกคำขอเดิมติดกันอีก; ครั้งที่ 3 จะหยุด turn เพื่อป้องกัน loop."
 )
@@ -147,12 +147,9 @@ def _filesystem_calls_are_parallel(messages: list, call_id: str, intent_kind: st
             name = str(item.get("name") or "")
             args = item.get("args") or {}
             args = args if isinstance(args, dict) else {}
-            writes = name in {"edit", "write_file"}
+            writes = name == "edit"
             writes = writes or (intent_kind in {"exact", "tree"} and name in {"bash", "python_exec"})
             writes = writes or (name == "bash_bg" and str(args.get("action", "start")) == "start")
-            writes = writes or (name == "tool_loop" and (
-                bool(args.get("output_file")) or str(args.get("action", "")) == "bash_each"
-            ))
             if writes:
                 writers.append(item)
         return len(writers) > 1
@@ -217,19 +214,14 @@ def _guard_filesystem_tool_call(request, execute):
             "[BLOCKED] a requested file change must be explicit so the host can apply shared workspace guards",
         )
 
-    blocked_executor = name in {"edit", "write_file", "bash", "python_exec"}
+    blocked_executor = name in {"edit", "bash", "python_exec"}
     blocked_executor = blocked_executor or (
         name == "bash_bg" and str(args.get("action", "start")) == "start"
-    )
-    blocked_executor = blocked_executor or (
-        name == "tool_loop" and (
-            bool(args.get("output_file")) or str(args.get("action", "")) == "bash_each"
-        )
     )
     if intent.kind == "blocked_explicit" and blocked_executor:
         return _tool_message_block(request, intent.reason or "[BLOCKED] unsafe explicit mutation target")
 
-    if name in {"edit", "write_file"}:
+    if name == "edit":
         raw_path = args.get("path")
         if not isinstance(raw_path, str) or not raw_path:
             return _tool_message_block(request, "[BLOCKED] a file path is required")
@@ -242,9 +234,7 @@ def _guard_filesystem_tool_call(request, execute):
         exists = Path(target).exists() or Path(target).is_symlink()
         if name == "edit" and exists and args.get("mode", "") == "create":
             return _tool_message_block(request, "[BLOCKED] create mode cannot overwrite an existing target")
-        replaces_existing = exists and (
-            name == "edit" or bool(args.get("overwrite"))
-        )
+        replaces_existing = exists
         if replaces_existing:
             if Path(target).is_symlink() or not Path(target).is_file():
                 return _tool_message_block(request, "[BLOCKED] existing mutation target must be a regular non-symlink file")
@@ -260,28 +250,6 @@ def _guard_filesystem_tool_call(request, execute):
             request,
             "[BLOCKED] use edit or guarded bash for this requested file change; nested/background/Python execution cannot receive mutation authority",
         )
-
-    if name == "tool_loop" and args.get("output_file"):
-        from tools._safety import resolve_path, validate_write_target
-        fname = os.path.basename(str(args.get("output_file") or "")) or "output.md"
-        if "." not in fname:
-            fname += ".md"
-        target, error = validate_write_target(fname)
-        if error:
-            return _tool_message_block(request, error)
-        if intent.kind == "exact" and os.path.abspath(target) not in intent.targets:
-            return _tool_message_block(request, "[BLOCKED] loop output does not match the user's requested file")
-        if os.path.exists(target):
-            if not call_id or not has_current_read(messages, call_id, os.path.abspath(target)):
-                return _tool_message_block(
-                    request,
-                    "[BLOCKED] read the existing loop output target with read_file earlier in this turn",
-                )
-
-    if name == "tool_loop" and intent.kind == "none" and str(args.get("action", "")) == "bash_each":
-        items = args.get("items") or []
-        if isinstance(items, list) and any(shell_command_looks_mutating(item) for item in items):
-            return _tool_message_block(request, "[BLOCKED] background file writes require an explicit mutation request")
 
     if name == "bash_bg" and intent.kind == "none" and str(args.get("action", "start")) == "start":
         if shell_command_looks_mutating(args.get("command", "")):

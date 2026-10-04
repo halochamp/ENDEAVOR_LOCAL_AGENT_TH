@@ -16,10 +16,10 @@ Skill คือไฟล์ Markdown ที่จะถูก inject เข้�
 ```
 เหตุผล: abstract instruction → agent ตีความเอง → ใช้ training data แทน tool
 
-**R2 — write_file ก่อน web_search เสมอ (ถ้า skill สร้างไฟล์)**
+**R2 — edit(mode="create") ก่อน web_search เสมอ (ถ้า skill สร้างไฟล์)**
 ```
-❌  web_search → browse_url → ... → write_file
-✅  write_file (สร้างไฟล์ว่าง) → web_search → browse_url → edit
+❌  web_search → browse_url → ... → edit(mode="create")
+✅  edit(mode="create", path="report.md", content="# Report\n") → web_search → browse_url → edit
 ```
 เหตุผล: ถ้า search มาก่อน agent มีข้อมูล snippets พอสรุปได้ → ข้าม browse ทั้งหมด ไฟล์ไม่ถูกสร้าง
 
@@ -89,7 +89,7 @@ Detection Logic: "ต่อ"/"resume" → อ่าน checkpoint → ทำต�
 
 | Anti-pattern | ผลที่เกิด |
 |---|---|
-| web_search ก่อน write_file (ถ้า skill สร้างไฟล์) | agent ข้าม browse ทั้งหมด ไฟล์ไม่ถูกสร้าง |
+| web_search ก่อน edit(mode="create") (ถ้า skill สร้างไฟล์) | agent ข้าม browse ทั้งหมด ไฟล์ไม่ถูกสร้าง |
 | ไม่มี Synthesis Gate ก่อนสรุป | agent สรุปก่อนครบ silent success |
 | loop โดยไม่มี verify | ข้อมูลขาดโดยไม่รู้ตัว |
 | tool ที่ไม่อยู่ใน Tool Reference | agent call ไม่ได้ ตอบจาก training |
@@ -130,27 +130,33 @@ Detection Logic: "ต่อ"/"resume" → อ่าน checkpoint → ทำต�
 
 — เว็บ —
 - web_search        : ค้นหาข้อมูลบนเว็บ ได้ snippet พร้อม URL
-- browse_url        : เปิดและอ่านเนื้อหาเว็บทั้งหน้า
+- browse_url        : อ่าน URL เดียว, `urls=[...]`, sitemap ด้วย `mode="sitemap"`, และตารางด้วย `table_index`
 - browser_use       : ควบคุม browser จริง (คลิก, กรอกฟอร์ม, JavaScript)
-- batch_browse      : เปิดหลาย URL พร้อมกัน ใช้แทน browse_url หลายครั้ง
 - recall_web        : ดึง cache ผลลัพธ์เว็บที่เคยค้นไปแล้วใน session
-- fetch_sitemap     : ดึง sitemap.xml จาก domain เพื่อสำรวจโครงสร้างเว็บ
-- scrape_table      : ดึงตาราง HTML จากหน้าเว็บเป็น CSV/JSON
 
 — ไฟล์และ workspace —
 - read_file         : อ่านไฟล์จาก workspace
-- write_file        : เขียนไฟล์ลง workspace (sandboxed)
-- edit              : แก้ไขไฟล์เฉพาะส่วน (find & replace / append)
-- grep              : ค้นหา pattern ในไฟล์หรือโฟลเดอร์
-- workspace_ls      : แสดงรายการไฟล์ใน workspace
+- edit              : สร้างไฟล์ใหม่ด้วย `mode="create"`; แก้ไฟล์เดิมหลังอ่านด้วย `replace`, `line` หรือ `batch`
 
 — โค้ดและการคำนวณ —
-- python_exec       : รัน Python code (pandas, numpy, file I/O, JSON, os.path)
-- bash              : รัน shell command (ls, git, grep, curl localhost)
+- python_exec       : คำนวณ/วิเคราะห์ด้วย Python (pandas, numpy, JSON); ใช้ edit สำหรับสร้างหรือแก้ artifact ใน workspace
+- bash              : รัน shell command, ค้นด้วย `rg`/`rg --files`, test/build ภายใต้ mutation guard
 - plot              : วาดกราฟด้วย matplotlib บันทึกลง workspace
+- bash_bg           : รันและจัดการ shell job ที่ใช้เวลานาน
+- create_plan       : วางแผนงานหลายขั้นตอน
 
 — ภาพ —
 - read_image        : ดูภาพโดยตรงผ่าน VLM (ไฟล์, URL, หรือ screenshot); OCR/table/QR เป็น sensor เสริมแบบเรียกใช้ภายหลัง
+
+— computer —
+- computer          : guarded screen actions หลังตรวจ local model capability; text-only จะ fail closed
+
+— memory/audio/automation —
+- remember, speak, awake
+
+— MCP —
+- mcp_list_tools, mcp_call_tool, mcp_add_server, mcp_remove_server
+  RAG/knowledge-base retrieval ใช้ MCP server ที่กำหนดอย่างชัดเจนเท่านั้น: inspect ด้วย `mcp_list_tools`, call retrieval ด้วย `mcp_call_tool`; ไม่มี default server หรือ sibling RAG requirement.
 
 — หน่วยความจำและแผน —
 - remember          : บันทึกข้อมูลสำคัญเก็บไว้ใช้ข้าม session
@@ -180,32 +186,32 @@ Detection Logic: "ต่อ"/"resume" → อ่าน checkpoint → ทำต�
 STEP 1 — รับ URL จาก user (ถ้าไม่มี → ถาม)
 STEP 2 — browse_url(URL, user_query="<topic>") → ดึงเนื้อหา
 STEP 3 — python_exec สรุปเนื้อหาและนับคำสำคัญ
-STEP 4 — write_file("result.md") บันทึกผลลัพธ์
+STEP 4 — edit(mode="create", path="result.md", content=<ผลที่สรุป>) บันทึกผลลัพธ์
 ```
 
 **ตัวอย่าง File Collect + Synthesis Gate (R2 + R3):**
 ```
 STEP 1 — รับ input จาก user
-STEP 2 — write_file("report.md") สร้างไฟล์ว่าง (R2 — ต้องก่อน search)
+STEP 2 — edit(mode="create", path="report.md", content="# Report\n") (R2 — ต้องก่อน search)
 STEP 3 — web_search("<topic> latest 2026") × 2 รอบ → รวม URLs
-STEP 4 — สำหรับแต่ละ URL: browse_url(URL) → สกัดข้อมูล → edit append
+STEP 4 — สำหรับแต่ละ URL: browse_url(URL) → สกัดข้อมูล → read_file แล้ว edit(mode="line") เพิ่มข้อมูล
 STEP 5 — Synthesis Gate (R3):
   python_exec ตรวจว่ามีครบ N sections ในไฟล์
   ถ้าไม่ผ่าน → กลับ STEP 4 ทำ URL ที่ขาด
-STEP 6 — read_file → วิเคราะห์ → edit append Summary
+STEP 6 — read_file → วิเคราะห์ → edit(mode="line", line_start=<บรรทัดสุดท้าย>, new_string=...) เพิ่ม Summary
 ```
 
 **ตัวอย่าง Batch + Checkpoint (R2 + R4 + R5):**
 ```
 ### START
 STEP 1 — python_exec ตรวจ checkpoint เก่า
-STEP 2 — write_file สร้างไฟล์ก่อน (R2)
+STEP 2 — edit(mode="create", path="report.md", content="# Report\n") ก่อนค้นหา (R2)
 STEP 3 — web_search × 3 รอบ → รวม URLs deduplicate
 STEP 4 — python_exec บันทึก checkpoint + ไป BATCH LOOP
 
 ### BATCH LOOP
 ก่อนแต่ละ batch: python_exec ดึง 10 URLs ถัดไป
-สำหรับแต่ละ URL: browse_url → สกัด → edit append
+สำหรับแต่ละ URL: browse_url → สกัด → read_file แล้ว edit(mode="line") เพิ่มผล
 หลัง batch — VERIFY+RETRY (R4):
   python_exec ตรวจ "## Source N:" ในไฟล์
   MISSING → retry URL ที่ขาด (≤2×) → "[retry หมด — ข้าม]"
@@ -214,7 +220,7 @@ STEP 4 — python_exec บันทึก checkpoint + ไป BATCH LOOP
 
 ### STEP FINAL — Synthesis Gate (R3)
 python_exec assert completed == all_urls
-ผ่าน → read_file → edit append Summary → ลบ checkpoint
+ผ่าน → read_file → edit(mode="line") เพิ่ม Summary → ลบ checkpoint ด้วย edit ตาม shared path guard
 ```
 
 ---
@@ -294,20 +300,20 @@ STEP 1 — รับรายชื่อหุ้น:
 - รับรายชื่อหุ้น 10 ตัวจาก user (ถ้าไม่ระบุ → ถาม)
 
 STEP 2 — สร้างไฟล์ก่อน (R2):
-- write_file("stock_report.md") สร้างไฟล์ว่างก่อนค้นหาข้อมูล
+- edit(mode="create", path="stock_report.md", content="# Stock report\n") สร้างไฟล์ก่อนค้นหา
 
 STEP 3 — ดึงราคาหุ้น (R1):
-- สำหรับแต่ละหุ้น: web_search("<SYMBOL> ราคาหุ้น ล่าสุด") → สกัดราคา → edit append
+- สำหรับแต่ละหุ้น: web_search("<SYMBOL> ราคาหุ้น ล่าสุด") → สกัดราคา → read_file แล้ว edit(mode="line") เพิ่มข้อมูล
 
 STEP 4 — Synthesis Gate (R3):
 - python_exec ตรวจว่าไฟล์มีข้อมูลครบ 10 หุ้น
 - ถ้าขาด → retry หุ้นที่ขาด web_search อีกครั้ง (R4)
 
 STEP 5 — สรุป:
-- read_file → วิเคราะห์ → edit append Summary
+- read_file → วิเคราะห์ → edit(mode="line", line_start=<บรรทัดสุดท้าย>, new_string=...) เพิ่ม Summary
 
 ## Tools allowed
-web_search, write_file, edit, read_file, python_exec
+web_search, edit, read_file, python_exec
 
 ## Output format
 ตอบภาษาไทย — ตาราง: หุ้น | ราคา | %เปลี่ยนแปลง | สรุป
@@ -370,7 +376,7 @@ research_orchestrator
 ## กฎสรุป
 
 1. ทุก step ต้องระบุชื่อ tool ชัดเจน (R1)
-2. ถ้า skill สร้างไฟล์ → write_file ต้องอยู่ก่อน web_search เสมอ (R2)
+2. ถ้า skill สร้างไฟล์ → edit(mode="create") ต้องอยู่ก่อน web_search เสมอ (R2)
 3. ถ้า skill collect แล้วสรุป → ต้องมี Synthesis Gate ก่อน final step (R3)
 4. ถ้า skill วนซ้ำหลาย items → ต้องมี verify+retry หลัง loop (R4)
 5. ถ้า skill ทำงาน > 10 items หรือหลาย turn → ต้องมี checkpoint (R5)

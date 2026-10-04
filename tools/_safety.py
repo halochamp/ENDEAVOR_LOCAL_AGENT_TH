@@ -2,7 +2,7 @@
 # License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-"""Shared filesystem path safety for edit, write_file, and guarded Bash.
+"""Shared filesystem path safety for edit and guarded Bash.
 
 Writes are limited to the internal workspace, the temporary Active Workspace,
 and persistent Approved Edit Folders from tools.edit_access. Protected paths and

@@ -14,11 +14,14 @@ cache. Returns only `[web:<url>] <summary>` to keep the message context
 small. Use recall_web(url) to retrieve the full body later.
 """
 from __future__ import annotations
+import json
 import urllib.request
 import logging
 import sys
 import os
+import re
 import time
+from typing import Literal
 from langchain_core.tools import tool
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -77,36 +80,117 @@ def _fetch_body(url: str, query: str = "") -> str:
     return jina
 
 
-def _split_browse_result(result: str) -> tuple[str, str, bool]:
-    """Parse browse_url's output contract into (url, body, ok)."""
-    if result.startswith("[web_limit]"):
-        return "", result, False
-    if not result.startswith("[web:"):
-        return "", result, False
-    bracket_end = result.find("] ")
-    if bracket_end == -1:
-        return "", result, False
-    return result[5:bracket_end], result[bracket_end + 2:], True
+def _normalise_http_url(value: str) -> str:
+    url = (value or "").strip()
+    if not url:
+        return ""
+    if "://" in url and not url.startswith(("http://", "https://")):
+        return ""
+    return url if url.startswith(("http://", "https://")) else "https://" + url
+
+
+_TABLE_NUMBER_RE = re.compile(r"(?<![A-Za-z])[-+]?\d[\d,.]*(?:%|\b)")
+
+
+def _markdown_table_evidence(raw: str) -> str:
+    """Return a bounded useful Markdown table already present in fetched text."""
+    rows: list[list[str]] = []
+    candidates: list[list[str]] = []
+
+    def flush() -> None:
+        nonlocal rows
+        if len(rows) >= 2 and len(rows[0]) >= 2:
+            width = len(rows[0])
+            clean = [row for row in rows if len(row) == width]
+            body = [row for row in clean[1:] if not all(re.fullmatch(r"[:\-\s]*", c or "") for c in row)]
+            if body and any(_TABLE_NUMBER_RE.search(cell) for row in body for cell in row):
+                candidates.append(clean[:31])
+        rows = []
+
+    for line in (raw or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 3:
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            rows.append(cells)
+        else:
+            flush()
+    flush()
+    if not candidates:
+        return ""
+    table = "\n".join("| " + " | ".join(row) + " |" for row in candidates[0])
+    if len(table) > 3000:
+        table = table[:3000].rsplit("\n", 1)[0]
+    return f"\n\n[table evidence]\n{table}"
+
+
+def _append_table_evidence(result: str, raw: str) -> str:
+    evidence = _markdown_table_evidence(raw)
+    return result + evidence if evidence else result
 
 
 @tool
-def browse_url(url: str, user_query: str = "") -> str:
-    """Fetch and read one specific URL; return a compact Thai summary tagged with the URL.
+def browse_url(
+    url: str = "",
+    user_query: str = "",
+    urls: list[str] | str | None = None,
+    mode: Literal["read", "sitemap"] = "read",
+    filter_keyword: str = "",
+    table_index: int | None = None,
+) -> str:
+    """Read web pages through one consolidated web tool.
 
-    Use when the user gives a URL, or after web_search returns a result whose full
-    page is needed. Do not use browser_use for normal article/page reading; browser_use
-    is only for login/forms/click interaction or when browse_url clearly cannot read
-    enough content.
+    Normal mode reads one URL. Pass urls=[...] to read a bounded batch of pages in
+    one call; a JSON-encoded array of strings is also accepted. Set mode="sitemap"
+    with url and optional filter_keyword to list URLs
+    from a site's sitemap. For a rendered page table, pass table_index=-1 to list
+    tables or a non-negative table_index to extract one table as bounded CSV.
 
-    Always pass user_query with the current user question so the summary is focused.
-    The full cleaned body is cached; if the summary lacks detail, call recall_web(url)
-    instead of re-calling browse_url on the same URL.
+    Always pass user_query with the current question. Page summaries and full text
+    retain the existing URL-tagged cache contract; recall_web retrieves cached text.
+    Use browser_use only for interaction such as login/forms or when direct reading
+    cannot provide the requested content. Useful numeric Markdown tables in a normal
+    read are attached as bounded evidence automatically.
     """
-    if not url or not url.strip():
-        return "[error] url is required"
-    url = url.strip()
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
+    selected_mode = (mode or "read").strip().lower()
+    if selected_mode == "sitemap":
+        if urls is not None or table_index is not None:
+            return "[error] sitemap mode accepts url and filter_keyword only"
+        sitemap_url = _normalise_http_url(url)
+        if not sitemap_url:
+            return "[error] a valid http(s) url is required for sitemap mode"
+        from tools._fetch_sitemap import read_sitemap
+        return read_sitemap(sitemap_url, filter_keyword)
+    if selected_mode != "read":
+        return "[error] mode must be 'read' or 'sitemap'"
+    if filter_keyword:
+        return "[error] filter_keyword is only valid in sitemap mode"
+
+    if urls is not None:
+        if url.strip():
+            return "[error] provide url or urls, not both"
+        if table_index is not None:
+            return "[error] table_index is only valid when reading one url"
+        if isinstance(urls, str):
+            try:
+                decoded_urls = json.loads(urls)
+            except (TypeError, ValueError):
+                return "[error] urls must be a list of strings or a JSON-encoded list of strings"
+            if not isinstance(decoded_urls, list) or any(not isinstance(item, str) for item in decoded_urls):
+                return "[error] urls must be a list of strings or a JSON-encoded list of strings"
+            urls = decoded_urls
+        if not isinstance(urls, list):
+            return "[error] urls must be a list of strings"
+        from tools._batch_browse import browse_urls
+        return browse_urls(urls, user_query)
+
+    url = _normalise_http_url(url)
+    if not url:
+        return "[error] a valid http(s) url is required"
+
+    if table_index is not None:
+        from tools._scrape_table import extract_table
+        return extract_table(url, table_index)
+
     _phase(f"📄 อ่านเว็บ: {url[:45]}")
 
     effective_uq = (user_query or "").strip()
@@ -115,7 +199,7 @@ def browse_url(url: str, user_query: str = "") -> str:
     summary = web_cache.get_summary(url, effective_uq)
     if summary is not None:
         _progress(f"summary HIT (query-aware): {url[:70]}")
-        return f"[web:{url}] {summary}"
+        return _append_table_evidence(f"[web:{url}] {summary}", web_cache.get(url) or "")
 
     # Raw cached but no summary for this query → re-summarize
     raw = web_cache.get(url)
@@ -123,10 +207,10 @@ def browse_url(url: str, user_query: str = "") -> str:
         _progress(f"raw HIT, re-summarize for new query: {url[:70]}")
         summary = summarize(raw, url=url, user_query=effective_uq or None)
         web_cache.put_summary(url, effective_uq, summary, raw=raw)
-        return f"[web:{url}] {summary}"
+        return _append_table_evidence(f"[web:{url}] {summary}", raw)
 
     # Full miss → actual network fetch — only now consume web budget
-    # (cache hits above are free, matching batch_browse's counting semantics)
+    # (cache hits above are free, matching the URL batch's counting semantics)
     err = _wc_check_and_inc()
     if err:
         return err
@@ -139,7 +223,7 @@ def browse_url(url: str, user_query: str = "") -> str:
     web_cache.put(url, raw)
     web_cache.put_summary(url, effective_uq, summary, raw=raw)
     _progress(f"cached ({len(raw)} raw + {len(summary)} summary)")
-    return f"[web:{url}] {summary}"
+    return _append_table_evidence(f"[web:{url}] {summary}", raw)
 
 
 # Docstring is model-facing and hardcodes "20,000" for readability, but the

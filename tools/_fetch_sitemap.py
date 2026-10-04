@@ -2,7 +2,7 @@
 # License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-"""fetch_sitemap.py — ดึง URL list จาก sitemap.xml ของเว็บไซต์
+"""Internal sitemap reader used by browse_url(mode="sitemap").
 
 รองรับ:
   - <sitemapindex> (ตรวจจาก root element ไม่ใช่ substring ทั้ง doc; fetch สูงสุด 3 child —
@@ -30,7 +30,6 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langchain_core.tools import tool
 from tools._progress import phase as _phase
 from tools import web_cache
 from tools.web_cache import web_count_check_and_inc as _wc_check_and_inc
@@ -52,13 +51,13 @@ def _curl_bytes(url: str) -> bytes:
             capture_output=True, text=False, timeout=25,
         )
         if r.returncode != 0:
-            log.warning(f"[fetch_sitemap] curl rc={r.returncode} for {url}: {r.stderr.decode(errors='replace')[:200]}")
+            log.warning(f"[browse_url sitemap] curl rc={r.returncode} for {url}: {r.stderr.decode(errors='replace')[:200]}")
         return r.stdout or b""
     except FileNotFoundError:
-        log.error("[fetch_sitemap] curl binary not found — cannot fetch sitemap")
+        log.error("[browse_url sitemap] curl binary not found — cannot fetch sitemap")
         return b""
     except Exception as e:
-        log.warning(f"[fetch_sitemap] curl error for {url}: {e}")
+        log.warning(f"[browse_url sitemap] curl error for {url}: {e}")
         return b""
 
 
@@ -70,7 +69,7 @@ def _decode_body(raw: bytes) -> str:
         try:
             raw = gzip.decompress(raw)
         except Exception as e:
-            log.warning(f"[fetch_sitemap] gzip decompress failed: {e}")
+            log.warning(f"[browse_url sitemap] gzip decompress failed: {e}")
             return ""
     return raw.decode("utf-8", errors="replace")
 
@@ -231,27 +230,26 @@ def _fetch_all_urls(
     return entries
 
 
-@tool
-def fetch_sitemap(domain_or_url: str, filter_keyword: str = "") -> str:
-    """Fetch the URL list from a website's sitemap.xml — use when you need the COMPLETE list
+def read_sitemap(url: str, filter_keyword: str = "") -> str:
+    """Return a bounded URL list from a website sitemap for browse_url's sitemap mode.
     of URLs from a single domain (e.g. all funds on finnomena, every product, every article).
 
     !! Use INSTEAD of web_search when the data lives on one known website:
        sitemap.xml gives the full URL list ready to parse — web_search returns generic articles, not a list.
 
-    domain_or_url: domain or sitemap URL, e.g. "finnomena.com" or "https://example.com/sitemap.xml"
+    url: domain or sitemap URL, e.g. "finnomena.com" or "https://example.com/sitemap.xml"
     filter_keyword: (optional) one or more keywords separated by space/comma/+, e.g. "RMF fund".
         Matches ALL keywords first (AND); if that finds nothing and ≥2 keywords were given,
         falls back to ANY keyword (OR).
 
     Returns: URLs sorted newest→oldest by <lastmod> (up to FETCH_SITEMAP_MAX_URLS kept,
         FETCH_SITEMAP_SHOWN shown per call) — pick ≤8 of the most relevant and call
-        batch_browse ONCE with all of them. Or "[error] reason" if no sitemap was found.
+        browse_url(urls=[...], user_query=...) with the selected URLs. Or "[error] reason" if no sitemap was found.
     """
     try:
-        s = (domain_or_url or "").strip()
+        s = (url or "").strip()
         if not s:
-            return "[error] domain_or_url is required"
+            return "[error] url is required"
         if not s.startswith("http"):
             s = "https://" + s.lstrip("/")
         # ตัด path ที่ไม่ใช่ sitemap ออกเพื่อหา base
@@ -314,7 +312,7 @@ def fetch_sitemap(domain_or_url: str, filter_keyword: str = "") -> str:
             if not matched:
                 sample = [u for u, _ in all_urls[:10]]
                 return (
-                    f"[fetch_sitemap] sitemap มี {total_before_filter} URLs แต่ไม่มีที่ match '{filter_keyword}'\n"
+                    f"[browse_url sitemap] sitemap มี {total_before_filter} URLs แต่ไม่มีที่ match '{filter_keyword}'\n"
                     f"ตัวอย่าง 10 URL แรก:\n" + "\n".join(sample)
                 )
             all_urls = matched
@@ -328,7 +326,7 @@ def fetch_sitemap(domain_or_url: str, filter_keyword: str = "") -> str:
         has_lastmod = any(lm for _, lm in sorted_urls)
 
         suffix = filter_note if filter_note else (f" (filter: '{filter_keyword}')" if keywords else "")
-        header = f"[fetch_sitemap] พบ {total} URLs{suffix}"
+        header = f"[browse_url sitemap] พบ {total} URLs{suffix}"
         if total > shown:
             header += f" — แสดง {shown} รายการแรก"
         if has_lastmod:
@@ -339,9 +337,9 @@ def fetch_sitemap(domain_or_url: str, filter_keyword: str = "") -> str:
             date = lastmod[:10] if lastmod else ""
             lines.append(f"{date}  {url}" if date else url)
 
-        footer = "→ เลือก URL ที่เกี่ยวข้องที่สุด ≤8 รายการ แล้วเรียก batch_browse ในครั้งเดียว"
+        footer = "→ เลือก URL ที่เกี่ยวข้องที่สุดตามขอบเขต แล้วเรียก browse_url(urls=[...], user_query=...)"
 
         return header + "\n" + "\n".join(lines) + "\n" + footer
     except Exception as e:
-        log.error(f"[fetch_sitemap] unexpected error: {e}")
-        return f"[error] fetch_sitemap failed: {e}"
+        log.error(f"[browse_url sitemap] unexpected error: {e}")
+        return f"[error] browse_url sitemap failed: {e}"

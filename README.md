@@ -38,7 +38,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 - [หลักการทำงานของ Agent](#หลักการทำงานของ-agent)
 - [เทคโนโลยีที่ใช้](#เทคโนโลยีที่ใช้)
 - [Security](#security)
-- [Tools ที่มีให้ (28 tools)](#tools-ที่มีให้-28-tools)
+- [Tools ที่มีให้ (20 tools)](#tools-ที่มีให้-20-tools)
 - [Skill Modes](#skill-modes)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -163,7 +163,7 @@ user input
 │                                               │
 │   1. วิเคราะห์ query + ประวัติการสนทนา        │
 │   2. งานซับซ้อน? → เรียก create_plan ก่อน     │
-│   3. เลือก tool ที่เหมาะสมจาก 28 tools         │
+│   3. เลือก tool ที่เหมาะสมจาก 20 tools         │
 │   4. รัน tool → ได้ผลลัพธ์ (Observation)       │
 │   5. คิดต่อ: ทำต่อ tool ถัดไป หรือ ตอบเลย      │
 │      ↑_____________________________│         │
@@ -263,10 +263,10 @@ Agent ตัวนี้ออกแบบมาให้ "เขียนได
 
 ### หลักการ
 
-- **สิทธิ์เขียนใช้ร่วมกัน** — `edit`, `write_file` และ guarded `bash` เขียนได้ใน internal `workspace/`, Active Workspace ชั่วคราว หรือ Approved Edit Folders ที่ผู้ใช้อนุมัติไว้เท่านั้น. Bash จำกัดสิทธิ์ของแต่ละ call ให้แคบลงตามไฟล์หรือ tree ที่ร้องขอ. `bash_bg` และ `python_exec` คง sandbox ปกติและไม่ได้รับสิทธิ์แก้ artifact ที่ผู้ใช้ร้องขอ
+- **สิทธิ์เขียนใช้ร่วมกัน** — `edit` และ guarded `bash` เขียนได้ใน internal `workspace/`, Active Workspace ชั่วคราว หรือ Approved Edit Folders ที่ผู้ใช้อนุมัติไว้เท่านั้น. Bash จำกัดสิทธิ์ของแต่ละ call ให้แคบลงตามไฟล์หรือ tree ที่ร้องขอ. `bash_bg` และ `python_exec` คง sandbox ปกติและไม่ได้รับสิทธิ์แก้ artifact ที่ผู้ใช้ร้องขอ
 - **อ่านก่อนแก้ไฟล์เดิม** — การแก้ไฟล์เดิมผ่านเครื่องมือ agent ต้องมี `read_file` ที่สำเร็จใน turn ปัจจุบันก่อน. `edit` รองรับ atomic `create`, `replace`, `line`, `batch`; create จะไม่เขียนทับไฟล์เดิม
 - **Bash mutation ต้องมีหลักฐานจาก disk** — exit code หรือ stdout ไม่ถือว่าเขียนไฟล์สำเร็จ. Host ตรวจ delta แบบจำกัดขนาดและแนบ path/type/SHA-256 เฉพาะเมื่อพบการเปลี่ยนแปลงจริง
-- **อ่านไฟล์ได้กว้างกว่า แต่ไม่ใช่ทุกที่** — `read_file`/`read_image`/`grep` อ่านไฟล์นอก `workspace/` ได้ (เช่นให้ agent ช่วยอ่านโค้ดในโปรเจคอื่น หรือเอกสารบนเครื่อง) แต่ path ที่เข้าข่าย "ระบบ/credentials" จะถูก block เสมอ ไม่ว่าจะตั้ง flag ใดก็ตาม
+- **อ่านไฟล์ได้กว้างกว่า แต่ไม่ใช่ทุกที่** — `read_file`/`read_image` อ่านไฟล์นอก `workspace/` ได้ (เช่นให้ agent ช่วยอ่านโค้ดในโปรเจคอื่น หรือเอกสารบนเครื่อง); ค้นหาหลายไฟล์ใช้ guarded `bash` กับ `rg`. Path ที่เข้าข่าย "ระบบ/credentials" จะถูก block เสมอ ไม่ว่าจะตั้ง flag ใดก็ตาม
 - **Path ที่ block ทั้งอ่านและเขียนเสมอ** — `/etc`, `/usr`, `/bin`, `/sbin`, `/lib`, `/System`, `/Library`, `/Applications`, `~/.ssh`, `~/.aws`, `~/.gnupg`
 - **กัน symlink/`../` traversal** — ทุก path ผ่าน `os.path.realpath()` ก่อนเช็ค ป้องกัน trick เช่น สร้าง symlink ใน workspace ชี้ออกไป `~/.ssh` หรือใช้ `../../etc/passwd`
 
@@ -291,100 +291,69 @@ Tool ที่ spawn process จริง (`bash`, `bash_bg`, `python_exec`) ถ
 
 ---
 
-## Tools ที่มีให้ (28 tools)
+## Tools ที่มีให้ (20 tools)
 
-Agent เลือก tool เองตาม docstring ของแต่ละ tool — ไม่ต้องสั่งตรง ๆ
+Agent เลือก tool เองตาม docstring ของแต่ละ tool — ไม่มี tool alias ที่ซ้ำหน้าที่กัน
 
 ### 🌐 Web & Research
 
 | Tool | คำอธิบาย |
 |---|---|
-| `web_search` | ค้นหาข้อมูล real-time (ราคา, ข่าววันนี้, เหตุการณ์ล่าสุด) ผ่าน DuckDuckGo — auto-fetch เนื้อหาจากผลลัพธ์อันดับต้น ๆ |
-| `browse_url` | อ่าน URL ที่กำหนดผ่าน Jina Reader → คืน summary ภาษาไทย, cache เนื้อหาเต็มไว้เรียกย้อนกลับได้ |
-| `batch_browse` | อ่านหลาย URL พร้อมกัน (parallel fetch) แล้วคืน summary รวมในครั้งเดียว — ลดจำนวน tool call |
-| `browser_use` | ควบคุม browser เหมือนคนจริง — คลิก, scroll, กรอกฟอร์ม, นำทางหลายหน้า (สำหรับเว็บที่ scrape ตรงไม่ได้) |
-| `fetch_sitemap` | ดึงรายการ URL ทั้งหมดจาก `sitemap.xml` ของเว็บไซต์ — ใช้เมื่อต้องสำรวจ domain ทั้งหมด |
-| `scrape_table` | ดึงตารางจากเว็บ JS-rendered (React/Vue/SPA) ด้วย Playwright → คืนเป็น CSV |
-| `recall_web` | ดึงเนื้อหาเต็มของ URL ที่เคย fetch ไปแล้ว (จาก web cache) — ใช้ตอนต้องการรายละเอียดเพิ่มจากที่ summarize ไว้ |
+| `web_search` | ค้นข้อมูลภายนอกและข้อมูลล่าสุดผ่าน DuckDuckGo พร้อม source URLs |
+| `browse_url` | อ่าน URL เดียวหรือ `urls=[...]` แบบจำกัดจำนวน; ใช้ `mode="sitemap"` เพื่อสำรวจ sitemap; normal read แนบ numeric Markdown table evidence ที่พบ และ `table_index=-1` ใช้แสดงตาราง JS-rendered ก่อนเลือกตารางด้วย index |
+| `browser_use` | ควบคุม browser สำหรับ login, forms, clicks, และ navigation ที่ต้องโต้ตอบ; ไม่ใช้แทนการอ่านหน้าปกติ |
+| `recall_web` | ดึงเนื้อหาเต็มจาก web cache หลัง browse โดยไม่ fetch ซ้ำ |
+
+`browse_url(mode="sitemap", url=..., filter_keyword=...)` คืนรายการ URL แบบจำกัด; เลือกหน้าที่เกี่ยวข้องแล้วส่งให้ `browse_url(urls=[...], user_query=...)` อ่านต่อ. `table_index` คืน CSV แบบจำกัดโดยไม่เขียนไฟล์ลง workspace.
 
 ### 📁 File & Code
 
 | Tool | คำอธิบาย |
 |---|---|
-| `read_file` | อ่านไฟล์ text/code รวมถึง PDF, Word, Excel — แปลงเป็น markdown อัตโนมัติ; ส่ง `path` เป็น list 2-4 ไฟล์เพื่ออ่านแบบ parallel หรือใช้ `requests` เมื่อแต่ละไฟล์มี filter/range ต่างกัน |
-| `write_file` | สร้างไฟล์ใหม่หรือแทนที่ทั้งไฟล์ใน workspace ที่อนุญาต; การแทนที่ไฟล์เดิมต้องอ่านก่อน |
-| `edit` | atomic create / full replace / line / batch / find & replace; อ่านไฟล์เดิมก่อนแก้ |
-| `grep` | ค้นหา regex pattern ข้ามไฟล์ในโฟลเดอร์ — คืนผลแบบ `file:line: content` |
-| `workspace_ls` | แสดงรายการไฟล์ทั้งหมดใน workspace แบบ recursive tree |
+| `read_file` | อ่าน text/code, PDF, Word, Excel; รองรับหลายไฟล์แบบ path list หรือ per-file `requests` สูงสุด 4 รายการต่อ call รวมถึง `regex` และ filter อื่น ๆ |
+| `edit` | สร้างไฟล์ใหม่ด้วย `mode="create"` หรือแก้ไฟล์เดิมด้วย `replace` / `line` / `batch`; ต้องอ่าน target เดิมก่อนแก้ และใช้ shared Active Workspace / Approved Edit Folder / protected-path guards |
+| `bash` | คำสั่ง shell, tests และ builds; file discovery/search ใช้ `rg`, `rg --files` หรือ `find`; requested file mutations ยังคงผ่าน guarded Bash scope และ host-observed delta |
+| `bash_bg` | เริ่มและจัดการ shell job ที่ใช้เวลานาน ภายใต้ sandbox เดียวกับ `bash` |
+| `python_exec` | วิเคราะห์ข้อมูลด้วย Python (`pandas`, `numpy`, `matplotlib`); ไม่ใช้แทน edit access guard สำหรับการแก้ไฟล์ |
+| `plot` | สร้างกราฟด้วย matplotlib จาก Python code |
 
-### 💻 Code Execution
-
-| Tool | คำอธิบาย |
-|---|---|
-| `python_exec` | รัน Python code ใน interpreter เดียวกับ agent — `pandas`, `numpy`, `matplotlib` พร้อมใช้ทันที |
-| `bash` | รันคำสั่งและ test/build; สำหรับ transform ที่ผู้ใช้ขอ ใช้ guarded mutation ใน workspace ที่อนุญาต พร้อม delta จาก disk; timeout 30s |
-| `bash_bg` | รันคำสั่งที่ใช้เวลานานกว่า `bash`'s timeout แบบ background — start แล้ว poll/list/kill ทีหลังได้ ไม่บล็อก agent ระหว่างรอ (เหมาะกับ dev server, งาน build ยาว ๆ) |
-| `plot` | สร้างกราฟด้วย matplotlib จาก Python code — รองรับฟอนต์ไทยเต็มรูปแบบ, บันทึกและเปิดไฟล์ให้อัตโนมัติ |
-
-### 🖼️ Vision
+### 🗺️ Planning
 
 | Tool | คำอธิบาย |
 |---|---|
-| `read_image` | progressive direct vision สำหรับไฟล์ local, URL และ `screen`; ส่ง `source` เป็น list ได้สูงสุด 10 ภาพเพื่อ resolve/encode แบบ parallel และเลือก OCR ด้วย `ocr=true` หรือ `ocr=[1,3]`; ภาพใหม่จะถูกส่งเป็น original ก่อน แล้วค่อย OCR หลัง model เห็นภาพ; text-only backend จะคืน full OCR fallback ต่อภาพ |
+| `create_plan` | วางแผนงานหลายขั้นตอนสำหรับ query ที่ซับซ้อน |
 
-### 🖱️ Computer Use
-
-| Tool | คำอธิบาย |
-|---|---|
-| `computer` | direct vision + guarded action บนหน้าจอจริงของเครื่อง ทีละ action — ต้องใช้ vision-capable model; จะตรวจ capability แบบไม่แตะ desktop ก่อนเริ่ม และถ้าเป็น text-only จะคืน `[unsupported]` โดยไม่ถ่าย screenshot/กด/พิมพ์/เปิด/เลื่อน และไม่ใช้ OCR แทน; ส่ง screenshot ล่าสุดให้ main VLM พร้อม `[OBS]` Accessibility/OCR ช่วยอ้างอิง; เป็น tool/state owner แยกจาก `read_image` และยังจำกัด action ต่อ turn |
-
-### 🧠 Memory
+### 🖼️ Vision & Computer Use
 
 | Tool | คำอธิบาย |
 |---|---|
-| `remember` | บันทึกข้อมูลสำคัญเกี่ยวกับผู้ใช้ลง `memory.md` แบบถาวร — จำได้ข้าม session |
+| `read_image` | อ่านภาพ local, URL หรือ `screen`; คงพฤติกรรม direct vision / OCR fallback ให้ตรง capability ของ local model |
+| `computer` | guarded screen action ทีละขั้น; ตรวจ vision capability ก่อนเริ่ม และ text-only model จะ fail closed โดยไม่แตะ desktop |
 
-### 📚 Knowledge Base (ต้องตั้งค่าเอง)
+### 🧠 Memory, Audio & Automation
 
 | Tool | คำอธิบาย |
 |---|---|
-| `rag_search` | ค้นหาความรู้ในฐานข้อมูลส่วนตัวของคุณเอง (BM25 + vector search) — **ไม่ได้ bundle engine หรือฐานข้อมูลมาให้** ต้อง clone [`ENDEAVOR_RAG_LITE`](https://github.com/halochamp/ENDEAVOR_RAG_LITE) (MiniLM + ChromaDB + BM25 + RRF) เป็นโฟลเดอร์พี่น้องชื่อ `ENDEAVOR_RAG_LITE` (อยู่นอกรีโปนี้ ระดับเดียวกัน — `git clone` ตรงๆ ได้ชื่อโฟลเดอร์ถูกอยู่แล้ว) — ถ้าไม่พบ engine จะตอบ `[error]` บอกวิธีตั้งค่าแทนที่จะ crash หรือเงียบ |
+| `remember` | บันทึกข้อมูลผู้ใช้ลง local `memory.md` เมื่อเหมาะสม |
+| `speak` | อ่านข้อความออกเสียงผ่าน macOS `say` ตามคำขอ |
+| `awake` | ตั้ง standing trigger ที่ทำงานใน future turn ขณะ agent process ยังรัน |
 
 ### 🔌 MCP (Model Context Protocol)
 
 | Tool | คำอธิบาย |
 |---|---|
-| `mcp_list_tools` | ดู catalog ของ MCP server ที่ตั้งค่าไว้ หรือระบุ `tool_name` เพื่อดู description + input schema ของ tool เดียวก่อนเรียก |
-| `mcp_call_tool` | เรียก tool ของ MCP server ด้วย `arguments_json` — รองรับทั้ง Streamable HTTP และ local stdio |
-| `mcp_add_server` | ลงทะเบียน MCP server ระหว่างใช้งาน: HTTP ใช้ URL/headers; stdio ใช้ absolute executable + args และ `cwd` ที่อยู่ใน workspace |
-| `mcp_remove_server` | ถอดเฉพาะ server ที่ลงทะเบียนผ่าน `mcp_add_server`; server ที่ developer กำหนดใน `config.MCP_SERVERS` จะไม่ถูกลบ |
+| `mcp_list_tools` | ดู catalog หรือ schema ของ tools จาก MCP server ที่ตั้งค่าไว้ |
+| `mcp_call_tool` | เรียก tool ที่เลือกจาก MCP server ผ่าน Streamable HTTP หรือ local stdio |
+| `mcp_add_server` | ลงทะเบียน MCP server ที่ผู้ใช้ระบุ: HTTP ใช้ URL/headers; stdio ใช้ executable/args และ `cwd` ใน workspace |
+| `mcp_remove_server` | ถอดเฉพาะ server ที่เพิ่มผ่าน `mcp_add_server`; server ที่กำหนดโดย developer ลบผ่าน tool นี้ไม่ได้ |
 
-MCP stdio ถูก spawn โดยไม่ผ่าน shell และอยู่ใต้ macOS sandbox เดียวกับ `bash`: เขียนได้เฉพาะ `workspace/` และ `/tmp` และยังติด sensitive-path read guards เดิม ส่วน registry อยู่ที่ `workspace/tool_mcp/servers.json` แบบ atomic และ permission `0600` เพื่อเก็บค่า config/HTTP headers ในเครื่อง โดย public repo **ไม่ bundle default MCP server ใด ๆ** มาให้
+RAG และ knowledge-base retrieval ใช้ generic MCP เท่านั้น: ลงทะเบียนหรือกำหนด server อย่างชัดเจน, ตรวจรายการด้วย `mcp_list_tools`, แล้วเรียก retrieval tool ที่เลือกด้วย `mcp_call_tool`. `MCP_SERVERS` ใน public config ว่าง และ repo นี้ไม่ bundle หรือกำหนด RAG server เริ่มต้นให้ จึงไม่ต้องมี sibling RAG repository.
 
-### 🔊 Audio
+MCP stdio ถูก spawn โดยไม่ผ่าน shell และอยู่ใต้ macOS sandbox เดียวกับ `bash`: เขียนได้เฉพาะ `workspace/` และ `/tmp` และยังติด sensitive-path read guards เดิม ส่วน registry อยู่ที่ `workspace/tool_mcp/servers.json` แบบ atomic และ permission `0600` เพื่อเก็บค่า config/HTTP headers ในเครื่อง
 
-| Tool | คำอธิบาย |
-|---|---|
-| `speak` | อ่านข้อความออกเสียงผ่านลำโพงเครื่องนี้ด้วย macOS `say` — เสียงจะเล่นที่เครื่องที่รัน agent process เสมอ แม้เรียกผ่าน Telegram/remote host ก็ตาม |
+`research_orchestrator` เป็น skill-only tool ที่เปิดใช้เฉพาะ `/research` และไม่นับรวมใน normal `ALL_TOOLS` จำนวน 20 tools.
 
-### ⏰ Automation (standing triggers)
-
-| Tool | คำอธิบาย |
-|---|---|
-| `awake` | ตั้ง trigger ให้ agent ทำงานเองโดยไม่ต้องมีคนพิมพ์ถาม — `file` (ไฟล์เปลี่ยน), `every` (ทุก N นาที), `times`/`run_at` (เวลาที่กำหนด), `once` (ครั้งเดียวหลัง delay), `screen` (เฝ้าจอด้วย OCR/visual signals — เห็นการเปลี่ยนแปลงและแจ้งได้ พร้อมใช้ screenshot direct vision และกดปุ่ม/action ง่ายๆ ต่อเองผ่าน `computer` ภายใต้ limit ที่เข้มกว่า) — ทำงานอยู่เบื้องหลังตราบใดที่ agent process ยังรันอยู่ |
-
-### 🗺️ Planning & Loops
-
-| Tool | คำอธิบาย |
-|---|---|
-| `create_plan` | วางแผนงานหลายขั้นตอนสำหรับ query ที่ซับซ้อน — เรียกก่อนเริ่มทำงานจริงเมื่อ query ต้องใช้หลาย step |
-| `tool_loop` | วน loop ประมวลผล items จำนวนมากด้วย Python โดยตรง — ไม่หลุด loop ไม่ว่า items จะมากแค่ไหน (เหมาะกับงาน batch) |
-
-### 🔬 Research Skill (เปิดด้วย `/research`)
-
-| Tool | คำอธิบาย |
-|---|---|
-| `research_orchestrator` | ค้นหาข่าว/ข้อมูลจาก N แหล่ง แล้วเขียนรายงานสรุป — วน batch โดย Python loop อัตโนมัติ พร้อม checkpoint สำหรับ resume งานที่ทำค้างไว้ |
+PDF to Text ยังคงเป็น UI/runtime capability แยกจาก agent tools ปกติ. การยุบ tools นี้ไม่ได้เพิ่ม `send_file`, `computer_sequence`, `extract_pdf_text`, `translate_pdf` หรือ Goal tools.
 
 ---
 

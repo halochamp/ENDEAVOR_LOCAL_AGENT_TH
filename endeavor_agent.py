@@ -78,7 +78,6 @@ from ui_cli import (
 
 
 _WEB_TOOLS = {"web_search", "browse_url", "browser_use", "recall_web",
-              "fetch_sitemap", "batch_browse", "scrape_table",
               "research_orchestrator"}
 
 
@@ -119,29 +118,33 @@ def _get_tool_detail(name: str, args: dict) -> str:
     if name == "create_plan":
         q = args.get("query", "")
         return q[:55] if q else ""
-    if name in ("read_file", "write_file"):
-        path = args.get("file_path", "")
+    if name in ("read_file", "edit"):
+        path = args.get("path", "")
         return path.split("/")[-1] if "/" in path else path
     if name == "bash":
         return args.get("command", "")[:55]
-    if name == "grep":
-        return f'"{args.get("pattern", "")[:40]}"'
     if name == "python_exec":
         code = args.get("code", "")
         for line in code.splitlines():
             if line.strip():
                 return line.strip()[:55]
-    if name in ("browse_url", "recall_web"):
+    if name == "browse_url":
+        if args.get("mode") == "sitemap":
+            url = args.get("url", "")
+            return f"sitemap {url.replace('https://', '').replace('http://', '')[:45]}"
+        urls = args.get("urls")
+        if isinstance(urls, list):
+            return f"{len(urls)} URLs"
         url = args.get("url", "")
-        # แสดง domain + path สั้นๆ
+        detail = url.replace("https://", "").replace("http://", "")[:45] if url else ""
+        if args.get("table_index") is not None:
+            detail += f" table {args['table_index']}"
+        return detail
+    if name == "recall_web":
+        url = args.get("url", "")
         return url.replace("https://", "").replace("http://", "")[:55] if url else ""
     if name == "remember":
         return str(args.get("fact", ""))[:55]
-    if name == "tool_loop":
-        action = args.get("action", "")
-        n = len(args.get("items", []))
-        ctx = args.get("context", "")
-        return f"{action}  {n} items" + (f"  [{ctx[:40]}]" if ctx else "")
     return ""
 
 
@@ -150,7 +153,7 @@ def _make_label(name: str, args: dict) -> str:
     base = _SPINNER_LABELS.get(name, f"⚙ {name}")
     detail = _get_tool_detail(name, args)
     if detail:
-        # ตัด quotes ของ web_search/grep ที่ใส่มา
+        # ตัด quotes ของ web_search query ที่ใส่มา
         clean = detail.strip('"').strip("'")
         return f"{base}: {clean[:50]}"
     return base
@@ -296,60 +299,6 @@ def _activate_skill(sname: str) -> tuple[str, str]:
     print(f" เปิด {sname} mode — {role_hint}" if role_hint else f" เปิด {sname} mode")
     print(f" พิมพ์ /{sname} อีกครั้งหรือ /exit เพื่อออก\n")
     return sname, content
-
-
-def _run_build_kb() -> None:
-    """/build_kb — real chunk+embed+BM25 ingestion of the sibling ENDEAVOR_RAG_LITE
-    engine's knowledge base, driven straight from this CLI (no need to open
-    ENDEAVOR_RAG_LITE's own main.py separately). Reuses ingestor.sync_knowledge_base()
-    — the same pipeline ENDEAVOR_RAG_LITE's own main.py runs.
-
-    Unlike agent_max_vlm's /build_kb, there is no topics/tags rebuild step
-    here — this fork has no rag_index_builder.py / rag_rebuild_index tool, so
-    /build_kb only ingests and reports a health check."""
-    from tools.rag_tool import _RAG_DIR, _ensure_rag_path, _rag_engine_available, _missing_engine_message
-    if not _rag_engine_available():
-        print(f"\n   {C_WARN}{_missing_engine_message()}{R}\n")
-        return
-    _ensure_rag_path()
-    import ingestor
-    import llm_client
-
-    total_preview = sum(1 for f in ingestor.DATA_DIR.rglob("*") if ingestor._is_indexable_file(f))
-    print()
-    print(f"   {C_META}folder: {C_ARROW}{ingestor.DATA_DIR}{R}")
-    print(f"   {C_META}found:  {total_preview} file(s){R}")
-    print()
-
-    if total_preview == 0:
-        print(f"   {C_WARN}No supported files found in knowledge/{R}\n")
-        return
-
-    with Spinner("⚙️  กำลังเปิด RAG's LLM (novelty check)…") as sp:
-        llm_client.ensure_mlx_server(status_cb=sp.update_sub)
-
-    def _on_start(idx, total, name):
-        print(f"   {C_META}[{idx}/{total}]{R} {name}…")
-
-    def _on_file(idx, total, name, status, n_chunks, err):
-        if err:
-            print(f"   {C_ARROW}{name.ljust(32)}{R}  {C_WARN}✗ error{R}  {C_META}{err[:60]}{R}")
-        else:
-            tag = f"{C_GREEN}✓ {status}{R}"
-            print(f"   {C_ARROW}{name.ljust(32)}{R}  {tag}  {C_META}{n_chunks} chunks{R}")
-
-    result = ingestor.sync_knowledge_base(on_file=_on_file, on_file_start=_on_start)
-    print()
-    issues, ghost_count = result["health_issues"], result["ghost_count"]
-    if not issues and not ghost_count:
-        print(f"   {C_GREEN}✓ self-check: no anomalies{R}\n")
-    else:
-        print(f"   {C_WARN}⚠ self-check found anomalies:{R}")
-        for issue in issues:
-            print(f"     {C_WARN}- {issue}{R}")
-        if ghost_count:
-            print(f"     {C_META}- {ghost_count} registered file(s) have zero chunks (dedup ghosts, informational){R}")
-        print()
 
 
 def _run_turn(app, q: str, cfg: dict, *, thread_id: str, saver, db_conn,
@@ -745,8 +694,6 @@ def main() -> None:
             print_mode_menu()
             choice = prompt_user() or ""
             if choice == "1":
-                print("\n   ฟีเจอร์นี้ไม่รองรับในรุ่นนี้\n")
-            elif choice == "2":
                 _reg = _load_skill_registry()
                 print_skill_help(_reg)
                 _sc = prompt_user()
@@ -756,9 +703,9 @@ def main() -> None:
                         _active_skill, _active_skill_content = _set_skill(_sn)
                     else:
                         print(f" ไม่พบ skill '{_sn}'\n")
-            elif choice == "3":
+            elif choice == "2":
                 print_special_commands(_reg.get("builtin_cmds", []))
-            elif choice == "4":
+            elif choice == "3":
                 while True:
                     settings = config.get_runtime_settings()
                     print_runtime_settings_menu(settings)
@@ -830,7 +777,7 @@ def main() -> None:
                     if thread_id != _MEMORY_THREAD:
                         _purge_thread(_db_conn, thread_id)
                     break
-            elif choice == "5":
+            elif choice == "4":
                 while True:
                     edit_state = _load_edit_access_state()
                     print_edit_access_menu(edit_state)
@@ -869,10 +816,6 @@ def main() -> None:
                 if thread_id != _MEMORY_THREAD:
                     _purge_thread(_db_conn, thread_id)
                 break
-            continue
-
-        if q.strip().lower() == "/build_kb":
-            _run_build_kb()
             continue
 
         if q.strip().lower() == "/compact":

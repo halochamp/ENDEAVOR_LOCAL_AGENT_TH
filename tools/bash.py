@@ -466,9 +466,8 @@ def _bash_execute(command: str, timeout: int = 30) -> tuple[str, dict | None]:
         hint = _classify_bash_error(result.returncode, result.stderr or "", command, WORKSPACE)
         if hint:
             output += f"\n[hint] {hint}"
-        # marker_first: tool_loop._bash_each applies its own secondary 2,000-char cut on top
-        # of this result — a trailing marker could get sliced off, silently dropping the
-        # recovery-file path. A leading marker survives that secondary cut.
+        # marker_first: a trailing marker could get sliced off by an outer runtime cap,
+        # silently dropping the recovery-file path. A leading marker survives truncation.
         # keep_tail: build/test errors sit at the end of the output — a head-only cut hides
         # exactly the part that matters most.
         if scope:

@@ -85,10 +85,7 @@ _TOOL_LABELS: dict[str, str] = {
     "python_exec":       "Python",
     "plot":              "Plot",
     "read_file":         "Read",
-    "write_file":        "Write",
     "edit":              "Edit",
-    "grep":              "Grep",
-    "workspace_ls":      "Workspace",
     "create_plan":       "Planning",
     "remember":          "Remember",
 }
@@ -102,13 +99,9 @@ _SPINNER_LABELS: dict[str, str] = {
     "python_exec":       "python_exec",
     "plot":              "plot",
     "read_file":         "read_file",
-    "write_file":        "write_file",
     "edit":              "edit",
-    "grep":              "grep",
     "create_plan":       "create_plan",
-    "workspace_ls":      "workspace_ls",
     "remember":          "remember",
-    "tool_loop":         "tool_loop",
 }
 
 # Default phase labels
@@ -380,11 +373,10 @@ def print_compact_notice(n_msgs: int) -> None:
 def print_mode_menu() -> None:
     print()
     print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
-    print(f"   {C_ORANGE}[1]{R} Build RAG Index")
-    print(f"   {C_ORANGE}[2]{R} Skills")
-    print(f"   {C_ORANGE}[3]{R} Special Commands")
-    print(f"   {C_ORANGE}[4]{R} Model / Think Budget / Port")
-    print(f"   {C_ORANGE}[5]{R} Approved Edit Folders / Active Workspace")
+    print(f"   {C_ORANGE}[1]{R} Skills")
+    print(f"   {C_ORANGE}[2]{R} Special Commands")
+    print(f"   {C_ORANGE}[3]{R} Model / Think Budget / Port")
+    print(f"   {C_ORANGE}[4]{R} Approved Edit Folders / Active Workspace")
     print(f"   {C_ORANGE}[q]{R} Quit")
     print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
     print()

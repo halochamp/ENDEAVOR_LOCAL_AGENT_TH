@@ -2,7 +2,7 @@
 # License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-"""scrape_table.py — ดึงตารางจากเว็บ JS-rendered ด้วย Playwright + pandas.read_html
+"""Internal rendered-page table extractor used by browse_url.
    พร้อม fallback สำหรับ div-based table (เว็บที่ไม่ใช้ <table> tag จริง)
 
 ต่างจาก browser_use: code-controlled ไม่ใช่ AI agent — output deterministic
@@ -13,18 +13,15 @@ heuristic. ใช้ method แรกที่เจอ ≥1 ตาราง เ
 """
 from __future__ import annotations
 import sys
-import os
 import io
 import re
 from collections import Counter
-from pathlib import Path
-from urllib.parse import urlparse
+import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from langchain_core.tools import tool
 from tools._progress import phase as _phase, progress as _progress
-from config import SCRAPE_TABLE_MAX_CHARS, WORKSPACE
+from config import SCRAPE_TABLE_MAX_CHARS
 
 # หา [role=table]/[role=grid] แล้วไล่ลูก [role=row] → [role=cell|gridcell|columnheader|rowheader]
 _ARIA_JS = """
@@ -94,14 +91,6 @@ def _rows_to_df(rows: list):
         return None
 
 
-def _csv_filename(url: str, table_index: int) -> str:
-    """Auto-generate a workspace-safe filename from the URL's host (no traversal risk —
-    not user-supplied, only built from a regex-stripped netloc)."""
-    host = urlparse(url).netloc or "table"
-    host = re.sub(r"[^a-zA-Z0-9_.-]", "_", host)
-    return f"scrape_table_{host}_{table_index}.csv"
-
-
 def _numeric_summary(df) -> str:
     """Best-effort sum/mean/min/max per column, after stripping common formatting
     (%, comma, currency symbols). Only reports a column if at least half its rows
@@ -140,14 +129,13 @@ def _extract_via_js(page, js: str, source_tag: str) -> list:
     return out
 
 
-@tool
-def scrape_table(url: str, table_index: int = 0) -> str:
+def extract_table(url: str, table_index: int = 0) -> str:
     """Extract a table from a JS-rendered site (React, Vue, SPA) via Playwright and return CSV.
     Use when the user pastes a URL and asks to analyze/compare numeric table data from that site.
     Falls back to ARIA role=table/row/cell, then a div class="...row..." heuristic, when the
     page has no real <table> tag (common on sites that build grids with div+CSS instead).
-    Always saves the full CSV to a file in workspace; the returned string is capped at
-    SCRAPE_TABLE_MAX_CHARS (10,000 chars) — read the saved file for the complete data.
+    Returns bounded CSV directly and does not write to the workspace; the returned
+    string is capped at SCRAPE_TABLE_MAX_CHARS (10,000 chars).
 
     url: URL containing the table
     table_index: which table (0=first; pass -1 to list all tables found)
@@ -169,7 +157,7 @@ def scrape_table(url: str, table_index: int = 0) -> str:
     if not url.startswith("http"):
         url = "https://" + url
 
-    _phase(f"🌐 scrape_table: {url[:50]}")
+    _phase(f"🌐 browse_url table: {url[:50]}")
 
     tables: list = []  # list[(DataFrame, source_tag)]
 
@@ -212,11 +200,11 @@ def scrape_table(url: str, table_index: int = 0) -> str:
         return f"[error] Playwright failed: {e}"
 
     if not tables:
-        return f"[scrape_table] ไม่พบตารางใน {url} (ลองแล้ว: html-table, aria-role, div-grid)"
+        return f"[browse_url table] ไม่พบตารางใน {url} (ลองแล้ว: html-table, aria-role, div-grid)"
 
     # แสดงรายชื่อถ้า table_index = -1
     if table_index == -1:
-        summary = [f"[scrape_table] พบ {len(tables)} ตารางใน {url}"]
+        summary = [f"[browse_url table] พบ {len(tables)} ตารางใน {url}"]
         for i, (df, src) in enumerate(tables):
             summary.append(
                 f"  ตาราง {i} ({src}): {df.shape[0]} แถว × {df.shape[1]} คอลัมน์ | columns: {list(df.columns[:5])}"
@@ -226,7 +214,7 @@ def scrape_table(url: str, table_index: int = 0) -> str:
     if table_index >= len(tables) or table_index < -1:
         return (
             f"[error] table_index={table_index} เกินจำนวนตาราง ({len(tables)} ตาราง)\n"
-            f"เรียก scrape_table(url, table_index=-1) เพื่อดูรายชื่อตารางทั้งหมด"
+            f"เรียก browse_url(url=..., table_index=-1) เพื่อดูรายชื่อตารางทั้งหมด"
         )
 
     df, src = tables[table_index]
@@ -234,16 +222,6 @@ def scrape_table(url: str, table_index: int = 0) -> str:
 
     full_csv = df.to_csv(index=False)
     n_rows, n_cols = df.shape
-
-    # เขียนไฟล์ CSV เต็มลง workspace เสมอ — ข้อมูลที่ถูก truncate ใน state ยังหาได้จากไฟล์
-    filename = _csv_filename(url, table_index)
-    saved_path = ""
-    try:
-        out_path = Path(WORKSPACE) / filename
-        out_path.write_text(full_csv, encoding="utf-8")
-        saved_path = str(out_path)
-    except Exception as e:
-        _progress(f"[warn] write CSV to workspace failed: {e}")
 
     try:
         stats_block = _numeric_summary(df)
@@ -260,13 +238,12 @@ def scrape_table(url: str, table_index: int = 0) -> str:
         csv = csv[:budget]
         # cut to last complete line
         csv = csv[:csv.rfind("\n") + 1] if "\n" in csv else csv
-        truncated = f"\n...[truncated: ตารางใหญ่ {n_rows} แถว — ข้อมูลครบอยู่ที่ {saved_path or filename}]"
+        truncated = f"\n...[truncated: ตารางใหญ่ {n_rows} แถว — ลองเลือกตารางที่เล็กกว่าหรือเจาะจงช่วงข้อมูล]"
 
-    saved_line = f"\nบันทึกไฟล์ครบที่: {saved_path}" if saved_path else ""
     stats_line = f"\n\n{stats_block}" if stats_block else ""
 
     return (
-        f"[scrape_table] ตารางที่ {table_index} จาก {url} (source: {src}){saved_line}\n"
+        f"[browse_url table] ตารางที่ {table_index} จาก {url} (source: {src})\n"
         f"{n_rows} แถว × {n_cols} คอลัมน์{stats_line}\n\n"
         f"{csv}{truncated}\n\n"
         f"# วิเคราะห์ต่อด้วย python_exec:\n"

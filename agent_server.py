@@ -149,7 +149,6 @@ _generation_token_lock = threading.Lock()
 
 _WEB_TOOLS = {
     "web_search", "browse_url", "browser_use", "recall_web",
-    "fetch_sitemap", "batch_browse", "scrape_table",
     "research_orchestrator",
 }
 
@@ -1200,23 +1199,28 @@ def _tool_detail(name: str, args: dict) -> str:
     if name == "web_search":
         q = args.get("query", "")
         return f'"{q}"' if q else ""
-    if name in ("browse_url", "recall_web", "browser_use"):
+    if name == "browse_url":
+        mode = str(args.get("mode", "read") or "read")
+        if mode == "sitemap":
+            return f"sitemap: {_strip(args.get('url', ''), 100)}"
+        urls = args.get("urls")
+        if isinstance(urls, list):
+            preview = " | ".join(_strip(u, 45) for u in urls[:3])
+            suffix = f" +{len(urls)-3}" if len(urls) > 3 else ""
+            return f"{len(urls)} URLs — {preview}{suffix}" if preview else f"{len(urls)} URLs"
+        url = args.get("url", "")
+        uq = args.get("user_query", "") or args.get("task", "")
+        base = _strip(url, 120)
+        if args.get("table_index") is not None:
+            base += f"  [table {args.get('table_index')}]"
+        return f"{base}  [{uq[:60]}]" if uq else base
+    if name in ("recall_web", "browser_use"):
         url = args.get("url", "")
         uq = args.get("user_query", "") or args.get("task", "")
         base = _strip(url, 120)
         return f"{base}  [{uq[:60]}]" if uq else base
-    if name == "fetch_sitemap":
-        return _strip(args.get("url", ""), 120)
-    if name == "batch_browse":
-        urls = args.get("urls", [])
-        if not isinstance(urls, list):
-            urls = []
-        n = len(urls)
-        preview = " | ".join(_strip(u, 60) for u in urls[:3])
-        suffix = f" +{n-3}" if n > 3 else ""
-        return f"{n} URLs — {preview}{suffix}" if preview else f"{n} URLs"
-    if name in ("read_file", "write_file", "edit"):
-        p = args.get("file_path", "")
+    if name in ("read_file", "edit"):
+        p = args.get("path", "")
         parts = p.replace("\\", "/").split("/")
         return "/".join(parts[-3:]) if len(parts) >= 3 else p
     if name == "bash":
@@ -1226,11 +1230,6 @@ def _tool_detail(name: str, args: dict) -> str:
         code = args.get("code", "")
         lines = [l.strip() for l in code.splitlines() if l.strip() and not l.strip().startswith("#")]
         return lines[0][:120] if lines else code[:120]
-    if name == "grep":
-        pattern = args.get("pattern", "")
-        path = args.get("path", "")
-        fname = path.split("/")[-1] if path else "."
-        return f'"{pattern}" in {fname}'
     if name == "remember":
         return str(args.get("fact", ""))[:100]
     if name == "research_orchestrator":
@@ -1239,19 +1238,12 @@ def _tool_detail(name: str, args: dict) -> str:
         kw = args.get("keywords", "")
         kw_str = f"  [{kw[:60]}]" if kw else ""
         return f"{topic} ({n} sources){kw_str}" if n else topic
-    if name == "tool_loop":
-        action = args.get("action", "")
-        n = len(args.get("items", []))
-        ctx = args.get("context", "")
-        return f"{action}  {n} items" + (f"  [{ctx[:40]}]" if ctx else "")
+    if name == "mcp_call_tool":
+        return f"{args.get('server', '')}/{args.get('tool_name', '')}".strip("/")
     if name == "create_plan":
         return args.get("query", "")[:100]
     if name == "plot":
         return args.get("description", "")[:100]
-    if name == "workspace_ls":
-        return args.get("path", "") or "."
-    if name == "scrape_table":
-        return _strip(args.get("url", ""), 120)
     return ""
 
 
@@ -2558,39 +2550,6 @@ async def ws_endpoint(websocket: WebSocket):
                     })
                 elif cmd in ("/status", "status"):
                     await websocket.send_json({"type": "status", **get_status()})
-                elif cmd == "/build_kb":
-                    if await _ws_busy_guard(websocket): continue
-                    def _do_build_kb():
-                        from tools.rag_tool import _rag_engine_available, _missing_engine_message, _ensure_rag_path
-                        if not _rag_engine_available():
-                            return None, _missing_engine_message()
-                        _ensure_rag_path()
-                        import ingestor
-                        import llm_client
-                        llm_client.ensure_mlx_server()
-                        result = ingestor.sync_knowledge_base()
-                        return result, None
-                    async with _busy:
-                        try:
-                            result, engine_error = await asyncio.get_running_loop().run_in_executor(None, _do_build_kb)
-                        except Exception as e:
-                            await websocket.send_json({"type": "error", "msg": f"build_kb ล้มเหลว: {e}"})
-                            continue
-                        if engine_error:
-                            await websocket.send_json({"type": "error", "msg": engine_error})
-                            continue
-                        counts: dict[str, int] = {}
-                        for row in result["rows"]:
-                            counts[row["status"]] = counts.get(row["status"], 0) + 1
-                        await websocket.send_json({
-                            "type": "build_kb_ok",
-                            "data_dir": result["data_dir"],
-                            "total": result["total_found"],
-                            "counts": counts,
-                            "elapsed": result["elapsed"],
-                            "health_issues": result["health_issues"],
-                            "ghost_count": result["ghost_count"],
-                        })
                 elif cmd == "cancel":
                     pass  # stale cancel — agent already finished; safe to ignore
                 else:
