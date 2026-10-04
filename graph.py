@@ -34,6 +34,10 @@ from config import RECURSION_LIMIT, CONTEXT_MAX_CHARS
 from planner import plan as _plan
 from tools.create_plan import format_plan as _format_plan
 from tools._progress import phase as _phase, emit_plan as _emit_plan
+from runtime_common import (
+    PINNED_FILE_MAX as _PINNED_FILE_MAX,
+    PINNED_IMAGE_EXTS as _PINNED_IMAGE_EXTS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -429,9 +433,7 @@ def force_compact(app, config: dict) -> dict:
     return {"cut": cut_idx, "before": chars_before, "after": chars_after}
 
 
-_PINNED_FILE_MAX = 10
 _PINNED_DOC_BATCH_MAX = 4
-_PINNED_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.heic', '.heif', '.tiff', '.tif'}
 _PIN_GENERIC_EN = {'the','a','an','this','that','file','files','document','documents','read','show','tell','summarize','summary','please','what','which','how','compare','all','pinned','pin'}
 
 

@@ -483,6 +483,16 @@ python agent_server.py   # เปิด WebSocket + REST บน http://127.0.0.1
 
 ```
 menu          เปิด mode menu
+/help         แสดง direct commands และ skills ที่ใช้ได้
+/runtime      ดู model, Think Budget, server mode/owner/status แบบ read-only
+/attach list  ดูไฟล์ที่รอแนบใน turn ถัดไป
+/attach add "<path>"   แนบไฟล์ 1 ไฟล์ให้ turn ถัดไป
+/attach clear ล้างไฟล์ Attach ที่รออยู่
+/pin list     ดูไฟล์ Pin ของ CLI session
+/pin add "<path>" [...]  Pin ไฟล์ให้อ่านก่อน reasoning (สูงสุด 10 ไฟล์)
+/pin remove <index|path>  เอาไฟล์ออกจาก Pin
+/pin clear    ล้าง Pin ทั้งหมด
+/pdf_text "<path>" [--rewrite-thai]  แปลง PDF ผ่าน pipeline เดียวกับ Electron
 /research      เข้า skill mode research (toggle ปิด/เปิด)
 /pdf_to_text   เข้า skill mode แปลง PDF → text
 /history      โหลด conversation history เดิม
@@ -491,6 +501,8 @@ menu          เปิด mode menu
 /exit         ออกจาก skill mode
 exit / ออก   ปิดโปรแกรม
 ```
+
+`Attach` ใช้กับ turn ถัดไปครั้งเดียว; `Pin` คงอยู่จนกว่าจะสั่ง `/pin clear` และใช้กฎอ่านไฟล์เดียวกับ backend/Electron. ครอบ path ที่มีช่องว่างด้วย quote. `/pdf_text` ใช้ตัวแปลง PDF เดียวกับ Electron; เปิด LLM rewrite เฉพาะเมื่อใส่ `--rewrite-thai`.
 
 ---
 

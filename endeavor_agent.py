@@ -9,7 +9,6 @@ Model + Think Budget + Server Mode + Model Server Port ใช้ config กล�
 """
 from __future__ import annotations
 import sys
-import json as _json
 import os
 import uuid
 
@@ -43,10 +42,17 @@ from runtime_common import (
     parse_tool_args as _parse_tool_args,
     guard_db_schema as _guard_db_schema, open_memory_store as _open_memory_store,
     load_memory_md as _load_memory_md, purge_thread as _purge_thread,
-    scan_skill_roles as _scan_skill_roles, first_role_line as _first_role_line,
+    first_role_line as _first_role_line,
     ThinkingTimer, run_turn_core, vacuum_db,
     _MEMORY_DB, _MEMORY_MD, _MEMORY_THREAD, _DB_SCHEMA_VERSION,
     _MAX_DB_ROWS, load_history_pairs as _load_history_pairs,
+    load_skill_registry as _load_shared_skill_registry,
+    parse_builtin_command as _parse_builtin_command,
+    command_completion_tokens as _command_completion_tokens,
+    canonical_attachment_paths as _canonical_attachment_paths,
+    resolve_canonical_read_path as _resolve_canonical_read_path,
+    prepare_file_context as _prepare_file_context,
+    PINNED_FILE_MAX as _PINNED_FILE_MAX,
 )
 import atexit
 from tools import ALL_TOOLS, SKILL_TOOLS
@@ -68,6 +74,7 @@ from ui_cli import (
     extract_refs_from_search_result, prompt_user,
     print_mode_menu, print_special_commands, print_skill_help,
     print_runtime_settings_menu, print_runtime_choices,
+    print_cli_help, print_runtime_status,
     print_edit_access_menu,
     print_startup_hint,
     setup_skill_completer, update_ctx_info, print_compact_notice,
@@ -272,16 +279,8 @@ class _UICallback(BaseCallbackHandler):
 
 
 def _load_skill_registry() -> dict:
-    """โหลด skills/skill.json (usage + hint) แล้ว auto-detect skills จาก *.md"""
-    skills_dir = os.path.join(os.path.dirname(__file__), "skills")
-    try:
-        with open(os.path.join(skills_dir, "skill.json"), encoding="utf-8") as f:
-            data = _json.load(f)
-    except Exception:
-        data = {}
-
-    data["skills"] = [{"name": n, "description": role or "—"} for n, role in _scan_skill_roles(skills_dir)]
-    return data
+    """Load the same surface-filtered command registry used by the server."""
+    return _load_shared_skill_registry("cli")
 
 
 def _activate_skill(sname: str) -> tuple[str, str]:
@@ -377,11 +376,148 @@ def _run_turn(app, q: str, cfg: dict, *, thread_id: str, saver, db_conn,
         print_web_refs(unique)
 
 
-_LOAD_CMDS = {"โหลดความจำ", "load history", "/history", "จำเก่า", "โหลด history"}
-
-
 def _is_load_cmd(q: str) -> bool:
-    return q.strip().lower() in _LOAD_CMDS
+    command = _parse_builtin_command(q, "cli")
+    return bool(command and command["name"] == "history" and not command["args"] and not command["error"])
+
+
+def _apply_cli_attachment_action(
+    current: list[str], action: str, paths: list[str] | None = None,
+) -> list[str]:
+    action = str(action or "").strip().lower()
+    args = list(paths or [])
+    if action == "list":
+        if args:
+            raise ValueError("usage: /attach list")
+        return list(current)
+    if action == "clear":
+        if args:
+            raise ValueError("usage: /attach clear")
+        return []
+    if action != "add" or not args:
+        raise ValueError("usage: /attach list | add <path> | clear")
+    if len(args) > 1:
+        raise ValueError("แนบไฟล์ได้ครั้งละ 1 ไฟล์; ครอบ path ที่มีช่องว่างด้วย quote")
+    candidate = _canonical_attachment_paths(args)
+    if not candidate:
+        raise ValueError("path ไฟล์แนบไม่ถูกต้อง")
+    if current and current[0] != candidate[0]:
+        raise ValueError("แนบได้ครั้งละ 1 ไฟล์; ใช้ /attach clear ก่อนเพิ่มไฟล์ใหม่")
+    return candidate
+
+
+def _apply_cli_pin_action(
+    current: list[str], action: str, paths: list[str] | None = None,
+) -> list[str]:
+    action = str(action or "").strip().lower()
+    args = list(paths or [])
+    if action == "list":
+        if args:
+            raise ValueError("usage: /pin list")
+        return list(current)
+    if action == "clear":
+        if args:
+            raise ValueError("usage: /pin clear")
+        return []
+    if action == "add" and args:
+        updated = list(current)
+        for supplied in args:
+            candidate = _resolve_canonical_read_path(supplied, require_file=True)
+            if candidate not in updated:
+                if len(updated) >= _PINNED_FILE_MAX:
+                    raise ValueError(f"Pin ได้สูงสุด {_PINNED_FILE_MAX} ไฟล์")
+                updated.append(candidate)
+        return updated
+    if action == "remove" and len(args) == 1:
+        target = args[0]
+        if target.isdecimal():
+            index = int(target) - 1
+            if index < 0 or index >= len(current):
+                raise ValueError("หมายเลข Pin ไม่ถูกต้อง")
+        else:
+            identity = _resolve_canonical_read_path(target)
+            try:
+                index = list(current).index(identity)
+            except ValueError as exc:
+                raise ValueError("ไม่พบ path นี้ในรายการ Pin") from exc
+        return [path for idx, path in enumerate(current) if idx != index]
+    raise ValueError("usage: /pin list | add <path...> | remove <index|path> | clear")
+
+
+def _cli_runtime_snapshot() -> tuple[dict, dict, dict]:
+    """Read the shared runtime config and server owner status without lifecycle actions."""
+    settings = config.get_runtime_settings()
+    if settings.get("server_mode") == "shared_max":
+        status = shared_max_server_status(port=settings.get("server_port"))
+    else:
+        status = model_server_status()
+    control = get_model_server_control_settings()
+    return settings, status, control
+
+
+def _run_cli_turn_with_file_state(
+    run_turn, app, question: str, cfg: dict, *, thread_id: str, saver, db_conn,
+    logger, pins: list[str], attachments: list[str], system_prompt: str,
+) -> None:
+    """Pass CLI Pin/Attach state through the same graph contract as Electron."""
+    prepared = _prepare_file_context(question, pins, attachments)
+    turn_cfg = {
+        **cfg,
+        "configurable": {
+            **dict(cfg.get("configurable") or {}),
+            **prepared["turn_context"],
+        },
+    }
+    try:
+        run_turn(
+            app, prepared["content"], turn_cfg,
+            thread_id=thread_id, saver=saver, db_conn=db_conn,
+            logger=logger, system_prompt=system_prompt,
+        )
+    finally:
+        attachments.clear()
+
+
+def _run_cli_pdf_text(args: list[str]) -> dict[str, object]:
+    rewrite_thai = args.count("--rewrite-thai") == 1
+    path_parts = [item for item in args if item != "--rewrite-thai"]
+    if "--rewrite-thai" in args and args.count("--rewrite-thai") != 1:
+        raise ValueError("ใช้ --rewrite-thai ได้ครั้งเดียว")
+    if not path_parts or any(item.startswith("--") for item in path_parts):
+        raise ValueError("usage: /pdf_text <path> [--rewrite-thai]")
+    supplied = " ".join(path_parts)
+    source = _resolve_canonical_read_path(supplied, require_file=True)
+    if os.path.splitext(source)[1].casefold() != ".pdf":
+        raise ValueError("ต้องเป็นไฟล์ PDF ที่มีอยู่จริง")
+    import pdf_to_text
+
+    return pdf_to_text.convert_pdf(
+        source,
+        source_name=os.path.basename(source),
+        rewrite_thai=rewrite_thai,
+    )
+
+
+def _dispatch_cli_pdf_text(args: list[str]) -> None:
+    """Run the CLI PDF command and turn operational errors into a friendly message."""
+    try:
+        with Spinner("📄  กำลังแปลง PDF → Text…"):
+            result = _run_cli_pdf_text(args)
+        print(" PDF → Text เสร็จแล้ว")
+        print(f"   Pages: {result.get('total_pages', 0)}")
+        print(f"   Output: {result.get('output_path', '')}")
+        stats = result.get("stats") or {}
+        print(
+            "   Native: {native} · OCR: {ocr} · Tables: {tables} · "
+            "Rewritten: {rewritten} · Fallback: {rewrite_fallback}\n".format(**{
+                key: stats.get(key, 0)
+                for key in ("native", "ocr", "tables", "rewritten", "rewrite_fallback")
+            })
+        )
+        for warning in result.get("warnings") or []:
+            print(f"   ⚠ {warning}")
+    except Exception as exc:
+        print(f" {C_WARN}⚠ PDF → Text ไม่สำเร็จ: {exc}{R}\n")
 
 
 def _invalidate_runtime_llms() -> None:
@@ -536,6 +672,8 @@ def main() -> None:
     cfg = {"recursion_limit": RECURSION_LIMIT, "configurable": {"thread_id": thread_id}}
     _active_skill = ""
     _active_skill_content = ""
+    _cli_pinned_files: list[str] = []
+    _cli_attachments: list[str] = []
 
     def _set_skill(sname: str) -> tuple[str, str]:
         """เปิด/ปิด skill mode + rebuild app เมื่อ skill-only tools เปลี่ยนสถานะ
@@ -652,8 +790,10 @@ def main() -> None:
     _print_runtime_header()
     print_startup_hint()
     _reg = _load_skill_registry()
-    _hard_cmds = [c["name"] for c in _reg.get("builtin_cmds", [])]
-    setup_skill_completer([s["name"] for s in _reg.get("skills", [])] + _hard_cmds)
+    setup_skill_completer(
+        [f"/{s['name']}" for s in _reg.get("skills", [])]
+        + _command_completion_tokens("cli")
+    )
     restart_requested = False
 
     while True:
@@ -672,13 +812,96 @@ def main() -> None:
             break
         if not q:
             continue
-        if q.lower() in ("exit", "quit", "ออก", "บาย"):
+        command = _parse_builtin_command(q, "cli")
+        if command and command["error"]:
+            print(f" {C_WARN}⚠ command format ไม่ถูกต้อง: {command['error']}{R}\n")
+            continue
+        if command and command["name"] == "exit":
+            if str(command.get("alias") or "").startswith("/"):
+                if _active_skill:
+                    print(f" ปิด {_active_skill} mode\n")
+                    _active_skill, _active_skill_content = _set_skill("")
+                else:
+                    print(" ยังไม่มี skill mode ที่เปิดอยู่\n")
+                continue
             print("\n Bye.\n")
             if thread_id != _MEMORY_THREAD:
                 _purge_thread(_db_conn, thread_id)
             break
 
-        if _is_load_cmd(q):
+        if command and command["name"] == "help":
+            if command["args"]:
+                print(f" {C_WARN}⚠ usage: /help{R}\n")
+            else:
+                print_cli_help(_reg.get("builtin_cmds", []), _reg.get("skills", []))
+            continue
+
+        if command and command["name"] == "runtime":
+            if command["args"]:
+                print(f" {C_WARN}⚠ usage: /runtime{R}\n")
+            else:
+                settings, server_status, control = _cli_runtime_snapshot()
+                print_runtime_status(settings, server_status, control)
+            continue
+
+        if command and command["name"] == "attach":
+            args = command["args"]
+            action = args[0].lower() if args else ""
+            try:
+                if action == "list":
+                    if len(args) > 1:
+                        raise ValueError("usage: /attach list")
+                    if _cli_attachments:
+                        print(" Attach สำหรับ turn ถัดไป:")
+                        for path in _cli_attachments:
+                            print(f"   - {path}")
+                    else:
+                        print(" ไม่มีไฟล์ Attach ค้างอยู่\n")
+                else:
+                    _cli_attachments = _apply_cli_attachment_action(
+                        _cli_attachments, action, args[1:]
+                    )
+                    print(
+                        " ล้าง Attach แล้ว\n" if action == "clear"
+                        else f" Attach สำหรับ turn ถัดไป: {_cli_attachments[0]}\n"
+                    )
+            except (OSError, TypeError, ValueError) as exc:
+                print(f" {C_WARN}⚠ จัดการ Attach ไม่สำเร็จ: {exc}{R}\n")
+            continue
+
+        if command and command["name"] == "pin":
+            args = command["args"]
+            action = args[0].lower() if args else ""
+            try:
+                if action == "list":
+                    if len(args) > 1:
+                        raise ValueError("usage: /pin list")
+                    if _cli_pinned_files:
+                        print(" Pin สำหรับ session นี้:")
+                        for index, path in enumerate(_cli_pinned_files, 1):
+                            print(f"   {index}. {path}")
+                    else:
+                        print(" ยังไม่มีไฟล์ Pin\n")
+                else:
+                    _cli_pinned_files = _apply_cli_pin_action(
+                        _cli_pinned_files, action, args[1:]
+                    )
+                    print(
+                        " ล้าง Pin แล้ว\n" if action == "clear"
+                        else f" Pin แล้ว {len(_cli_pinned_files)}/{_PINNED_FILE_MAX} ไฟล์\n"
+                    )
+            except (OSError, TypeError, ValueError) as exc:
+                print(f" {C_WARN}⚠ จัดการ Pin ไม่สำเร็จ: {exc}{R}\n")
+            continue
+
+        if command and command["name"] == "pdf_text":
+            _dispatch_cli_pdf_text(command["args"])
+            continue
+
+        if command and command["name"] == "history":
+            if command["args"]:
+                print(f" {C_WARN}⚠ usage: /history{R}\n")
+                continue
             with Spinner("🧠  กำลังโหลด history…"):
                 loaded_msgs, loaded_chars, total_pairs = _load_history_pairs(saver)
                 if loaded_msgs:
@@ -690,7 +913,7 @@ def main() -> None:
             print(f" หัวข้อใน history:\n{hist['topics']}\n")
             continue
 
-        if q.strip().lower() == "menu":
+        if command and command["name"] == "menu":
             print_mode_menu()
             choice = prompt_user() or ""
             if choice == "1":
@@ -818,7 +1041,10 @@ def main() -> None:
                 break
             continue
 
-        if q.strip().lower() == "/compact":
+        if command and command["name"] == "compact":
+            if command["args"]:
+                print(f" {C_WARN}⚠ usage: /compact{R}\n")
+                continue
             with Spinner("🗜️  กำลังบีบอัด context…"):
                 result = force_compact(app, cfg)
             if "error" in result:
@@ -835,7 +1061,10 @@ def main() -> None:
                 _threading.Thread(target=rewarm_after_compact, args=(app, _db_conn, _seed_msgs), daemon=True).start()
             continue
 
-        if q.strip().lower() == "/clear":
+        if command and command["name"] == "clear":
+            if command["args"]:
+                print(f" {C_WARN}⚠ usage: /clear{R}\n")
+                continue
             if thread_id != _MEMORY_THREAD:
                 _purge_thread(_db_conn, thread_id)
             thread_id = str(uuid.uuid4())
@@ -847,7 +1076,7 @@ def main() -> None:
 
         if q.startswith("/"):
             _sname = q[1:].strip().lower()
-            if _sname in ("exit", "quit") or _sname == _active_skill:
+            if _sname == _active_skill:
                 if _active_skill:
                     print(f" ปิด {_active_skill} mode\n")
                 _active_skill, _active_skill_content = _set_skill("")
@@ -861,13 +1090,20 @@ def main() -> None:
         )
         if not _ensure_server_alive():
             continue
-        _run_turn(app, actual_q, cfg, thread_id=thread_id, saver=saver, db_conn=_db_conn,
-                  logger=logger, system_prompt=get_system_prompt())
+        _run_cli_turn_with_file_state(
+            _run_turn, app, actual_q, cfg,
+            thread_id=thread_id, saver=saver, db_conn=_db_conn,
+            logger=logger, pins=_cli_pinned_files,
+            attachments=_cli_attachments,
+            system_prompt=get_system_prompt(),
+        )
 
         # Reload completer in case agent created a new skill this turn (/build)
         _reg = _load_skill_registry()
-        _hard_cmds = [c["name"] for c in _reg.get("builtin_cmds", [])]
-        setup_skill_completer([s["name"] for s in _reg.get("skills", [])] + _hard_cmds)
+        setup_skill_completer(
+            [f"/{s['name']}" for s in _reg.get("skills", [])]
+            + _command_completion_tokens("cli")
+        )
 
         update_ctx_info(_ctx_stats["chars"], CONTEXT_MAX_CHARS)
         compact_n = _ctx_stats["compact_msg"]

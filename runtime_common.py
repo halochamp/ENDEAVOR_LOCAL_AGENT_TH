@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sqlite3
 import threading
 import urllib.request
@@ -34,6 +35,13 @@ _MEMORY_DB = os.path.join(os.path.dirname(__file__), "logs", "history.db")
 _MEMORY_MD = os.path.join(os.path.dirname(__file__), "logs", "memory.md")
 _MEMORY_THREAD = "main"
 _SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
+_BUILTIN_COMMANDS_FILE = os.path.join(_SKILLS_DIR, "skill.json")
+
+PINNED_FILE_MAX = 10
+ATTACHED_FILE_MAX = 1
+PINNED_IMAGE_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic", ".heif", ".tiff", ".tif",
+}
 
 _MAX_MEMORY_PAIRS = 100  # 100 Q&A pairs — trim oldest when exceeded
 _MAX_DB_ROWS = 1000      # จำกัด checkpoint rows ใน history.db
@@ -376,6 +384,260 @@ def scan_skill_roles(skills_dir: str = _SKILLS_DIR) -> list[tuple[str, str]]:
             pass
         result.append((name, role))
     return result
+
+
+def _read_skill_registry(path: str | None = None) -> dict:
+    try:
+        with open(path or _BUILTIN_COMMANDS_FILE, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def builtin_commands_for_surface(surface: str, *, path: str | None = None) -> list[dict]:
+    """Return the public built-in command entries advertised on one surface.
+
+    ``skills/skill.json`` is the single command metadata source. Entries with
+    no ``surfaces`` field remain visible to both front ends for compatibility;
+    new entries should name their supported surfaces explicitly.
+    """
+    target = str(surface or "").strip().lower()
+    if target not in {"cli", "electron"}:
+        raise ValueError("surface must be 'cli' or 'electron'")
+    payload = _read_skill_registry(path)
+    entries = payload.get("builtin_cmds", [])
+    if not isinstance(entries, list):
+        return []
+    result = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not str(entry.get("name") or "").strip():
+            continue
+        surfaces = entry.get("surfaces", ["cli", "electron"])
+        if isinstance(surfaces, str):
+            surfaces = [surfaces]
+        if isinstance(surfaces, list) and target in {
+            str(item).strip().lower() for item in surfaces
+        }:
+            result.append(dict(entry))
+    return result
+
+
+def load_skill_registry(
+    surface: str = "cli", *, skills_dir: str | None = None,
+    registry_path: str | None = None,
+) -> dict:
+    """Load shared command metadata plus the currently available skill list."""
+    data = _read_skill_registry(registry_path)
+    data["builtin_cmds"] = builtin_commands_for_surface(surface, path=registry_path)
+    directory = skills_dir or _SKILLS_DIR
+    data["skills"] = [
+        {"name": name, "description": role or "—"}
+        for name, role in scan_skill_roles(directory)
+    ]
+    return data
+
+
+def command_completion_tokens(surface: str = "cli") -> list[str]:
+    """Return completion strings as displayed, including the leading slash."""
+    result = []
+    for entry in builtin_commands_for_surface(surface):
+        token = str(entry.get("completion") or entry.get("invoke") or "").strip()
+        if not token:
+            token = f"/{entry['name']}" if entry.get("slash", True) else str(entry["name"])
+        result.append(token)
+    return result
+
+
+def parse_builtin_command(raw: str, surface: str = "cli") -> dict | None:
+    """Parse one registered direct command; leave unknown slash names to skills.
+
+    Shell-like quoting is used only for local command arguments (for example a
+    file path containing spaces). An unmatched quote on a known command is
+    returned as a parse error so it cannot fall through and activate a skill.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    entries = builtin_commands_for_surface(surface)
+    normalized = text.casefold()
+    for entry in entries:
+        for alias in entry.get("aliases", []) if isinstance(entry.get("aliases", []), list) else []:
+            if normalized == str(alias).strip().casefold():
+                return {"name": entry["name"], "args": [], "alias": str(alias), "error": ""}
+
+    try:
+        tokens = shlex.split(text, posix=True)
+    except ValueError as exc:
+        head = text.split(maxsplit=1)[0]
+        key = head[1:] if head.startswith("/") else head
+        match = next((e for e in entries if str(e["name"]).casefold() == key.casefold()), None)
+        if match is None:
+            return None
+        return {"name": match["name"], "args": [], "alias": head, "error": str(exc)}
+    if not tokens:
+        return None
+
+    head = tokens[0]
+    is_slash = head.startswith("/")
+    key = head[1:] if is_slash else head
+    match = next((e for e in entries if str(e["name"]).casefold() == key.casefold()), None)
+    if match is None:
+        return None
+    if bool(match.get("slash", True)) != is_slash:
+        return None
+    return {
+        "name": match["name"],
+        "args": tokens[1:],
+        "alias": head,
+        "error": "",
+    }
+
+
+def resolve_canonical_read_path(path: str, *, require_file: bool = False) -> str:
+    """Apply the project read-path guard and return canonical path identity."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("path is required")
+    from tools._safety import resolve_read_path
+
+    resolved = resolve_read_path(path.strip())
+    real = os.path.realpath(resolved)
+    if require_file:
+        if not os.path.exists(real):
+            raise ValueError(f"ไม่พบไฟล์: {real}")
+        if not os.path.isfile(real):
+            raise ValueError(f"path ไม่ใช่ไฟล์: {real}")
+        if not os.access(real, os.R_OK):
+            raise PermissionError(f"ไฟล์อ่านไม่ได้: {real}")
+    return real
+
+
+def canonical_pinned_file_paths(
+    raw_pins: object,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Validate, canonicalize, and deduplicate persistent Pin paths."""
+    if raw_pins in (None, []):
+        return [], []
+    if not isinstance(raw_pins, list):
+        raise ValueError("pinned_files must be a list")
+    if len(raw_pins) > PINNED_FILE_MAX:
+        raise ValueError(f"Pin ได้สูงสุด {PINNED_FILE_MAX} ไฟล์")
+
+    resolved: list[str] = []
+    failures: list[dict[str, str]] = []
+    seen: set[str] = set()
+    seen_inputs: set[str] = set()
+    for item in raw_pins:
+        if not isinstance(item, str):
+            raise ValueError("pinned file path must be a string")
+        supplied = item.strip()
+        if not supplied:
+            failures.append({"path": "<empty>", "reason": "path ว่าง"})
+            continue
+        input_key = os.path.normcase(os.path.normpath(os.path.expanduser(supplied)))
+        if input_key in seen_inputs:
+            continue
+        seen_inputs.add(input_key)
+        try:
+            real = resolve_canonical_read_path(supplied)
+        except PermissionError as exc:
+            failures.append({"path": supplied, "reason": str(exc)})
+            continue
+        except ValueError as exc:
+            failures.append({"path": supplied, "reason": str(exc)})
+            continue
+        if real in seen:
+            continue
+        seen.add(real)
+        if not os.path.exists(real):
+            failures.append({"path": real, "reason": "ไม่พบไฟล์ (อาจถูกย้ายหรือลบ)"})
+            continue
+        if not os.path.isfile(real):
+            failures.append({"path": real, "reason": "path ไม่ใช่ไฟล์"})
+            continue
+        if not os.access(real, os.R_OK):
+            failures.append({"path": real, "reason": "ไฟล์อ่านไม่ได้"})
+            continue
+        resolved.append(real)
+    return resolved, failures
+
+
+def canonical_attachment_paths(raw_paths: object) -> list[str]:
+    """Canonicalize one optional attachment through the shared read-path guard."""
+    if raw_paths in (None, []):
+        return []
+    if not isinstance(raw_paths, list):
+        raise ValueError("attached_files must be a list")
+    if len(raw_paths) > ATTACHED_FILE_MAX:
+        raise ValueError(f"Agent TH แนบไฟล์ได้ครั้งละ {ATTACHED_FILE_MAX} ไฟล์")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_paths:
+        if not isinstance(item, str):
+            raise ValueError("attached file path must be a string")
+        supplied = item.strip()
+        if not supplied:
+            continue
+        try:
+            real = resolve_canonical_read_path(supplied, require_file=True)
+        except PermissionError as exc:
+            raise ValueError(str(exc)) from exc
+        if real not in seen:
+            seen.add(real)
+            result.append(real)
+    return result
+
+
+def _attachment_hint(path: str) -> str:
+    from tools._transcribe import _AUDIO_EXT, _VIDEO_EXT
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext in PINNED_IMAGE_EXTS:
+        return f"[ไฟล์แนบ (รูปภาพ): {path}]\nใช้ tool: read_image"
+    if ext in _AUDIO_EXT:
+        return f"[ไฟล์แนบ (เสียง): {path}]\nใช้ tool: read_file (จะถอดเสียงเป็นข้อความอัตโนมัติ)"
+    if ext in _VIDEO_EXT:
+        return f"[ไฟล์แนบ (วิดีโอ): {path}]\nใช้ tool: read_file (จะถอดเสียงจากวิดีโอเป็นข้อความอัตโนมัติ)"
+    return f"[ไฟล์แนบ: {path}]\nใช้ tool: read_file"
+
+
+def attachment_content(question: str, paths: list[str]) -> str:
+    if not paths:
+        return question
+    hint = _attachment_hint(paths[0])
+    return f"{question}\n\n{hint}" if question else hint
+
+
+def prepare_file_context(
+    question: str, raw_pins: object, raw_attachments: object,
+) -> dict:
+    """Build the same Pin/Attach selection and graph context for each frontend."""
+    pinned_paths, pinned_failures = canonical_pinned_file_paths(raw_pins)
+    pin_identities: set[str] = set()
+    if isinstance(raw_pins, list):
+        for item in raw_pins:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            try:
+                pin_identities.add(resolve_canonical_read_path(item))
+            except (OSError, ValueError, PermissionError):
+                continue
+    attached_paths = canonical_attachment_paths(raw_attachments)
+    effective_attachments = [path for path in attached_paths if path not in pin_identities]
+    turn_context = {
+        "pinned_files": pinned_paths,
+        "pinned_failures": pinned_failures,
+        "pinned_user_query": str(question or ""),
+    } if (pinned_paths or pinned_failures) else {}
+    return {
+        "content": attachment_content(str(question or ""), effective_attachments),
+        "pinned_paths": pinned_paths,
+        "pinned_failures": pinned_failures,
+        "pin_identities": pin_identities,
+        "attached_paths": attached_paths,
+        "effective_attachments": effective_attachments,
+        "turn_context": turn_context,
+    }
 
 
 # ── Turn execution ─────────────────────────────────────────────────────────────

@@ -76,6 +76,14 @@ from runtime_common import (
     guard_db_schema as _guard_db_schema, open_memory_store as _open_memory_store,
     load_memory_md as _load_memory_md, purge_thread as _purge_thread,
     scan_skill_roles as _scan_skill_roles, first_role_line as _first_role_line,
+    builtin_commands_for_surface as _builtin_commands_for_surface,
+    canonical_pinned_file_paths as _canonical_pinned_file_paths,
+    canonical_attachment_paths as _shared_canonical_attachment_paths,
+    _attachment_hint as _shared_attachment_hint,
+    attachment_content as _shared_attachment_content,
+    prepare_file_context as _prepare_file_context,
+    PINNED_FILE_MAX as _PINNED_FILE_PER_TURN_MAX,
+    PINNED_IMAGE_EXTS as _PINNED_IMAGE_EXTS,
     ThinkingTimer, run_turn_core,
     _MEMORY_DB, _MEMORY_MD, _MEMORY_THREAD, _SKILLS_DIR, _DB_SCHEMA_VERSION,
     _MAX_DB_ROWS, load_history_pairs as _load_history_pairs,
@@ -239,12 +247,7 @@ def _load_skill_content(sname: str) -> str | None:
 
 
 def _load_builtin_cmds() -> list[dict]:
-    try:
-        import json as _json
-        with open(os.path.join(_SKILLS_DIR, "skill.json"), encoding="utf-8") as f:
-            return _json.load(f).get("builtin_cmds", [])
-    except Exception:
-        return []
+    return _builtin_commands_for_surface("electron")
 
 
 def _list_skills() -> list[dict]:
@@ -1695,10 +1698,6 @@ def _list_workspace() -> list[dict]:
 
 _WORKSPACE_MENTION_INDEX_MAX = 1000
 _WORKSPACE_MENTION_PER_TURN_MAX = 10
-_PINNED_FILE_PER_TURN_MAX = 10
-_PINNED_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.heic', '.heif', '.tiff', '.tif'}
-_ATTACH_AUDIO_EXTS = {'.m4a', '.mp3', '.wav', '.aiff', '.aif', '.caf', '.flac', '.aac'}
-_ATTACH_VIDEO_EXTS = {'.mp4', '.mov', '.m4v'}
 
 
 def _list_workspace_mentions() -> list[dict]:
@@ -1865,96 +1864,21 @@ def _augment_query_with_workspace_mentions(content: str, raw_mentions: object) -
 
 
 def _pinned_file_paths(raw_pins: object) -> tuple[list[str], list[dict[str, str]]]:
-    """Validate Pin paths with the same read-path policy used by ``read_file``.
-
-    Pins may point anywhere the read tools are allowed to read. The shared
-    ``resolve_read_path`` guard remains the single policy authority for protected
-    system/credential locations; this function only adds Pin protocol limits,
-    canonical identity dedupe, and per-turn existence/readability checks.
-    """
-    if raw_pins in (None, []):
-        return [], []
-    if not isinstance(raw_pins, list):
-        raise ValueError("pinned_files must be a list")
-    if len(raw_pins) > _PINNED_FILE_PER_TURN_MAX:
-        raise ValueError(f"Pin ได้สูงสุด {_PINNED_FILE_PER_TURN_MAX} ไฟล์")
-
-    resolved: list[str] = []
-    failures: list[dict[str, str]] = []
-    seen: set[str] = set()
-    seen_inputs: set[str] = set()
-    for item in raw_pins:
-        if not isinstance(item, str):
-            raise ValueError("pinned file path must be a string")
-        supplied = item.strip()
-        if not supplied:
-            failures.append({"path": "<empty>", "reason": "path ว่าง"})
-            continue
-        input_key = os.path.normcase(os.path.normpath(os.path.expanduser(supplied)))
-        if input_key in seen_inputs:
-            continue
-        seen_inputs.add(input_key)
-        try:
-            readable_path = _resolve_read_path(supplied)
-        except PermissionError as exc:
-            failures.append({"path": supplied, "reason": str(exc)})
-            continue
-        real = os.path.realpath(readable_path)
-        if real in seen:
-            continue
-        seen.add(real)
-        if not os.path.exists(real):
-            failures.append({"path": real, "reason": "ไม่พบไฟล์ (อาจถูกย้ายหรือลบ)"})
-            continue
-        if not os.path.isfile(real):
-            failures.append({"path": real, "reason": "path ไม่ใช่ไฟล์"})
-            continue
-        if not os.access(real, os.R_OK):
-            failures.append({"path": real, "reason": "ไฟล์อ่านไม่ได้"})
-            continue
-        resolved.append(real)
-    return resolved, failures
+    """Compatibility wrapper around the shared read-path Pin validator."""
+    return _canonical_pinned_file_paths(raw_pins)
 
 
 def _canonical_attachment_paths(raw_paths: object) -> list[str]:
-    """Canonicalize optional renderer attachment metadata for source dedupe."""
-    if raw_paths in (None, []):
-        return []
-    if not isinstance(raw_paths, list):
-        raise ValueError("attached_files must be a list")
-    if len(raw_paths) > 1:
-        raise ValueError("Agent TH แนบไฟล์ได้ครั้งละ 1 ไฟล์")
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in raw_paths:
-        if not isinstance(item, str):
-            raise ValueError("attached file path must be a string")
-        supplied = item.strip()
-        if not supplied:
-            continue
-        real = os.path.realpath(supplied)
-        if real not in seen:
-            seen.add(real)
-            result.append(real)
-    return result
+    """Compatibility wrapper around the shared protected read-path validator."""
+    return _shared_canonical_attachment_paths(raw_paths)
 
 
 def _attachment_hint(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    if ext in _PINNED_IMAGE_EXTS:
-        return f"[ไฟล์แนบ (รูปภาพ): {path}]\nใช้ tool: read_image"
-    if ext in _ATTACH_AUDIO_EXTS:
-        return f"[ไฟล์แนบ (เสียง): {path}]\nใช้ tool: read_file (จะถอดเสียงเป็นข้อความอัตโนมัติ)"
-    if ext in _ATTACH_VIDEO_EXTS:
-        return f"[ไฟล์แนบ (วิดีโอ): {path}]\nใช้ tool: read_file (จะถอดเสียงจากวิดีโอเป็นข้อความอัตโนมัติ)"
-    return f"[ไฟล์แนบ: {path}]\nใช้ tool: read_file"
+    return _shared_attachment_hint(path)
 
 
 def _attachment_content(question: str, paths: list[str]) -> str:
-    if not paths:
-        return question
-    hint = _attachment_hint(paths[0])
-    return f"{question}\n\n{hint}" if question else hint
+    return _shared_attachment_content(question, paths)
 
 
 def _read_file(path: str) -> str:
@@ -2350,12 +2274,12 @@ async def ws_endpoint(websocket: WebSocket):
                     continue
                 try:
                     raw_pins = data.get("pinned_files", [])
-                    pinned_paths, pinned_failures = _pinned_file_paths(raw_pins)
-                    pin_identity_set = {
-                        os.path.realpath(item.strip())
-                        for item in raw_pins
-                        if isinstance(item, str) and item.strip() and os.path.isabs(item.strip())
-                    }
+                    file_context = _prepare_file_context(
+                        user_query,
+                        raw_pins,
+                        data.get("attached_files", []) if "attached_files" in data else [],
+                    )
+                    pin_identity_set = file_context["pin_identities"]
                     focus_root = _focus_root()
                     if focus_root:
                         mention_paths = _focus_mention_paths(
@@ -2367,18 +2291,15 @@ async def ws_endpoint(websocket: WebSocket):
                             data.get("workspace_mentions", []),
                             skip_real_paths=pin_identity_set,
                         )
-                    attached_paths = _canonical_attachment_paths(
-                        data.get("attached_files", [])
-                    ) if "attached_files" in data else []
                 except ValueError as exc:
                     await websocket.send_json({"type": "error", "msg": str(exc)})
                     continue
 
-                effective_attachments = [p for p in attached_paths if p not in pin_identity_set]
+                effective_attachments = file_context["effective_attachments"]
                 attachment_set = set(effective_attachments)
                 effective_mentions = [p for p in mention_paths if p not in attachment_set]
                 if "attached_files" in data:
-                    content = _attachment_content(user_query, effective_attachments)
+                    content = file_context["content"]
                 content = (
                     _augment_query_with_focus_mention_paths(content, effective_mentions)
                     if focus_root
@@ -2386,11 +2307,9 @@ async def ws_endpoint(websocket: WebSocket):
                 )
                 focus_folder = focus_root or ""
                 turn_context = {
-                    "pinned_files": pinned_paths,
-                    "pinned_failures": pinned_failures,
-                    "pinned_user_query": user_query,
+                    **file_context["turn_context"],
                     "focus_folder": focus_folder,
-                } if (pinned_paths or pinned_failures or focus_folder) else None
+                } if (file_context["turn_context"] or focus_folder) else None
                 if len(content) > CONTEXT_MAX_CHARS:
                     await websocket.send_json({
                         "type": "error",

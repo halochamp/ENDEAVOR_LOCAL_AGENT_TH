@@ -6,9 +6,15 @@
   ],
   "add_hint": "create skills/<name>.md  (## Role / ## Workflow / ## Tools allowed / ## Output format)",
   "builtin_cmds": [
-    {"name": "clear",       "desc": "เคลียร์ context — เริ่ม session ใหม่"},
-    {"name": "compact",     "desc": "บีบอัด context ใน session ปัจจุบัน"},
-    {"name": "history",     "desc": "โหลด conversation history เดิม"},
-    {"name": "exit",        "desc": "ออกจาก skill mode ปัจจุบัน"}
+    {"name": "help", "desc": "แสดงคำสั่งและ skill ที่ใช้ได้", "usage": "/help", "completion": "/help", "surfaces": ["cli"]},
+    {"name": "runtime", "desc": "แสดง model, think budget และสถานะ model server", "usage": "/runtime", "completion": "/runtime", "surfaces": ["cli"]},
+    {"name": "attach", "desc": "แนบไฟล์ให้ turn ถัดไป (หนึ่งไฟล์)", "usage": "/attach list | add <path> | clear", "completion": "/attach", "surfaces": ["cli"]},
+    {"name": "pin", "desc": "จัดการไฟล์ Pin ที่แนบกับทุก turn ใน session (สูงสุด 10 ไฟล์)", "usage": "/pin list | add <path...> | remove <index|path> | clear", "completion": "/pin", "surfaces": ["cli"]},
+    {"name": "pdf_text", "desc": "แปลง PDF เป็นข้อความด้วย pipeline เดียวกับ Electron", "usage": "/pdf_text <path> [--rewrite-thai]", "completion": "/pdf_text", "surfaces": ["cli"]},
+    {"name": "menu", "desc": "เปิด mode menu", "usage": "menu", "completion": "menu", "slash": false, "surfaces": ["cli"]},
+    {"name": "clear", "desc": "เคลียร์ context — เริ่ม session ใหม่", "usage": "/clear", "completion": "/clear", "surfaces": ["cli", "electron"]},
+    {"name": "compact", "desc": "บีบอัด context ใน session ปัจจุบัน", "usage": "/compact", "completion": "/compact", "surfaces": ["cli", "electron"]},
+    {"name": "history", "desc": "โหลด conversation history เดิม", "usage": "/history", "completion": "/history", "aliases": ["โหลดความจำ", "load history", "โหลด history", "จำเก่า"], "surfaces": ["cli", "electron"]},
+    {"name": "exit", "desc": "ออกจาก skill mode; exit / quit / ออก ปิดโปรแกรม", "usage": "/exit", "completion": "/exit", "aliases": ["exit", "quit", "ออก", "บาย"], "surfaces": ["cli", "electron"]}
   ]
 }

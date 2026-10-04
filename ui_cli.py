@@ -39,10 +39,9 @@ class _SkillAutoSuggest(AutoSuggest):
 
 
 def setup_skill_completer(skill_names: list[str]) -> None:
-    # Each prompt_user() call builds a fresh Buffer with _SkillAutoSuggest(),
-    # which reads this module-level list — so updating it here is enough.
+    """Set exact public completion tokens (skills and registry commands)."""
     global _skill_completions
-    _skill_completions = [f"/{n}" for n in skill_names]
+    _skill_completions = [str(name) for name in skill_names if str(name)]
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -455,30 +454,85 @@ def print_runtime_choices(title: str, options: list[dict], current: object) -> N
 
 
 def print_special_commands(builtin_cmds: list | None = None) -> None:
-    cmds = [(f"/{c['name']}", c["desc"]) for c in (builtin_cmds or [])]
-    cmds += [
-        ("menu",                "เปิด menu นี้"),
-        ("exit / quit / ออก",  "ออกจากโปรแกรม"),
-    ]
-    aliases = [
-        ("โหลดความจำ",  "/history"),
-        ("load history", "/history"),
-        ("โหลด history", "/history"),
-        ("จำเก่า",      "/history"),
-    ]
+    commands = builtin_cmds or []
     print()
     print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
     print(f"   {BOLD}{C_HEADER}Special Commands{R}")
     print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
-    for cmd, desc in cmds:
-        pad = max(1, 24 - len(cmd))
-        print(f"   {C_ORANGE}{cmd}{R}{' ' * pad}{C_META}{desc}{R}")
-    print()
-    print(f"   {C_META}Aliases สำหรับ /history:{R}")
-    for alias, target in aliases:
-        print(f"   {C_DIM}{alias!r:20}{R}{C_META}→ {target}{R}")
+    for command in commands:
+        usage = str(command.get("usage") or f"/{command.get('name', '')}")
+        desc = str(command.get("desc") or "")
+        aliases = command.get("aliases") if isinstance(command.get("aliases"), list) else []
+        if aliases:
+            desc = f"{desc} · aliases: {', '.join(str(alias) for alias in aliases)}"
+        pad = max(1, 42 - len(usage))
+        print(f"   {C_ORANGE}{usage}{R}{' ' * pad}{C_META}{desc}{R}")
     print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
     print()
+
+
+def print_cli_help(builtin_cmds: list | None = None, skills: list | None = None) -> None:
+    """Render direct commands and live skill modes from shared registry data."""
+    commands = builtin_cmds or []
+    available = skills or []
+    print()
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print(f"   {BOLD}{C_HEADER}ENDEAVOR Agent TH CLI{R}")
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print(f"   {C_META}Commands{R}")
+    for command in commands:
+        usage = str(command.get("usage") or f"/{command.get('name', '')}")
+        desc = str(command.get("desc") or "")
+        aliases = command.get("aliases") if isinstance(command.get("aliases"), list) else []
+        if aliases:
+            desc = f"{desc} · aliases: {', '.join(str(alias) for alias in aliases)}"
+        pad = max(1, 40 - len(usage))
+        print(f"   {C_ORANGE}{usage}{R}{' ' * pad}{C_META}{desc}{R}")
+    print(f"\n   {C_META}Skills{R}")
+    if available:
+        for skill in available:
+            name = str(skill.get("name") or "")
+            desc = str(skill.get("description") or "—")[:70]
+            pad = max(1, 12 - len(name))
+            print(f"   {C_ORANGE}/{name}{R}{' ' * pad}{C_HEADER}{desc}{R}")
+    else:
+        print(f"   {C_META}(ยังไม่มี skill){R}")
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print()
+
+
+def print_runtime_status(settings: dict, server: dict, control: dict) -> None:
+    """Display the owner/runtime snapshot already used by Electron Settings."""
+    shared = settings.get("server_mode") == "shared_max"
+    mode = "Shared MAX (read-only)" if shared else "Standalone"
+    model = str(settings.get("model") or "unknown")
+    budget = settings.get("thinking_budget", "unknown")
+    port = settings.get("server_port", "unknown")
+    owner = str(server.get("owner") or ("agent_max_vlm" if shared else "agent_th"))
+    state = str(server.get("state") or "unknown")
+    if server.get("healthy"):
+        health = "healthy"
+    elif server.get("state") in {"foreign", "ambiguous", "error"}:
+        health = "unverified"
+    else:
+        health = "unhealthy" if server.get("running") else "stopped"
+    loaded = str(server.get("loaded_model") or "—")
+    print()
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}")
+    print(f"   {BOLD}{C_HEADER}Runtime{R} · {mode}")
+    print(f"   Model: {model}")
+    print(f"   Think Budget: {budget}")
+    print(f"   Port: :{port} · owner: {owner}")
+    print(f"   Server: {health} ({state}) · loaded model: {loaded}")
+    if shared:
+        print(f"   Watchdog: disabled · desired state: shared (managed by MAX owner)")
+    else:
+        watchdog = "enabled" if control.get("watchdog_enabled") else "disabled"
+        desired = str(control.get("desired_state") or server.get("desired_state") or "unknown")
+        print(f"   Watchdog: {watchdog} · desired state: {desired}")
+    if server.get("error"):
+        print(f"   {C_WARN}Status detail: {server['error']}{R}")
+    print(f" {C_DIM}{'─' * (WIDTH - 2)}{R}\n")
 
 
 def print_skill_help(data: dict) -> None:
