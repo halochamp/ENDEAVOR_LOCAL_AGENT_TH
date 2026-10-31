@@ -67,7 +67,9 @@ class ServerRuntimeSyncTests(unittest.TestCase):
         payload = srv._runtime_settings_payload()
         labels = {item["value"]: item["label"] for item in payload["model_options"]}
         self.assertEqual(labels[srv._config.LIGHT_VLM_MODEL], "Qwen3.5 2B · VLM")
-        self.assertEqual(labels[srv._config.COMPACT_VLM_MODEL], "Qwen3.5 9B · VLM")
+        self.assertEqual(labels[srv._config.DEFAULT_MODEL], "Qwen3.5 9B · VLM")
+        self.assertEqual(labels[srv._config.TEXT_MODEL], "Qwen3 14B · text")
+        self.assertEqual(labels[srv._config.BALANCED_VLM_MODEL], "Qwen3.8 27B · VLM")
         self.assertEqual(labels[srv._config.HIGH_QUALITY_MODEL], "Qwen3.6 35B · VLM")
 
     def test_authenticated_rest_runtime_route_uses_same_owner_apply_seam(self) -> None:
@@ -101,7 +103,7 @@ class ServerRuntimeSyncTests(unittest.TestCase):
         rebuild.assert_called_once_with()
 
     def test_watchdog_sync_adopts_external_standalone_model_before_reconcile(self) -> None:
-        model = srv._config.COMPACT_VLM_MODEL
+        model = srv._config.TEXT_MODEL
         self._write(model=model, budget=512)
         events = []
         original_sync = srv._sync_runtime_settings_from_owner_file_if_idle

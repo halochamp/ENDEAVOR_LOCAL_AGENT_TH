@@ -1,9 +1,9 @@
 # ENDEAVOR_LOCAL_AGENT_TH
 
 **Local AI Agent ที่ออกแบบให้รองรับภาษาไทยโดยเฉพาะ ที่รันบนเครื่องของคุณเอง 100%**
-ไม่มี API key, ไม่มีค่า token รายเดือน, ไม่มีข้อมูลหลุดออกไปนอกเครื่อง — มี **Qwen3.5-2B-OptiQ-4bit (VLM)** เป็น lightweight test model, รองรับ **Qwen3.5-9B-4bit (VLM)** สำหรับ Mac RAM 16GB, **Qwen3-14B** เป็นค่าเริ่มต้นสำหรับเครื่อง 24GB+, และ **Qwen3.6-35B-A3B (MoE)** สำหรับคุณภาพสูง ผ่าน **MLX** บน Apple Silicon และ orchestrate ด้วย **LangGraph ReAct Agent**
+ไม่มี API key, ไม่มีค่า token รายเดือน, ไม่มีข้อมูลหลุดออกไปนอกเครื่อง — ค่าเริ่มต้นคือ **Qwen3.5-9B-4bit (VLM)** ที่ใช้ได้บน Mac RAM 16GB มี **Qwen3.5-2B-OptiQ-4bit (VLM)** เป็น lightweight test model, **Qwen3-14B** (text-only), **Qwen3.8-27B (VLM)** สำหรับเครื่อง RAM สูง (แนะนำ 32GB+) และ **Qwen3.6-35B-A3B (MoE)** สำหรับคุณภาพสูง ผ่าน **MLX** (`mlx-vlm` 0.7.10+) บน Apple Silicon และ orchestrate ด้วย **LangGraph ReAct Agent**
 
-เป้าหมายของโปรเจกต์คือทำให้ Local AI Agent ที่ใช้งานได้จริงเข้าถึงคนทั่วไปได้มากขึ้น: 2B มีไว้สำหรับทดลอง/diagnostic บนเครื่องทรัพยากรจำกัด, เครื่อง 16GB สามารถเลือก Qwen3.5 9B VLM, fresh install ยังเริ่มด้วย Qwen3-14B เป็นค่า default สำหรับเครื่องที่มี headroom มากกว่า และเครื่องแรงสามารถเลือก 35B MoE เพื่อคุณภาพ reasoning/tool calling สูงสุด
+เป้าหมายของโปรเจกต์คือทำให้ Local AI Agent ที่ใช้งานได้จริงเข้าถึงคนทั่วไปได้มากขึ้น: 2B มีไว้สำหรับทดลอง/diagnostic บนเครื่องทรัพยากรจำกัด, fresh install เริ่มด้วย Qwen3.5 9B VLM ซึ่งใช้ได้บนเครื่อง 16GB, เครื่องที่มี headroom มากกว่าเลือก 14B (text-only) หรือ Qwen3.8 27B VLM ได้ และเครื่องแรงสามารถเลือก 35B MoE เพื่อคุณภาพ reasoning/tool calling สูงสุด
 
 ---
 
@@ -77,7 +77,7 @@ cd AGENT_UI && npm install && npm start
 
 ค่าเริ่มต้นคือ **Standalone** ที่ port `8085`. ถ้า `:8085` ถูก Agent MAX VLM ครอบครองด้วย patched launcher ที่ตรวจยืนยันได้ Agent TH จะเข้า **Shared MAX test server** แบบ read-only อัตโนมัติ: ใช้ model ที่ MAX โหลดอยู่ได้ แต่ไม่ Start/Stop/Reset/Watchdog หรือเปลี่ยน model ของ MAX. Listener อื่นที่ไม่ใช่ MAX จะไม่ถูก adopt หรือ kill
 
-> การติดตั้ง **ไม่บังคับดาวน์โหลดทุกโมเดล**: fresh install ใช้ `Qwen3-14B` เป็น default และดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. ผู้ใช้สามารถเลือก `Qwen3.5-2B-OptiQ-4bit` สำหรับการทดสอบเบา ๆ, `Qwen3.5-9B-4bit` สำหรับเครื่อง 16GB หรือ `Qwen3.6-35B` สำหรับคุณภาพสูงได้ภายหลัง; 35B บน RAM <24GB จะมีคำเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
+> การติดตั้ง **ไม่บังคับดาวน์โหลดทุกโมเดล**: fresh install ใช้ `Qwen3.5-9B-4bit` เป็น default และดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. ผู้ใช้สามารถเลือก `Qwen3.5-2B-OptiQ-4bit` สำหรับการทดสอบเบา ๆ, `Qwen3-14B` (text-only), `Qwen3.8-27B` หรือ `Qwen3.6-35B` สำหรับคุณภาพสูงได้ภายหลัง; 27B บน RAM <32GB และ 35B บน RAM <24GB จะมีคำเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
 
 > เพิ่งเคย clone ครั้งแรก หรืออยากดูทุกขั้นตอนแบบละเอียด (รวม `git clone`, config, ติดตั้งแบบไม่ใช้สคริปต์) → ดู [Setup](#setup)
 
@@ -127,10 +127,13 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 ### 2. AGENT_UI — Electron Desktop App
 
-- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง พร้อม **Workspace**, activity, history, streaming chat, file attachment, persistent **Pin File**, **PDF to Text** และ Settings
+- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง พร้อม **Workspace**, activity, history, streaming chat, file attachment, persistent **Pin File**, **PDF to Text**, **Translate** และ Settings
 - พิมพ์ `@` ในช่องข้อความเพื่อ tag ไฟล์จาก Workspace ได้โดยตรง เช่น `@world.doc สรุปไฟล์ให้หน่อย`; autocomplete รองรับไฟล์ในโฟลเดอร์ย่อยและชื่อซ้ำจะใช้ relative path เพื่อไม่เดาผิด. Backend ตรวจ canonical path ซ้ำก่อนส่ง grounding ให้ Agent จึงกัน `../`/symlink escape ได้
+- `/skill <คำสั่ง>` รันหนึ่ง turn ภายใต้ skill นั้นโดยไม่เปลี่ยนโหมดถาวร และใช้ร่วมกับ `@ไฟล์` ใน Active Workspace ได้ในข้อความเดียว เช่น `/research สรุป @report.pdf`; เมื่อมี `@` อยู่ใต้ caret ระบบเสนอไฟล์ก่อน และการเลือกคำสั่งจะแทนที่เฉพาะ token `/…` ต้นข้อความ ส่วนที่เหลือไม่หาย. `/skill` เปล่า ๆ ยังเป็นการเปิด/ปิดโหมดเหมือนเดิม และ skill ที่มีเครื่องมือเฉพาะต้องเปิดเป็นโหมด
+- แผง **Activity** แสดง log ของการทำงานเรียงจาก **ล่าสุดไปเก่าสุด** เป็นการ์ดต่อ turn: ทุก tool call แสดง arguments, สถานะ (กำลังทำงาน/เสร็จแล้ว/ไม่สำเร็จ) และตัวอย่างผลลัพธ์ ข้อความยาวย่อไว้พร้อมปุ่ม "มีต่อ"; ระหว่างเรียก tool แชตแสดงสถานะเป็นข้อความ (`กำลังใช้ bash`) ไม่ใช่แอนิเมชัน. arguments/ผลลัพธ์ผ่านการ redact ความลับ (token, password, private key, URL ที่มี credential, base64) ก่อนเสมอ
 - ปุ่ม **📌 Pin File** สร้าง working set ต่อเนื่องได้สูงสุด 10 ไฟล์จากที่ใดก็ได้บนเครื่องต่อ Electron session ตราบเท่าที่ path นั้นผ่าน permission เดียวกับ `read_file` (protected system/credential paths ยังคงถูกบล็อก). Pin อยู่ต่อหลัง Send และ `/clear` แต่ไม่ persist ข้ามการปิด/เปิด Electron ใหม่. ทุก normal query backend จะเรียก shared read-path guard เดิม, canonicalize/dedupe path และตรวจ existence/readability ใหม่ แล้ว graph จะ **อ่าน Pin ทุกไฟล์ก่อน reasoning**: เอกสารใช้ `read_file` แบบ question-aware และ batch สูงสุด 4 ไฟล์ต่อ call (10 ไฟล์ = 4+4+2), รูปใช้ progressive `read_image(..., detail="overview")` สูงสุด 10 ภาพ; OCR/zoom เป็น follow-up เมื่อจำเป็น. Source เดียวกันเลือกหลายทางจะใช้ลำดับ **Pin > Attach > @mention** และอ่านเพียงครั้งเดียวต่อ turn; ไฟล์ Pin ที่หาย/ย้าย/ถูก guard ปฏิเสธ/อ่านไม่ได้จะรายงาน `อ่านสำเร็จ X/Y` แทนการแกล้งทำว่าอ่านครบ
 - tab **PDF to Text** แปลง PDF โดยตรงนอก chat graph: PDF ที่มี text layer ใช้ข้อความเดิม, หน้า scan ใช้ OCR + deterministic Thai formatting cleanup. ตัวเลือก `LLM rewrite` ปิดเป็นค่าเริ่มต้น; เมื่อเปิดจะใช้ local model/port ปัจจุบันแบบ **no-think** (`enable_thinking=false`, `thinking_budget=0`) เพื่อแก้ OCR ภาษาไทยแบบอนุรักษ์นิยม พร้อม validation/fallback กลับ OCR เดิมถ้าข้อความหรือเลขเปลี่ยนเกินขอบเขต
+- tab **Translate** แปลเอกสาร (PDF ที่มี text layer, PDF scan ด้วย OCR, ไฟล์ข้อความ, Word/Excel) เป็นภาษาไทยโดยตรงนอก chat graph ด้วย model ปัจจุบันแบบ **no-think** แล้วเขียนผลเป็น Markdown พร้อมหัวข้อหน้าและเส้นแบ่งหน้าใน `workspace/translate/`. งานแปลมี checkpoint: **พัก / ทำต่อ / ยกเลิก** ได้ และกู้งานที่ค้างหลัง agent server เริ่มใหม่ได้ (token, URL, ตัวเลข และโค้ดในเอกสารถูกคงไว้ ไม่แปล)
 - **ไม่ได้ bundle Electron ไว้ในรีโป** ต้อง `npm install` เองครั้งแรก:
   ```bash
   cd AGENT_UI
@@ -144,7 +147,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 - `Shared MAX test server`: ตรวจ process signature ของ Agent MAX VLM + `/health` ก่อน attach; Model ถูกล็อกตาม MAX และ Start/Stop/Reset/Watchdog ถูกปิดทั้งหมด. Generic external listener จะไม่ถูก adopt
 - ถ้าเปิด TH ขณะที่ MAX VLM ครอบครอง port ที่ TH ตั้งไว้ (default `:8085`) และตรวจยืนยันว่าเป็น MAX จริง TH จะ auto-attach read-only; ถ้า MAX ย้าย port ผู้ใช้ตั้ง Shared MAX port ตามได้
 - ปิด Electron = ปิดเฉพาะ `agent_server.py`; model server standalone ยังคงอยู่ตาม durable owner intent. ใช้ Stop ใน Settings หรือ `agent_stop.command` เมื่อต้องการปิด TH model server
-- Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` ใช้ full OCR fallback อัตโนมัติ ส่วน `Qwen3.5-2B-OptiQ-4bit`, `Qwen3.5-9B-4bit` และ Qwen3.6-35B เป็นตัวเลือก vision-capable สำหรับ direct image understanding / `computer`; 2B มีไว้สำหรับ testing/diagnostic มากกว่าคุณภาพงาน production
+- Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` ใช้ full OCR fallback อัตโนมัติ ส่วน `Qwen3.5-2B-OptiQ-4bit`, `Qwen3.5-9B-4bit` (default), Qwen3.8-27B และ Qwen3.6-35B เป็นตัวเลือก vision-capable (ตรวจด้วย capability probe) สำหรับ direct image understanding / `computer`; 2B มีไว้สำหรับ testing/diagnostic มากกว่าคุณภาพงาน production
 
 `agent_server.py` ยังคงเป็น authenticated WebSocket/REST **backend ของ Electron และ custom clients** แต่โปรเจกต์ไม่ bundle browser HTML UI แยกอีกต่อไป
 
@@ -198,6 +201,8 @@ START → react (agent คุมเองทั้งหมด) → END
 | **`planner.py`** | LLM call เดียวจัดหมวด query เป็น simple/complex → ถ้า complex คืน step list ให้ `create_plan` ก่อนเริ่มทำงานจริง |
 | **`graph.py`** | ผูก agent เข้ากับ LangGraph state machine, จัดการ retry เมื่อ synthesis ล้มเหลว, deterministic intercept สำหรับ search/research intent |
 | **`llm.py`** | สร้าง `ChatOpenAI` client ชี้ไปที่ `mlx_vlm.server` (OpenAI-compatible API) |
+| **`translate_documents.py`** | pipeline แปลเอกสารเป็นภาษาไทยแบบมี checkpoint (พัก/ทำต่อ/ยกเลิก) สำหรับ tab Translate |
+| **`activity_text.py`** | redact และจำกัดขนาด arguments/ผลลัพธ์ของ tool ก่อนแสดงใน Activity log |
 | **`runtime_common.py`** | infra ร่วมระหว่าง CLI กับ Electron/backend — memory store, liveness check, skill detection (single source of truth ตาม Dual-Path Prohibition) |
 | **`awake_engine.py`** | daemon thread คอยเช็ค standing trigger ที่ตั้งไว้ผ่าน `awake` tool (file/every/times/once) — fire แล้วส่ง query เข้า agent เองโดยไม่ต้องมีคนพิมพ์ |
 
@@ -232,7 +237,7 @@ Native AR APC ของ Agent TH เป็น **registry-driven** ผ่าน `
 | Layer | เทคโนโลยี | หน้าที่ |
 |---|---|---|
 | **LLM Runtime** | [MLX](https://github.com/ml-explore/mlx) | รัน Qwen แบบ quantized (4-bit) บน Apple Silicon GPU ผ่าน Metal |
-| **Model** | `Qwen/Qwen3-14B-MLX-4bit` (default), `mlx-community/Qwen3.5-2B-OptiQ-4bit` (test VLM), `mlx-community/Qwen3.5-9B-4bit` (compact VLM), หรือ `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | 2B สำหรับทดสอบ, 9B สำหรับเครื่อง 16GB, 14B เป็นค่าเริ่มต้น, 35B เป็นตัวเลือกคุณภาพสูง |
+| **Model** | `mlx-community/Qwen3.5-9B-4bit` (default VLM), `mlx-community/Qwen3.5-2B-OptiQ-4bit` (test VLM), `Qwen/Qwen3-14B-MLX-4bit` (text-only), `mlx-community/Qwen3.8-27B-4bit` (VLM), หรือ `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | 9B เป็นค่าเริ่มต้นและใช้ได้บนเครื่อง 16GB, 2B สำหรับทดสอบ, 14B text-only, 27B/35B เป็นตัวเลือกคุณภาพสูง |
 | **Agent Framework** | [LangGraph](https://github.com/langchain-ai/langgraph) `create_react_agent` | ReAct loop, state graph, checkpointing |
 | **LLM Client** | LangChain Core + `langchain-openai` | คุยกับ `mlx_vlm.server` ผ่าน OpenAI-compatible API |
 | **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | authenticated WebSocket/REST backend สำหรับ Electron และ custom clients |
@@ -263,6 +268,7 @@ Agent ตัวนี้ออกแบบมาให้ "เขียนได
 
 ### หลักการ
 
+- **APC cache อยู่ใน memory เท่านั้น** — mlx-vlm 0.7 เปิด disk tier ของ APC เอง (snapshot ~1GB ต่อ turn ยาว สูงสุด 20GB ต่อโมเดล) ซึ่งเก็บ cache ที่มาจากบทสนทนาจริงลงดิสก์ถาวร; Agent TH ปิดและลบ snapshot ที่ค้างอยู่ทุกครั้งที่เปิด server เพื่อให้ข้อมูลบทสนทนาไม่ค้างบนดิสก์โดยผู้ใช้ไม่ได้เลือก
 - **สิทธิ์เขียนใช้ร่วมกัน** — `edit` และ guarded `bash` เขียนได้ใน internal `workspace/`, Active Workspace ชั่วคราว หรือ Approved Edit Folders ที่ผู้ใช้อนุมัติไว้เท่านั้น. Bash จำกัดสิทธิ์ของแต่ละ call ให้แคบลงตามไฟล์หรือ tree ที่ร้องขอ. `bash_bg` และ `python_exec` คง sandbox ปกติและไม่ได้รับสิทธิ์แก้ artifact ที่ผู้ใช้ร้องขอ
 - **อ่านก่อนแก้ไฟล์เดิม** — การแก้ไฟล์เดิมผ่านเครื่องมือ agent ต้องมี `read_file` ที่สำเร็จใน turn ปัจจุบันก่อน. `edit` รองรับ atomic `create`, `replace`, `line`, `batch`; create จะไม่เขียนทับไฟล์เดิม
 - **Bash mutation ต้องมีหลักฐานจาก disk** — exit code หรือ stdout ไม่ถือว่าเขียนไฟล์สำเร็จ. Host ตรวจ delta แบบจำกัดขนาดและแนบ path/type/SHA-256 เฉพาะเมื่อพบการเปลี่ยนแปลงจริง
@@ -312,9 +318,9 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 |---|---|
 | `read_file` | อ่าน text/code, PDF, Word, Excel; รองรับหลายไฟล์แบบ path list หรือ per-file `requests` สูงสุด 4 รายการต่อ call รวมถึง `regex` และ filter อื่น ๆ |
 | `edit` | สร้างไฟล์ใหม่ด้วย `mode="create"` หรือแก้ไฟล์เดิมด้วย `replace` / `line` / `batch`; ต้องอ่าน target เดิมก่อนแก้ และใช้ shared Active Workspace / Approved Edit Folder / protected-path guards |
-| `bash` | คำสั่ง shell, tests และ builds; file discovery/search ใช้ `rg`, `rg --files` หรือ `find`; requested file mutations ยังคงผ่าน guarded Bash scope และ host-observed delta |
-| `bash_bg` | เริ่มและจัดการ shell job ที่ใช้เวลานาน ภายใต้ sandbox เดียวกับ `bash` |
-| `python_exec` | วิเคราะห์ข้อมูลด้วย Python (`pandas`, `numpy`, `matplotlib`); ไม่ใช้แทน edit access guard สำหรับการแก้ไฟล์ |
+| `bash` | คำสั่ง shell, tests และ builds; เริ่มทำงานใน Active Workspace เมื่อเลือกไว้ (ฐานเดียวกับ path สัมพัทธ์ของ `read_file`/`read_image`/`edit`) ไม่เช่นนั้นใน `workspace/`; file discovery/search ใช้ `rg`, `rg --files` หรือ `find`; requested file mutations ยังคงผ่าน guarded Bash scope และ host-observed delta |
+| `bash_bg` | เริ่มและจัดการ shell job ที่ใช้เวลานาน ภายใต้ sandbox เดียวกับ `bash` และเริ่มในโฟลเดอร์ตั้งต้นเดียวกัน |
+| `python_exec` | วิเคราะห์ข้อมูลด้วย Python (`pandas`, `numpy`, `matplotlib`) โดยทำงานใน `workspace/` เสมอ; ไม่ใช้แทน edit access guard สำหรับการแก้ไฟล์ |
 | `plot` | สร้างกราฟด้วย matplotlib จาก Python code |
 
 ### 🗺️ Planning
@@ -351,20 +357,13 @@ RAG และ knowledge-base retrieval ใช้ generic MCP เท่านั�
 
 MCP stdio ถูก spawn โดยไม่ผ่าน shell และอยู่ใต้ macOS sandbox เดียวกับ `bash`: เขียนได้เฉพาะ `workspace/` และ `/tmp` และยังติด sensitive-path read guards เดิม ส่วน registry อยู่ที่ `workspace/tool_mcp/servers.json` แบบ atomic และ permission `0600` เพื่อเก็บค่า config/HTTP headers ในเครื่อง
 
-`research_orchestrator` เป็น skill-only tool ที่เปิดใช้เฉพาะ `/research` และไม่นับรวมใน normal `ALL_TOOLS` จำนวน 20 tools.
-
-PDF to Text ยังคงเป็น UI/runtime capability แยกจาก agent tools ปกติ. การยุบ tools นี้ไม่ได้เพิ่ม `send_file`, `computer_sequence`, `extract_pdf_text`, `translate_pdf` หรือ Goal tools.
+PDF to Text และ Translate ยังคงเป็น UI/runtime capability แยกจาก agent tools ปกติ. การยุบ tools นี้ไม่ได้เพิ่ม `send_file`, `computer_sequence`, `extract_pdf_text`, `translate_pdf` หรือ Goal tools.
 
 ---
 
 ## Skill Modes
 
-Skill mode คือ system prompt + tool set เฉพาะทาง เปิด/ปิดได้ด้วยคำสั่งใน CLI
-
-| Skill | Trigger | ใช้ทำอะไร |
-|---|---|---|
-| `research` | `/research` | ค้นหาข่าวล่าสุดจากหลายแหล่ง → เขียนรายงาน รองรับ resume งานค้าง |
-| `pdf_to_text` | `/pdf_to_text` | แปลง PDF (รวมที่เป็นภาพ/scan) → text ผ่าน OCR + LLM extraction |
+Skill mode คือ system prompt + tool set เฉพาะทาง เปิด/ปิดได้ด้วยคำสั่งใน CLI รุ่นที่เผยแพร่ไม่ติด skill มาให้ — เพิ่มเองได้ตามหัวข้อ "เพิ่ม Skill Mode" ด้านล่าง ส่วนการแปลง PDF เป็นข้อความใช้ `/pdf_text` (CLI) หรือแผง PDF to Text ใน Electron
 
 เปิด skill ซ้ำ = toggle ปิด, หรือใช้ `/exit` ออกจาก skill mode ปัจจุบัน
 
@@ -374,15 +373,16 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 
 - macOS Apple Silicon (M1/M2/M3/M4/M5)
 - **Qwen3.5-2B-OptiQ 4-bit (lightweight test VLM):** ตัวเลือกสำหรับทดสอบ agent/runtime และเครื่องทรัพยากรจำกัด; รองรับ image input โดยตรง แต่ไม่ใช่ quality target หลักของโปรเจกต์
-- **Qwen3.5-9B 4-bit (compact VLM):** ใช้งาน Agent TH ได้บน unified memory **16GB** และรองรับ image input โดยตรง
-- **Qwen3-14B 4-bit (default):** unified memory ประมาณ **24GB ขั้นต่ำเชิงปฏิบัติ**, **32GB+ แนะนำ**
+- **Qwen3.5-9B 4-bit (default VLM):** ใช้งาน Agent TH ได้บน unified memory **16GB** และรองรับ image input โดยตรง
+- **Qwen3-14B 4-bit (text-only):** unified memory ประมาณ **24GB ขั้นต่ำเชิงปฏิบัติ**, **32GB+ แนะนำ**
+- **Qwen3.8-27B 4-bit (VLM):** โมเดลใหญ่ — ระบบเตือนเมื่อ unified memory ต่ำกว่า **32GB** (เตือนเท่านั้น ไม่บล็อก); native APC ถูกจำกัดที่ 6GB ผ่าน `memory_max_gb` ใน `model_registry.json`
 - **Qwen3.6-35B-A3B 4-bit (optional high-quality):** โมเดลใหญ่กว่าและใช้ RAM/swap สูงกว่า; บนเครื่อง RAM <24GB ระบบจะเตือนก่อนเริ่ม download/load แต่ผู้ใช้ยังยืนยันทำต่อได้
 - ปริมาณ RAM ที่ใช้จริงขึ้นกับ context length, KV cache, tools และโปรแกรมอื่นที่เปิดพร้อมกัน ตัวเลขข้างต้นจึงเป็นแนวทางสำหรับการใช้งาน Agent ไม่ใช่เพียงการโหลด weights ให้สำเร็จ
 - Python 3.11 via conda (`mlx` env)
-- `mlx-vlm` installed (และติดตั้ง `mlx-lm` เป็น dependency ที่ server ใช้ร่วมกัน)
+- `mlx-vlm` **0.7.10 ขึ้นไป** (ปักไว้ใน `install_library/requirements.txt`) — launcher ของ Agent TH ปฏิเสธการเปิด server ถ้าเวอร์ชันเก่ากว่านี้ หาก env ของ agent มี mlx-vlm เก่ากว่า ให้ตั้ง `V2_MODEL_SERVER_PYTHON` ชี้ไปยัง Python ของ env ที่มี 0.7.10+ (agent ยังรันใน env เดิมได้)
 - (optional) `computer` direct screenshot vision works without extra setup; System Settings → Privacy & Security → **Accessibility** access for the process running the agent adds richer element data — the tool tells you in its own output (`ax=permission_required`) if this is off, no crash either way
 
-> **หมายเหตุเรื่องโมเดล:** ค่า default ของโปรเจกต์ยังเป็น **Qwen3-14B-MLX-4bit**. มี **Qwen3.5-2B-OptiQ-4bit** สำหรับ testing/diagnostic และเครื่องทรัพยากรจำกัด; สำหรับ Mac unified memory **16GB** สามารถเลือก **Qwen3.5-9B-4bit** ซึ่งเป็น VLM และใช้ direct vision/computer ได้; ถ้าใช้ 14B text-only `read_image` จะ full OCR fallback และ `computer` จะ fail closed อย่างชัดเจน
+> **หมายเหตุเรื่องโมเดล:** ค่า default ของโปรเจกต์คือ **Qwen3.5-9B-4bit** ซึ่งเป็น VLM ใช้ direct vision/computer ได้ และใช้งานได้บน Mac unified memory **16GB**. มี **Qwen3.5-2B-OptiQ-4bit** สำหรับ testing/diagnostic และเครื่องทรัพยากรจำกัด; ถ้าเลือก 14B text-only `read_image` จะ full OCR fallback และ `computer` จะ fail closed อย่างชัดเจน
 >
 > **Qwen3.6-35B-A3B (MoE)** ยังเลือกใช้ได้เมื่ออยากได้ headroom ด้าน reasoning/planning/tool calling มากขึ้น. ถ้าเครื่องมี RAM ต่ำกว่า 24GB Electron/CLI จะเตือนก่อน download/load เท่านั้น ไม่ได้บล็อก — ผู้ใช้ยืนยันแล้วระบบจะทำต่อ
 >
@@ -438,8 +438,9 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 |---|---|---|
 | LLM Backend | `MLX_BASE_URL`, `V2_MODEL`, `MLX_API_KEY` | เปลี่ยน server/โมเดล |
 | Generation | `V2_TEMPERATURE`, `V2_THINKING_BUDGET`, `V2_REPETITION_PENALTY`, `V2_RECURSION_LIMIT` | tuning การตอบ |
+| Model Server Python | `V2_MODEL_SERVER_PYTHON` | absolute path ของ Python ที่ใช้เปิด model server (ค่าเริ่มต้น: Python เดียวกับ agent) — ใช้เมื่อ server ต้องอยู่ใน env ที่มี `mlx-vlm` 0.7.10+ |
 | Runtime UI State | `V2_RUNTIME_SETTINGS_PATH` | optional path override สำหรับ Model/Think Budget/Server Mode/Model Server Port config กลางของ CLI + Electron |
-| MLX Prefix Cache | `APC_ENABLED`, `APC_EXACT_CACHE_ENTRIES`, `APC_EXACT_PREFIX_GUARD_TOKENS` | ลด prefill/TTFT ของ prefix ที่ซ้ำกัน |
+| MLX Prefix Cache | `APC_ENABLED`, `APC_EXACT_CACHE_ENTRIES`, `APC_EXACT_PREFIX_GUARD_TOKENS` | ลด prefill/TTFT ของ prefix ที่ซ้ำกัน; cache อยู่ใน memory เท่านั้น — launcher ปิด disk tier ของ mlx-vlm (`APC_DISK_ENABLED=0`) และลบ snapshot เก่าใน `~/.cache/mlx-vlm/apc` ทุกครั้งที่เปิด server |
 | Context Window | `V2_CONTEXT_MAX_CHARS` | ขยาย/ลด session length |
 | Agent Server | `AGENT_SERVER_PORT`, `AGENT_SERVER_TOKEN`, `AGENT_AUTH_DISABLED` | ตั้งค่า authenticated backend สำหรับ Electron/custom clients |
 | Workspace & Logs | `V2_WORKSPACE`, `V2_LOG_DIR`, `V2_LOG_MAX_ENTRIES` | path สำหรับไฟล์งานและ log |
@@ -493,8 +494,6 @@ menu          เปิด mode menu
 /pin remove <index|path>  เอาไฟล์ออกจาก Pin
 /pin clear    ล้าง Pin ทั้งหมด
 /pdf_text "<path>" [--rewrite-thai]  แปลง PDF ผ่าน pipeline เดียวกับ Electron
-/research      เข้า skill mode research (toggle ปิด/เปิด)
-/pdf_to_text   เข้า skill mode แปลง PDF → text
 /history      โหลด conversation history เดิม
 /compact      บีบอัด context
 /clear        เริ่ม session ใหม่
@@ -539,14 +538,14 @@ def my_tool(query: str) -> str:
 
 ### ใช้โมเดลอื่น
 
-default runtime model คือ **Qwen3-14B-MLX-4bit**. สามารถเลือก **Qwen3.5-2B-OptiQ-4bit (VLM)** สำหรับ testing/diagnostic, เครื่อง unified memory **16GB** สามารถเลือก **Qwen3.5-9B-4bit (VLM)** และถ้าต้องการคุณภาพ reasoning สูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)**; เครื่องที่มี RAM ต่ำกว่า 24GB จะได้รับคำเตือนก่อน download/load เฉพาะ 35B แต่ยังยืนยันใช้ได้. `read_image` บน 14B ใช้ OCR fallback ส่วน 2B/9B/35B รองรับ direct vision ตาม capability probe
+default runtime model คือ **Qwen3.5-9B-4bit (VLM)**. สามารถเลือก **Qwen3.5-2B-OptiQ-4bit (VLM)** สำหรับ testing/diagnostic, **Qwen3-14B** (text-only), **Qwen3.8-27B (VLM)** และถ้าต้องการคุณภาพ reasoning สูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)**; เครื่องที่มี RAM ต่ำกว่า 32GB จะได้รับคำเตือนก่อน download/load เฉพาะ 27B (และต่ำกว่า 24GB เฉพาะ 35B) แต่ยังยืนยันใช้ได้. `read_image` บน 14B ใช้ OCR fallback ส่วน 2B/9B/27B/35B รองรับ direct vision ตาม capability probe
 
 วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` โดยใช้ `workspace/runtime_settings.json` ร่วมกัน. ใน `Standalone` Agent TH เป็น owner ของ model server และสามารถ restart model/ย้าย port ของตัวเองได้; Settings มี Watchdog + Start/Stop/Reset. ใน `Shared MAX` TH เป็น client read-only: Model ล็อกตาม MAX VLM, Think Budget ยังเป็นของ TH และ lifecycle controls ถูกปิด. เมื่อกลับจาก Shared MAX ระบบคืน **standalone model เดิมของ TH** ไม่เอา model ของ MAX มาทับค่าที่เคยเลือกไว้
 
 สำหรับ custom backend/port ให้ใช้ advanced override ซึ่งต้องตั้งคู่กันและจะล็อก Model ใน UI:
 
 ```bash
-export V2_MODEL="Qwen/Qwen3-14B-MLX-4bit"
+export V2_MODEL="mlx-community/Qwen3.5-9B-4bit"
 export MLX_BASE_URL="http://localhost:8081/v1"
 python endeavor_agent.py
 ```

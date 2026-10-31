@@ -20,7 +20,6 @@ from .speak import speak
 from .awake import awake
 from .computer_use import computer
 from .mcp_client import mcp_list_tools, mcp_call_tool, mcp_add_server, mcp_remove_server
-from .skill_tools.research_orchestrator import research_orchestrator
 
 ALL_TOOLS = [
     web_search, bash, bash_bg, python_exec, plot, read_file, edit, create_plan,
@@ -29,8 +28,6 @@ ALL_TOOLS = [
     mcp_list_tools, mcp_call_tool, mcp_add_server, mcp_remove_server,
 ]
 
-# Tools bound only when their matching skill mode is active.
-# Add a new entry here for any future skill-only tool — no other code change needed.
-SKILL_TOOLS: dict[str, list] = {
-    "research": [research_orchestrator],
-}
+# Tools bound only when their matching skill mode is active. No skill ships with the
+# release; add a new entry here for any skill-only tool — no other code change needed.
+SKILL_TOOLS: dict[str, list] = {}

@@ -118,6 +118,60 @@ class ModelRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelRegistryError, "template_policy"):
             self._load_payload(payload)
 
+    def test_default_is_qwen35_9b_and_2b_stays_selectable(self):
+        self.assertEqual(REGISTRY.default_model, "mlx-community/Qwen3.5-9B-4bit")
+        self.assertEqual(config.DEFAULT_MODEL, "mlx-community/Qwen3.5-9B-4bit")
+        self.assertEqual(REGISTRY.role("default").repo_id, REGISTRY.default_model)
+        light = REGISTRY.role("light")
+        self.assertEqual(light.repo_id, "mlx-community/Qwen3.5-2B-OptiQ-4bit")
+        self.assertTrue(light.selectable)
+
+    def test_qwen38_27b_declares_native_preserve_and_a_memory_cap(self):
+        spec = REGISTRY.get("mlx-community/Qwen3.8-27B-4bit")
+        self.assertTrue(spec.selectable)
+        self.assertEqual(spec.native_apc.template_policy, "native_preserve")
+        self.assertEqual(spec.native_apc.exact_cache_entries, 2)
+        self.assertEqual(spec.native_apc.memory_max_gb, 6.0)
+        self.assertIn(spec.repo_id, config.MODEL_CHOICES)
+        for other in REGISTRY.models:
+            if other.repo_id != spec.repo_id:
+                self.assertIsNone(other.native_apc.memory_max_gb, other.repo_id)
+
+    def _payload_with_cap(self, cap):
+        return {
+            "schema_version": 1,
+            "default_model": "future/model",
+            "models": [
+                {
+                    "repo_id": "future/model",
+                    "label": "Future native model",
+                    "role": "default",
+                    "selectable": True,
+                    "ram_warning_below_gib": None,
+                    "native_apc": {
+                        "enabled": True,
+                        "exact_cache_entries": 2,
+                        "memory_max_gb": cap,
+                        "template_policy": "native_preserve",
+                    },
+                }
+            ],
+        }
+
+    def test_memory_cap_accepts_a_positive_number_and_fails_closed_otherwise(self):
+        self.assertEqual(
+            self._load_payload(self._payload_with_cap(6)).get("future/model").native_apc.memory_max_gb,
+            6.0,
+        )
+        self.assertEqual(
+            self._load_payload(self._payload_with_cap(2.5)).get("future/model").native_apc.memory_max_gb,
+            2.5,
+        )
+        for bad in (0, -1, "6", True, float("inf")):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ModelRegistryError, "memory_max_gb"):
+                    self._load_payload(self._payload_with_cap(bad))
+
 
 if __name__ == "__main__":
     unittest.main()

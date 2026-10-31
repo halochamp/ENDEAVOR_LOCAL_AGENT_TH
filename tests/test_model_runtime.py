@@ -87,6 +87,51 @@ class ModelRuntimeOwnershipTests(unittest.TestCase):
             source.index("from mlx_vlm.server import main"),
         )
 
+    def test_launcher_requires_mlx_vlm_0_7_10_or_newer(self) -> None:
+        self.assertEqual(launcher.MIN_MLX_VLM, "0.7.10")
+        for ok in ("0.7.10", "0.7.11", "0.8.0", "1.0.0", "0.7.10.post1", "0.7.10rc1"):
+            with self.subTest(version=ok):
+                self.assertEqual(launcher._require_supported_mlx_vlm(ok), ok)
+        for old in ("0.6.8", "0.7.9", "0.7.0", "0.5.0"):
+            with self.subTest(version=old):
+                with self.assertRaisesRegex(RuntimeError, r"mlx-vlm >= 0\.7\.10"):
+                    launcher._require_supported_mlx_vlm(old)
+        for junk in ("", "latest", "7"):
+            with self.subTest(version=junk):
+                with self.assertRaisesRegex(RuntimeError, "version"):
+                    launcher._require_supported_mlx_vlm(junk)
+
+    def test_launcher_refuses_an_old_mlx_vlm_before_importing_the_server(self) -> None:
+        source = Path(runtime._LAUNCHER).read_text(encoding="utf-8")
+        main_body = source[source.index("def main()"):]
+        self.assertLess(
+            main_body.index("_require_supported_mlx_vlm()"),
+            main_body.index("_install_owner_model_gate(owner_model)"),
+        )
+
+    def test_server_python_defaults_to_the_agent_interpreter(self) -> None:
+        with mock.patch.dict(runtime.os.environ, {}, clear=False):
+            runtime.os.environ.pop("V2_MODEL_SERVER_PYTHON", None)
+            self.assertEqual(runtime._server_python(), sys.executable)
+
+    def test_server_python_override_must_be_an_absolute_executable(self) -> None:
+        with mock.patch.dict(runtime.os.environ, {"V2_MODEL_SERVER_PYTHON": sys.executable}):
+            self.assertEqual(runtime._server_python(), sys.executable)
+        for bad in ("python3", "/definitely/not/python", self._tmp.name):
+            with self.subTest(value=bad):
+                with mock.patch.dict(runtime.os.environ, {"V2_MODEL_SERVER_PYTHON": bad}):
+                    with self.assertRaisesRegex(RuntimeError, "V2_MODEL_SERVER_PYTHON"):
+                        runtime._server_python()
+
+    def test_owned_server_is_started_with_the_configured_server_python(self) -> None:
+        with mock.patch.dict(runtime.os.environ, {"V2_MODEL_SERVER_PYTHON": sys.executable}), \
+             mock.patch.object(runtime, "_listener_pids", return_value=[]), \
+             mock.patch.object(runtime, "_server_python", return_value="/opt/server/bin/python"), \
+             mock.patch.object(runtime, "_LOG_PATH", Path(self._tmp.name) / "py.log"), \
+             mock.patch.object(runtime.subprocess, "Popen") as spawn:
+            runtime.start_model_server(config.DEFAULT_MODEL)
+        self.assertEqual(spawn.call_args.args[0][0], "/opt/server/bin/python")
+
     def test_owned_standalone_launcher_gets_explicit_apc_policy(self) -> None:
         with mock.patch.dict(runtime.os.environ, {
             "APC_ENABLED": "0",
@@ -95,6 +140,34 @@ class ModelRuntimeOwnershipTests(unittest.TestCase):
             env = runtime._server_env(config.DEFAULT_MODEL)
         self.assertEqual(env["APC_ENABLED"], "1")
         self.assertEqual(env["APC_EXACT_CACHE_ENTRIES"], "2")
+
+    def test_apc_disk_tier_is_always_off_for_the_owned_server(self) -> None:
+        for inherited in ("1", "true", "0", None):
+            with self.subTest(inherited=inherited):
+                patch = {"APC_DISK_ENABLED": inherited} if inherited is not None else {}
+                with mock.patch.dict(runtime.os.environ, patch, clear=False):
+                    if inherited is None:
+                        runtime.os.environ.pop("APC_DISK_ENABLED", None)
+                    env = runtime._server_env(config.DEFAULT_MODEL)
+                self.assertEqual(env["APC_DISK_ENABLED"], "0")
+
+    def test_launcher_applies_the_disk_policy_before_the_server_is_imported(self) -> None:
+        source = Path(runtime._LAUNCHER).read_text(encoding="utf-8")
+        main_body = source[source.index("def main()"):]
+        self.assertIn("apc_disk_policy", main_body)
+        self.assertLess(
+            main_body.index("apc_disk_policy"),
+            main_body.index("_install_owner_model_gate(owner_model)"),
+        )
+
+    def test_apc_memory_cap_comes_only_from_the_model_contract(self) -> None:
+        with mock.patch.dict(runtime.os.environ, {"APC_MEMORY_MAX_GB": "99"}, clear=False):
+            capped = runtime._server_env("mlx-community/Qwen3.8-27B-4bit")
+            uncapped = runtime._server_env(config.DEFAULT_MODEL)
+        self.assertEqual(capped["APC_MEMORY_MAX_GB"], "6")
+        # A stale value from the caller's environment must not leak into a model
+        # that declares no cap.
+        self.assertNotIn("APC_MEMORY_MAX_GB", uncapped)
 
     def test_shared_max_requires_max_project_patched_launcher(self) -> None:
         max_cmd = (

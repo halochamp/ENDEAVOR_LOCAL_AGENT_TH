@@ -38,10 +38,12 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from activity_text import arguments_preview, result_preview
 from agent_log import AgentLogger
 from awake_engine import AwakeEngine, Registry, drain_notices, restore_notices
 import config as _config
 import pdf_to_text
+import translate_documents
 from config import (
     RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED,
     READ_FILE_MAX_BYTES, READ_FILE_AUDIO_VIDEO_MAX_BYTES,
@@ -246,6 +248,33 @@ def _load_skill_content(sname: str) -> str | None:
         return f.read().strip()
 
 
+def _compose_skill_query(query: str, skill_name: str, skill_content: str) -> str:
+    """Prefix a query with a skill's content in the format the agent already expects."""
+    return f"[SKILL: {skill_name}]\n{skill_content}\n---\n{query}" if skill_name else query
+
+
+def _resolve_skill_once(raw) -> tuple[str, str] | None:
+    """Validate ``skill_once`` from a query message: one turn under a named skill.
+
+    A persistent skill mode is untouched. Skills that bind their own tools need a
+    rebuilt app, which a single turn must not do, so they have to be opened as a mode.
+    """
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("skill_once must be a string")
+    name = raw.strip().lower()
+    # Names come from skills/<name>.md; anything path-like is never looked up.
+    if not re.fullmatch(r"\w[\w-]*", name):
+        raise ValueError(f"ไม่พบ skill '{name}'")
+    content = _load_skill_content(name)
+    if content is None:
+        raise ValueError(f"ไม่พบ skill '{name}'")
+    if SKILL_TOOLS.get(name):
+        raise ValueError(f"skill '{name}' มีเครื่องมือเฉพาะ ต้องเปิดเป็นโหมดด้วย /{name} ก่อน")
+    return name, content
+
+
 def _load_builtin_cmds() -> list[dict]:
     return _builtin_commands_for_surface("electron")
 
@@ -415,7 +444,7 @@ async def _apply_focus_folder(raw_folder: object) -> dict:
         return _edit_access_payload(error="active workspace path must be a string")
     try:
         normalized = "" if not raw_folder.strip() else _validate_approved_edit_folder(raw_folder)
-        # Focus is process/session state only. It deliberately never calls the
+        # Active Workspace is process/session state only. It deliberately never calls the
         # persistent approval mutator, even when the folder is new.
         state = await asyncio.to_thread(_save_focus_folder, normalized)
         return _edit_access_payload(state=state)
@@ -1392,14 +1421,24 @@ class _WSCallback(BaseCallbackHandler):
         name = serialized.get("name", "")
         args = _parse_tool_args(input_str, kwargs)
         self._run_to_name[str(run_id)] = name
-        self._put({"type": "tool", "name": name, "detail": _tool_detail(name, args)})
+        # `detail` is the short legacy line; `call_id` + redacted `arguments` let the
+        # Activity log show the whole call and attach its result later.
+        self._put({
+            "type": "tool", "name": name, "detail": _tool_detail(name, args),
+            "call_id": str(run_id), "arguments": arguments_preview(args),
+        })
         self._log.tool_call(name, args, self._tid)
+
+    def _publish_tool_result(self, run_id, name: str, output, *, error: bool = False) -> None:
+        self._put({"type": "tool_result", "call_id": str(run_id), "name": name,
+                   **result_preview(output, error=error)})
 
     def on_tool_end(self, output, *, run_id, **kwargs):
         self._check_cancel()  # fire immediately after tool completes, before LLM processes result
         name = self._run_to_name.get(str(run_id), "")
         result_text = _extract_tool_content(output)
         self._log.tool_result(name, result_text, self._tid)
+        self._publish_tool_result(run_id, name, result_text)
         if name == "create_plan":
             steps = _parse_plan_steps(result_text)
             if steps:
@@ -1409,6 +1448,9 @@ class _WSCallback(BaseCallbackHandler):
 
     def on_tool_error(self, error, *, run_id, **kwargs):
         self._timer.cancel()
+        self._publish_tool_result(
+            run_id, self._run_to_name.get(str(run_id), ""), f"{type(error).__name__}: {error}", error=True
+        )
         if self._timer.had_tool:
             self._put({"type": "phase", "label": "executing..."})
 
@@ -1425,6 +1467,7 @@ def _run_agent_sync(
     cancel_event: threading.Event | None = None,
     *,
     turn_context: dict | None = None,
+    skill_override: tuple[str, str] | None = None,
 ) -> None:
     # Bind per-run callbacks as ContextVars so parallel tool threads (LangGraph
     # ToolNode uses ThreadPoolExecutor.submit which copies context) inherit them
@@ -1433,10 +1476,10 @@ def _run_agent_sync(
         sub_cb, phase_cb, plan_cb,
         cancel_check=(cancel_event.is_set if cancel_event else None),
     )
-    actual_q = (
-        f"[SKILL: {_state.skill}]\n{_state.skill_content}\n---\n{query}"
-        if _state.skill else query
-    )
+    # A one-shot skill (`/skill <instruction>`) applies to this turn only and wins
+    # over the persistent mode without changing it.
+    skill_name, skill_content = skill_override or (_state.skill, _state.skill_content)
+    actual_q = _compose_skill_query(query, skill_name, skill_content)
     tid = str(uuid.uuid4())[:8]
     _state.logger.turn_start(query, tid)
     cb = _WSCallback(q, loop, _state.logger, tid, cancel_event)
@@ -1587,6 +1630,355 @@ async def _run_pdf_text_job(job_id: str, source: Path, source_name: str, rewrite
             source.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+# ── Translate panel (resumable document → Thai translation jobs) ─────────────
+
+_TRANSLATE_STATE_LOCK = threading.RLock()
+
+_translate_state: dict | None = None
+
+_translate_task: asyncio.Task | None = None
+
+_translate_control: dict[str, threading.Event] | None = None
+
+_TRANSLATE_UPLOAD_DIR = Path(_config.TRANSLATE_PRIVATE_DIR) / "uploads"
+
+_MANAGED_TRANSLATE_PREFIX = "th-translate-"
+
+_TRANSLATE_JOB_ID_RE = re.compile(r"translate-\d+-[0-9a-f]{8}\Z")
+
+
+
+def _translate_snapshot() -> dict:
+    with _TRANSLATE_STATE_LOCK:
+        _restore_translate_state_locked()
+        if not _translate_state:
+            return {
+                "job_id": "", "status": "idle", "event": "idle", "message": "พร้อม",
+                "source_name": "", "target_language": "th", "page_basis": "",
+                "model": "", "page": 0, "total_pages": 0, "stats": {},
+                "warnings": [], "output_path": "", "error": "",
+            }
+        snap = dict(_translate_state)
+        snap["stats"] = dict(snap.get("stats") or {})
+        snap["warnings"] = list(snap.get("warnings") or [])
+        snap.pop("source_path", None)
+        snap.pop("checkpoint_path", None)
+        return snap
+
+
+
+def _translate_state_file() -> Path:
+    return Path(_config.TRANSLATE_PRIVATE_DIR) / "active_job.json"
+
+
+
+def _persist_translate_state_locked() -> None:
+    """Persist only the active job metadata needed to resume after a server reload."""
+    if not _translate_state:
+        return
+    source_value = str(_translate_state.get("source_path") or "")
+    source = Path(source_value) if source_value else None
+    job_id = str(_translate_state.get("job_id") or "")
+    checkpoint_value = str(_translate_state.get("checkpoint_path") or "")
+    if (
+        source is None or not source.is_file() or source.is_symlink()
+        or not source.name.startswith(_MANAGED_TRANSLATE_PREFIX)
+        or _valid_translate_paths(job_id, source_value, checkpoint_value) is None
+    ):
+        return
+    destination = _translate_state_file()
+    temporary: Path | None = None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=destination.parent,
+            prefix=".active-translate-", suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(_translate_state, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, destination)
+    except OSError as exc:
+        log.warning("Could not persist Translate resume metadata: %s", exc)
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+
+def _clear_translate_state_file(job_id: str) -> None:
+    path = _translate_state_file()
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if saved.get("job_id") == job_id:
+            path.unlink(missing_ok=True)
+    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+        pass
+
+
+
+def _valid_translate_paths(job_id: str, source_value: str, checkpoint_value: str) -> tuple[Path, Path] | None:
+    if not _TRANSLATE_JOB_ID_RE.fullmatch(job_id):
+        return None
+    upload_dir = _TRANSLATE_UPLOAD_DIR.resolve()
+    source = Path(source_value)
+    checkpoint = Path(checkpoint_value)
+    try:
+        if source.is_symlink() or not source.is_file() or not source.name.startswith(_MANAGED_TRANSLATE_PREFIX):
+            return None
+        if source.resolve().parent != upload_dir:
+            return None
+        if checkpoint.is_symlink():
+            return None
+        private_dir = Path(_config.TRANSLATE_PRIVATE_DIR).resolve()
+        expected_checkpoint = private_dir / f"{job_id}.json"
+        if checkpoint.resolve() != expected_checkpoint:
+            return None
+        if checkpoint.exists() and not checkpoint.is_file():
+            return None
+        return source, expected_checkpoint
+    except OSError:
+        return None
+
+
+
+def _restore_translate_state_locked() -> None:
+    """Restore a paused Translate job after an Agent server restart."""
+    global _translate_state, _translate_control
+    if _translate_state is not None:
+        return
+    state_path = _translate_state_file()
+    restored: dict | None = None
+    try:
+        saved = json.loads(state_path.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict):
+            saved = {}
+        job_id = str(saved.get("job_id") or "")
+        paths = _valid_translate_paths(
+            job_id, str(saved.get("source_path") or ""), str(saved.get("checkpoint_path") or ""),
+        )
+        if paths and saved.get("status") in {"uploading", "queued", "running", "pausing", "paused", "error", "cancelling"}:
+            source, checkpoint = paths
+            restored = dict(saved)
+            restored["source_path"] = str(source)
+            restored["checkpoint_path"] = str(checkpoint)
+            if restored.get("status") in {"uploading", "queued", "running", "pausing", "cancelling"}:
+                restored.update(
+                    status="paused", event="paused",
+                    message="กู้คืนงานแปลหลัง Agent server เริ่มใหม่ · ทำต่อจาก checkpoint ล่าสุดได้",
+                )
+    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+        pass
+
+    # Older jobs predate the sidecar. Recover a matching upload by the SHA-256
+    # recorded in its checkpoint so a code reload does not strand that job.
+    if restored is None:
+        try:
+            checkpoints = sorted(
+                (path for path in Path(_config.TRANSLATE_PRIVATE_DIR).glob("translate-*.json")
+                 if path.is_file() and not path.is_symlink() and _TRANSLATE_JOB_ID_RE.fullmatch(path.stem)),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            uploads = [
+                path for path in _TRANSLATE_UPLOAD_DIR.iterdir()
+                if path.is_file() and not path.is_symlink() and path.name.startswith(_MANAGED_TRANSLATE_PREFIX)
+            ]
+            cutoff = time.time() - _config.TRANSLATE_CACHE_MAX_AGE_SECONDS
+            for checkpoint in checkpoints:
+                try:
+                    if checkpoint.stat().st_mtime <= cutoff:
+                        continue
+                    data = json.loads(checkpoint.read_text(encoding="utf-8"))
+                    if not isinstance(data, dict):
+                        continue
+                    source_hash = str(data.get("source_sha256") or "")
+                    source_name = str(data.get("source_name") or "")
+                    if not source_hash or not source_name:
+                        continue
+                    source = next((
+                        path for path in uploads
+                        if path.stat().st_mtime > cutoff and translate_documents._sha256(path) == source_hash
+                    ), None)
+                    if source is None:
+                        continue
+                    job_id = checkpoint.stem
+                    translated = data.get("translated") or {}
+                    page_numbers = [
+                        int(match.group(1)) for key in translated
+                        if (match := re.fullmatch(r"p(\d+)-b\d+", str(key)))
+                    ]
+                    restored = {
+                        "job_id": job_id, "status": "paused", "event": "paused",
+                        "source_name": source_name, "target_language": "th",
+                        "page_basis": str(data.get("page_basis") or ""),
+                        "model": str(data.get("model") or _config.get_model()),
+                        "page": max(page_numbers, default=0), "total_pages": 0,
+                        "stats": {"block": int(data.get("next_index") or 0), "blocks": 0},
+                        "warnings": [], "output_path": "", "error": "",
+                        "message": "กู้คืนงานแปลที่ค้างไว้ · ทำต่อจาก checkpoint ล่าสุดได้",
+                        "source_path": str(source), "checkpoint_path": str(checkpoint),
+                    }
+                    break
+                except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+                    continue
+        except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
+            restored = None
+
+    if restored is not None:
+        _translate_state = restored
+        _translate_control = {"pause": threading.Event(), "cancel": threading.Event()}
+        _persist_translate_state_locked()
+
+
+
+def _restore_translate_state() -> None:
+    with _TRANSLATE_STATE_LOCK:
+        _restore_translate_state_locked()
+
+
+
+def _update_translate_state(job_id: str, **changes) -> None:
+    with _TRANSLATE_STATE_LOCK:
+        if not _translate_state or _translate_state.get("job_id") != job_id:
+            return
+        _translate_state.update(changes)
+        _persist_translate_state_locked()
+
+
+
+def _translate_progress(job_id: str, stage: str, page: int, total: int, stats: dict) -> None:
+    detail = dict(stats or {})
+    if stage == "extract":
+        message = f"กำลังอ่านเอกสาร หน้า {page}/{total}…"
+    elif stage == "translate":
+        block = int(detail.get("block") or 0)
+        blocks = int(detail.get("blocks") or 0)
+        message = f"กำลังแปลเป็นไทย หน้า {page}/{total} · block {block}/{blocks} · no-think"
+    elif stage == "export":
+        message = "กำลังเขียน Markdown…"
+    else:
+        message = "กำลังเตรียมเอกสาร…"
+    with _TRANSLATE_STATE_LOCK:
+        if not _translate_state or _translate_state.get("job_id") != job_id:
+            return
+        pending = _translate_state.get("status") in {"pausing", "cancelling"}
+        _translate_state.update(page=int(page or 0), total_pages=int(total or 0), stats=detail)
+        if not pending:
+            _translate_state.update(status="running", event=stage, message=message)
+        _persist_translate_state_locked()
+
+
+
+def _cleanup_translate_uploads(*, keep: Path | None = None) -> None:
+    try:
+        entries = [
+            item for item in _TRANSLATE_UPLOAD_DIR.iterdir()
+            if item.name.startswith(_MANAGED_TRANSLATE_PREFIX)
+            and item.is_file() and not item.is_symlink()
+        ]
+    except OSError:
+        return
+    cutoff = time.time() - _config.TRANSLATE_CACHE_MAX_AGE_SECONDS
+    for item in entries:
+        if item == keep:
+            continue
+        try:
+            if item.stat().st_mtime <= cutoff:
+                item.unlink()
+        except OSError:
+            pass
+
+
+
+def _translate_control_value(job_id: str, key: str) -> bool:
+    with _TRANSLATE_STATE_LOCK:
+        if not _translate_state or _translate_state.get("job_id") != job_id:
+            return False
+        control = _translate_control or {}
+        event = control.get(key)
+        return bool(event and event.is_set())
+
+
+
+async def _run_translate_job(job_id: str, source: Path, source_name: str, checkpoint: Path) -> None:
+    cleanup = False
+    try:
+        if _translate_control_value(job_id, "cancel"):
+            raise translate_documents.TranslationCancelled("ผู้ใช้ยกเลิกงานแปล")
+        result = await asyncio.to_thread(
+            translate_documents.translate_document,
+            source,
+            source_name=source_name,
+            output_dir=_config.TRANSLATE_OUTPUT_DIR,
+            checkpoint_path=checkpoint,
+            progress=lambda stage, page, total, stats: _translate_progress(
+                job_id, stage, page, total, stats
+            ),
+            should_pause=lambda: _translate_control_value(job_id, "pause"),
+            should_cancel=lambda: _translate_control_value(job_id, "cancel"),
+        )
+        if _translate_control_value(job_id, "cancel"):
+            try:
+                Path(str(result.get("output_path") or "")).unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise translate_documents.TranslationCancelled("ผู้ใช้ยกเลิกงานแปล")
+        cleanup = True
+        _update_translate_state(
+            job_id, status="done", event="done", message="แปลเอกสารเป็นไทยเสร็จแล้ว",
+            total_pages=int(result.get("total_pages") or 0),
+            output_path=str(result.get("output_path") or ""),
+            page_basis=str(result.get("page_basis") or ""),
+            model=str(result.get("model") or ""),
+            warnings=list(result.get("warnings") or []),
+            stats={
+                "translated_pages": int(result.get("translated_pages") or 0),
+                "total_blocks": int(result.get("total_blocks") or 0),
+            }, error="",
+        )
+    except translate_documents.TranslationPaused as exc:
+        _update_translate_state(
+            job_id, status="paused", event="paused", message=str(exc) or "พักงานแปลแล้ว",
+        )
+    except translate_documents.TranslationCancelled as exc:
+        cleanup = True
+        _update_translate_state(
+            job_id, status="cancelled", event="cancelled", message="ยกเลิกงานแปลแล้ว",
+            error=str(exc),
+        )
+    except Exception as exc:
+        log.exception("Translate job failed")
+        _update_translate_state(
+            job_id, status="error", event="error", message="แปลเอกสารไม่สำเร็จ",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    finally:
+        if cleanup:
+            try:
+                source.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                checkpoint.unlink(missing_ok=True)
+            except OSError:
+                pass
+            _clear_translate_state_file(job_id)
+
+
+
+def _translate_allowed_name(name: str) -> bool:
+    return Path(name).suffix.casefold() in {
+        ".pdf", ".txt", ".md", ".markdown", ".log", ".rst", ".csv", ".tsv",
+        ".html", ".htm", ".rtf", ".doc", ".docx", ".xlsx", ".xls",
+    }
+
 
 
 # ── Workspace file helpers ─────────────────────────────────────────────────────
@@ -1942,7 +2334,7 @@ def get_file(path: str):
 
 @api.post("/edit-access/authorize", dependencies=[Depends(_require_token)])
 def authorize_edit_access(payload: dict):
-    """Revalidate the current runtime Focus/approval state for Electron native open."""
+    """Revalidate the current runtime Active Workspace/approval state for Electron native open."""
     return {"path": _validated_edit_target(payload.get("path"))}
 
 
@@ -2064,6 +2456,178 @@ def pdf_to_text_status(job_id: str = ""):
     if job_id and snapshot.get("job_id") != job_id:
         return JSONResponse({"ok": False, "error": "ไม่พบ PDF to Text job นี้"}, status_code=404)
     return {"ok": True, "job": snapshot}
+
+
+@api.post("/translate/start", dependencies=[Depends(_require_token)])
+async def translate_start(request: Request):
+    """Upload one supported document and start the Thai translation job."""
+    global _translate_state, _translate_task, _translate_control
+    original_name = unquote(request.headers.get("x-file-name", ""))
+    name = Path(original_name).name.strip()
+    if not name or len(name) > 512 or "\x00" in name or not _translate_allowed_name(name):
+        return JSONResponse({"ok": False, "error": "ชนิดไฟล์ไม่รองรับสำหรับการแปล"}, status_code=400)
+    target = request.headers.get("x-target-language", "th").strip().casefold()
+    if target not in {"th", "thai"}:
+        return JSONResponse({"ok": False, "error": "Translate รองรับปลายทางภาษาไทยเท่านั้น"}, status_code=400)
+    length = request.headers.get("content-length")
+    if length:
+        try:
+            declared_length = int(length)
+        except ValueError:
+            return JSONResponse({"ok": False, "error": "ขนาดไฟล์ไม่ถูกต้อง"}, status_code=400)
+        if declared_length <= 0 or declared_length > _config.TRANSLATE_MAX_BYTES:
+            return JSONResponse({"ok": False, "error": f"ไฟล์ใหญ่เกิน {_config.TRANSLATE_MAX_BYTES // (1024 * 1024)}MB"}, status_code=413)
+    _restore_translate_state()
+    with _TRANSLATE_STATE_LOCK:
+        if _translate_state and _translate_state.get("status") in {"uploading", "queued", "running", "pausing", "paused", "cancelling", "error"}:
+            return {"ok": True, "already_running": True, "job": _translate_snapshot()}
+        job_id = f"translate-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+        _translate_state = {
+            "job_id": job_id, "status": "uploading", "event": "uploading",
+            "source_name": name, "target_language": "th", "page_basis": "",
+            "model": _config.get_model(), "page": 0, "total_pages": 0,
+            "stats": {}, "warnings": [], "output_path": "", "error": "",
+            "message": "กำลังรับไฟล์…", "source_path": "", "checkpoint_path": "",
+        }
+        _translate_control = {"pause": threading.Event(), "cancel": threading.Event()}
+    stored_path: Path | None = None
+    try:
+        _TRANSLATE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        _TRANSLATE_UPLOAD_DIR.chmod(0o700)
+        _cleanup_translate_uploads()
+        suffix = Path(name).suffix.casefold()
+        with tempfile.NamedTemporaryFile(mode="wb", prefix=_MANAGED_TRANSLATE_PREFIX, suffix=suffix, dir=_TRANSLATE_UPLOAD_DIR, delete=False) as handle:
+            stored_path = Path(handle.name)
+            total = 0
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > _config.TRANSLATE_MAX_BYTES:
+                    raise ValueError("too_large")
+                handle.write(chunk)
+            if total <= 0:
+                raise ValueError("empty")
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o600)
+        checkpoint = Path(_config.TRANSLATE_PRIVATE_DIR) / f"{job_id}.json"
+    except asyncio.CancelledError:
+        if stored_path is not None:
+            try:
+                stored_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        _update_translate_state(job_id, status="cancelled", event="cancelled", message="ยกเลิกการรับไฟล์")
+        raise
+    except Exception as exc:
+        if stored_path is not None:
+            try:
+                stored_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if str(exc) == "too_large":
+            error, code = f"ไฟล์ใหญ่เกิน {_config.TRANSLATE_MAX_BYTES // (1024 * 1024)}MB", 413
+        elif str(exc) == "empty":
+            error, code = "ไฟล์ว่าง", 400
+        else:
+            error, code = "รับไฟล์ไม่สำเร็จ", 400
+        _update_translate_state(job_id, status="error", event="error", message=error, error=error)
+        return JSONResponse({"ok": False, "error": error}, status_code=code)
+    if _translate_control_value(job_id, "cancel"):
+        stored_path.unlink(missing_ok=True)
+        _update_translate_state(job_id, status="cancelled", event="cancelled", message="ยกเลิกการรับไฟล์")
+        return {"ok": True, "already_running": False, "job": _translate_snapshot()}
+    _update_translate_state(job_id, status="queued", event="queued", message="รับไฟล์แล้ว · กำลังเริ่มแปล…", source_path=str(stored_path), checkpoint_path=str(checkpoint))
+    _translate_task = asyncio.create_task(_run_translate_job(job_id, stored_path, name, checkpoint))
+    return {"ok": True, "already_running": False, "job": _translate_snapshot()}
+
+
+
+@api.get("/translate/status", dependencies=[Depends(_require_token)])
+def translate_status(job_id: str = ""):
+    snapshot = _translate_snapshot()
+    if job_id and snapshot.get("job_id") != job_id:
+        return JSONResponse({"ok": False, "error": "ไม่พบ Translate job นี้"}, status_code=404)
+    return {"ok": True, "job": snapshot}
+
+
+
+@api.post("/translate/pause", dependencies=[Depends(_require_token)])
+def translate_pause(job_id: str = ""):
+    _restore_translate_state()
+    with _TRANSLATE_STATE_LOCK:
+        if not _translate_state or (job_id and _translate_state.get("job_id") != job_id):
+            return JSONResponse({"ok": False, "error": "ไม่พบ Translate job นี้"}, status_code=404)
+        current = str(_translate_state.get("status") or "")
+        if current not in {"queued", "running"}:
+            return {"ok": True, "job": _translate_snapshot()}
+        if _translate_control:
+            _translate_control["pause"].set()
+        _translate_state["status"] = "pausing"
+        _translate_state["event"] = "pausing"
+        _translate_state["message"] = "กำลังพักหลังจบส่วนที่กำลังแปล…"
+        _persist_translate_state_locked()
+    return {"ok": True, "job": _translate_snapshot()}
+
+
+
+@api.post("/translate/resume", dependencies=[Depends(_require_token)])
+async def translate_resume(job_id: str = ""):
+    global _translate_task
+    _restore_translate_state()
+    with _TRANSLATE_STATE_LOCK:
+        if not _translate_state or (job_id and _translate_state.get("job_id") != job_id):
+            return JSONResponse({"ok": False, "error": "ไม่พบ Translate job นี้"}, status_code=404)
+        if _translate_state.get("status") not in {"paused", "error"}:
+            return {"ok": True, "job": _translate_snapshot()}
+        source = Path(str(_translate_state.get("source_path") or ""))
+        checkpoint = Path(str(_translate_state.get("checkpoint_path") or ""))
+        if not source.is_file():
+            return JSONResponse({"ok": False, "error": "ไม่พบไฟล์ชั่วคราวสำหรับทำงานต่อ"}, status_code=409)
+        if _translate_control:
+            _translate_control["pause"].clear()
+            _translate_control["cancel"].clear()
+        _translate_state["status"] = "queued"
+        _translate_state["event"] = "queued"
+        _translate_state["message"] = "กำลังทำงานต่อ…"
+        _persist_translate_state_locked()
+        _translate_task = asyncio.create_task(_run_translate_job(
+            str(_translate_state["job_id"]), source, str(_translate_state["source_name"]), checkpoint,
+        ))
+    return {"ok": True, "job": _translate_snapshot()}
+
+
+
+@api.post("/translate/cancel", dependencies=[Depends(_require_token)])
+async def translate_cancel(job_id: str = ""):
+    _restore_translate_state()
+    with _TRANSLATE_STATE_LOCK:
+        if not _translate_state or (job_id and _translate_state.get("job_id") != job_id):
+            return JSONResponse({"ok": False, "error": "ไม่พบ Translate job นี้"}, status_code=404)
+        current = _translate_state.get("status")
+        if current in {"done", "cancelled", "idle"}:
+            return {"ok": True, "job": _translate_snapshot()}
+        if _translate_control:
+            _translate_control["cancel"].set()
+        if current in {"paused", "error"}:
+            source = Path(str(_translate_state.get("source_path") or ""))
+            if source.is_file():
+                source.unlink(missing_ok=True)
+            checkpoint = Path(str(_translate_state.get("checkpoint_path") or ""))
+            if checkpoint.is_file():
+                checkpoint.unlink(missing_ok=True)
+            _clear_translate_state_file(str(_translate_state.get("job_id") or ""))
+            _translate_state["status"] = "cancelled"
+            _translate_state["event"] = "cancelled"
+            _translate_state["message"] = "ยกเลิกงานแปลแล้ว"
+        else:
+            _translate_state["status"] = "cancelling"
+            _translate_state["event"] = "cancelling"
+            _translate_state["message"] = "กำลังยกเลิก…"
+            _persist_translate_state_locked()
+    return {"ok": True, "job": _translate_snapshot()}
+
 
 
 @api.post("/chat", dependencies=[Depends(_require_token)])
@@ -2273,6 +2837,11 @@ async def ws_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "msg": "user_query must be a string"})
                     continue
                 try:
+                    skill_override = _resolve_skill_once(data.get("skill_once"))
+                except ValueError as exc:
+                    await websocket.send_json({"type": "error", "msg": str(exc)})
+                    continue
+                try:
                     raw_pins = data.get("pinned_files", [])
                     file_context = _prepare_file_context(
                         user_query,
@@ -2325,7 +2894,10 @@ async def ws_endpoint(websocket: WebSocket):
                         target=_run_agent_sync,
                         args=(content, q, loop,
                               _ws_sub_cb, _ws_phase_cb, _ws_plan_cb, cancel_event),
-                        kwargs={"turn_context": turn_context} if turn_context else {},
+                        kwargs={
+                            **({"turn_context": turn_context} if turn_context else {}),
+                            **({"skill_override": skill_override} if skill_override else {}),
+                        },
                         daemon=True,
                     ).start()
                     ws_alive = True

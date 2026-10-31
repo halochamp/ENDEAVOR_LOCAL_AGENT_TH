@@ -28,10 +28,30 @@ _DELTA_IGNORED_DIRS = {
 }
 
 
-def _classify_bash_error(returncode: int, stderr: str, command: str, workspace: str) -> str | None:
+def _active_workspace_cwd() -> str | None:
+    """The selected Active Workspace when it is a readable, unprotected folder."""
+    try:
+        from tools.edit_access import get_focus_folder
+        from tools._safety import resolve_read_path
+        focus = str(get_focus_folder() or "").strip()
+        if not focus:
+            return None
+        real = os.path.realpath(os.path.expanduser(focus))
+        resolve_read_path(real)  # protected paths stay off-limits
+        return real if os.path.isdir(real) and os.access(real, os.R_OK | os.X_OK) else None
+    except Exception:
+        return None
+
+
+def _classify_bash_error(returncode: int, stderr: str, command: str, workspace: str,
+                         active_workspace: str | None = None) -> str | None:
     """Evidence-gated recovery hint for a failed bash call — mirrors python_exec's
     error classifier (a wrong hint is worse than no hint, so each branch checks the
     actual signal, not just a guess from the command text)."""
+    if active_workspace and returncode != 0 and "No such file or directory" in stderr:
+        # Observed: the model retypes the long Active Workspace path and garbles it.
+        return ("that path does not exist — the cwd is already the Active Workspace, so name its "
+                "files relatively (ls, cat <name>) instead of retyping its absolute path.")
     if returncode == 127:
         return "command not found — check spelling, or use an absolute path / `which <name>` first."
     if returncode == 126:
@@ -368,7 +388,10 @@ def _bash_execute(command: str, timeout: int = 30) -> tuple[str, dict | None]:
     tree_root = ""
     write_roots: tuple[str, ...] | None = None
     before: dict = {}
-    cwd = WORKSPACE
+    # Relative paths mean the same folder as read_file/edit: the Active Workspace
+    # when one is selected. Without a write scope the sandbox still allows writes
+    # only inside the agent workspace.
+    cwd = (_active_workspace_cwd() if not scope else None) or WORKSPACE
     if scope:
         scope_kind = str(scope.get("kind") or "")
         targets = tuple(str(item) for item in scope.get("targets") or ())
@@ -463,7 +486,8 @@ def _bash_execute(command: str, timeout: int = 30) -> tuple[str, dict | None]:
         if result.stderr:
             output += f"\n[stderr]\n{result.stderr}"
         output = output.strip() or "(no output)"
-        hint = _classify_bash_error(result.returncode, result.stderr or "", command, WORKSPACE)
+        hint = _classify_bash_error(result.returncode, result.stderr or "", command, WORKSPACE,
+                                    active_workspace=cwd if not scope and cwd != WORKSPACE else None)
         if hint:
             output += f"\n[hint] {hint}"
         # marker_first: a trailing marker could get sliced off by an outer runtime cap,
@@ -504,10 +528,11 @@ def _bash_impl(command: str, timeout: int = 30) -> str:
 
 @tool(response_format="content_and_artifact")
 def bash(command: str, timeout: int = 30) -> tuple[str, dict | None]:
-    """Run a bash command on the local machine (normal cwd = workspace) — system operations, run scripts, check processes/disk/memory.
+    """Run a bash command on the local machine (normal cwd = the Active Workspace when one is set, else workspace) — system operations, run scripts, check processes/disk/memory.
     NOT for arithmetic, math, or data analysis (pandas/statistics) — use python_exec for those; never for shell-wrapped Python.
 
-    FILE SEARCH (this machine runs macOS) — cwd = workspace/, so relative paths (find ., ls) only search there.
+    FILE SEARCH (this machine runs macOS) — cwd = the Active Workspace when one is set (the same base as read_file/edit
+    relative paths), else workspace/, so relative paths (find ., ls) only search there.
     To find files elsewhere on the machine, use absolute paths or ~:
       - mdfind -name "keyword"                              → macOS Spotlight, whole-disk, fastest — try first
       - find ~ -iname "*keyword*" 2>/dev/null | head -20    → fallback when mdfind misses unindexed files

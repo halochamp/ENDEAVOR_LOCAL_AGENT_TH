@@ -163,7 +163,35 @@ def _server_env(model: str) -> dict[str, str]:
     env["APC_ENABLED"] = "1" if contract.enabled else "0"
     env["APC_EXACT_CACHE_ENTRIES"] = str(contract.exact_cache_entries)
     env["APC_EXACT_PREFIX_GUARD_TOKENS"] = env.get("APC_EXACT_PREFIX_GUARD_TOKENS", "64")
+    # mlx-vlm 0.7 would spill APC snapshots to ~/.cache/mlx-vlm/apc; they are derived
+    # from private conversations, so the disk tier is never enabled (see
+    # scripts/apc_disk_policy.py, which the launcher also applies).
+    env["APC_DISK_ENABLED"] = "0"
+    # The memory ceiling is part of the model's contract: set it when declared and
+    # never inherit a stale value from the caller's environment otherwise.
+    if contract.memory_max_gb is None:
+        env.pop("APC_MEMORY_MAX_GB", None)
+    else:
+        env["APC_MEMORY_MAX_GB"] = f"{contract.memory_max_gb:g}"
     return env
+
+
+def _server_python() -> str:
+    """Interpreter that runs the owned model server.
+
+    Defaults to the agent's own interpreter. ``V2_MODEL_SERVER_PYTHON`` lets the
+    server live in a separate environment (for example one carrying a newer
+    mlx-vlm than the agent environment); it must be an absolute executable path.
+    """
+    raw = os.environ.get("V2_MODEL_SERVER_PYTHON", "").strip()
+    if not raw:
+        return sys.executable
+    path = os.path.expanduser(raw)
+    if not (os.path.isabs(path) and os.path.isfile(path) and os.access(path, os.X_OK)):
+        raise RuntimeError(
+            f"V2_MODEL_SERVER_PYTHON must be an absolute path to an executable Python: {raw!r}"
+        )
+    return path
 
 
 def start_model_server(model: str, *, port: int | None = None) -> subprocess.Popen:
@@ -172,6 +200,7 @@ def start_model_server(model: str, *, port: int | None = None) -> subprocess.Pop
         raise ValueError(f"unsupported model: {model!r}")
     if not _LAUNCHER.is_file():
         raise RuntimeError(f"model launcher missing: {_LAUNCHER}")
+    server_python = _server_python()
     target_port = _port(port)
     if _listener_pids(target_port):
         raise RuntimeError(f"cannot start model server: :{target_port} is already occupied")
@@ -181,7 +210,7 @@ def start_model_server(model: str, *, port: int | None = None) -> subprocess.Pop
     try:
         proc = subprocess.Popen(
             [
-                sys.executable,
+                server_python,
                 str(_LAUNCHER),
                 "--model", model,
                 "--host", "127.0.0.1",

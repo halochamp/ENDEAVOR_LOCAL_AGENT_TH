@@ -22,8 +22,10 @@ Important components documented by the project include:
 - `model_runtime.py` — shared model-server owner state/lifecycle for Standalone mode, plus the read-only Shared MAX boundary;
 - `agent_server.py` — authenticated WebSocket/REST backend for Electron and explicit custom clients; publishes self-contained host telemetry in UI order CPU/GPU/RAM/TOK/network, validates recursive Workspace `@file` mentions, and revalidates persistent Pin File paths every normal turn through the same protected read-path policy as `read_file` before graph-owned reads;
 - `pdf_to_text.py` — direct deterministic-first PDF → text pipeline used by Electron, with native text extraction, OCR/table reconstruction, Thai formatting repair, and optional local no-think rewrite;
+- `translate_documents.py` — resumable document → Thai translation pipeline for the Electron Translate tab (stable page/block boundaries, checkpointed pause/resume/cancel, protected tokens kept verbatim);
+- `activity_text.py` — redaction and bounding for the Activity log: tool arguments and result previews pass through it before reaching the UI (secrets, private keys, credential URLs and base64 payloads never leave the server);
 - `endeavor_agent.py` — CLI front end;
-- `AGENT_UI/` — Electron desktop front end with Workspace browsing, `@file` autocomplete, direct PDF to Text, activity/history and runtime Settings;
+- `AGENT_UI/` — Electron desktop front end with Workspace browsing, `@file` autocomplete, direct PDF to Text, resumable Translate (document → Thai), newest-first activity log with redacted tool arguments/results, `/skill <instruction> @file` composer support, history and runtime Settings;
 - `awake_engine.py` — standing-trigger execution;
 - `workspace/`, logs/history/memory — runtime state.
 

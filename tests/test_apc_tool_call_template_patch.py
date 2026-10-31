@@ -41,9 +41,10 @@ class APCTemplatePatchTests(unittest.TestCase):
             patcher.MODEL_TEMPLATE_POLICIES,
             {
                 config.HIGH_QUALITY_MODEL: "qwen36_tool_call",
-                config.COMPACT_VLM_MODEL: "qwen35_tool_call",
+                config.BALANCED_VLM_MODEL: "native_preserve",
+                config.DEFAULT_MODEL: "qwen35_tool_call",
                 config.LIGHT_VLM_MODEL: "qwen35_tool_call",
-                config.DEFAULT_MODEL: "qwen3_tool_call",
+                config.TEXT_MODEL: "qwen3_tool_call",
             },
         )
 
@@ -60,7 +61,7 @@ class APCTemplatePatchTests(unittest.TestCase):
             + "\n"
             + patcher._QWEN35_TOOL_PREDICATE
         )
-        for model in (config.COMPACT_VLM_MODEL, config.LIGHT_VLM_MODEL):
+        for model in (config.DEFAULT_MODEL, config.LIGHT_VLM_MODEL):
             with self.subTest(model=model):
                 rendered = self._exercise(model, template)
                 self.assertIn(patcher._QWEN35_POSITION_PATCHED_TAG, rendered)
@@ -73,7 +74,7 @@ class APCTemplatePatchTests(unittest.TestCase):
             patcher._QWEN3_TOOL_TAG,
             patcher._QWEN3_NESTED_UPSTREAM_TAG,
         ))
-        rendered = self._exercise(config.DEFAULT_MODEL, template)
+        rendered = self._exercise(config.TEXT_MODEL, template)
         self.assertIn(patcher._QWEN35_POSITION_PATCHED_TAG, rendered)
         self.assertIn(patcher._QWEN3_NESTED_PATCHED_TAG, rendered)
         self.assertNotIn(patcher._QWEN3_NESTED_UPSTREAM_TAG, rendered)
@@ -108,7 +109,7 @@ class APCTemplatePatchTests(unittest.TestCase):
             "mlx_vlm": mlx,
             "mlx_vlm.prompt_utils": prompt_utils,
         }), self.assertRaises(patcher.TemplatePatchError):
-            self.assertTrue(patcher.apply_for_model(config.COMPACT_VLM_MODEL))
+            self.assertTrue(patcher.apply_for_model(config.DEFAULT_MODEL))
             prompt_utils.get_chat_template(processor, [], True)
 
     def test_malformed_qwen3_template_fails_closed_at_lazy_validation(self):
@@ -121,7 +122,7 @@ class APCTemplatePatchTests(unittest.TestCase):
             "mlx_vlm": mlx,
             "mlx_vlm.prompt_utils": prompt_utils,
         }), self.assertRaises(patcher.TemplatePatchError):
-            self.assertTrue(patcher.apply_for_model(config.DEFAULT_MODEL))
+            self.assertTrue(patcher.apply_for_model(config.TEXT_MODEL))
             prompt_utils.get_chat_template(processor, [], True)
 
     def test_explicit_custom_template_is_not_rewritten(self):
@@ -137,7 +138,7 @@ class APCTemplatePatchTests(unittest.TestCase):
             "mlx_vlm": mlx,
             "mlx_vlm.prompt_utils": prompt_utils,
         }):
-            self.assertTrue(patcher.apply_for_model(config.COMPACT_VLM_MODEL))
+            self.assertTrue(patcher.apply_for_model(config.DEFAULT_MODEL))
             self.assertEqual(
                 prompt_utils.get_chat_template(processor, [], True, chat_template="custom"),
                 "ok",

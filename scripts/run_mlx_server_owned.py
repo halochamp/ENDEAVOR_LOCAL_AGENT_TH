@@ -8,6 +8,8 @@ replace it.
 """
 from __future__ import annotations
 
+import importlib.metadata
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -18,6 +20,36 @@ if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
 
 from model_registry import ModelRegistryError, get_native_apc_contract
+
+# Native APC memory ceiling, sorted tool-schema keys and the speculative/APC fixes
+# this project depends on first shipped in mlx-vlm 0.7.10; older servers are refused.
+MIN_MLX_VLM = "0.7.10"
+
+
+def _release_tuple(version: str) -> tuple[int, int, int] | None:
+    match = re.match(r"^\s*(\d+)\.(\d+)\.(\d+)", str(version or ""))
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _require_supported_mlx_vlm(installed: str | None = None) -> str:
+    """Return the installed mlx-vlm version, or raise when it is too old to serve."""
+    if installed is None:
+        try:
+            installed = importlib.metadata.version("mlx-vlm")
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise RuntimeError(
+                f"mlx-vlm is not installed; Agent TH requires mlx-vlm >= {MIN_MLX_VLM}"
+            ) from exc
+    found = _release_tuple(installed)
+    if found is None:
+        raise RuntimeError(f"cannot read the mlx-vlm version {installed!r}")
+    if found < _release_tuple(MIN_MLX_VLM):
+        raise RuntimeError(
+            f"Agent TH requires mlx-vlm >= {MIN_MLX_VLM} but this Python has {installed}; "
+            "install install_library/requirements.txt or point V2_MODEL_SERVER_PYTHON "
+            "at an environment with a supported mlx-vlm"
+        )
+    return installed
 
 
 def _option_value(argv: Sequence[str], option: str) -> str:
@@ -53,6 +85,11 @@ def _install_owner_model_gate(owner_model: str) -> None:
 
 
 def main() -> None:
+    _require_supported_mlx_vlm()
+    # Conversation-derived APC snapshots stay in memory: switch the SSD tier off and
+    # delete what earlier processes left, before mlx_vlm reads its APC settings.
+    from scripts import apc_disk_policy
+    apc_disk_policy.apply()
     owner_model = _option_value(sys.argv, "--model")
     _install_owner_model_gate(owner_model)
     try:

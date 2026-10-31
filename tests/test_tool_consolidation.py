@@ -46,8 +46,7 @@ class ToolConsolidationTests(unittest.TestCase):
         names = tuple(tool.name for tool in tools.ALL_TOOLS)
         self.assertEqual(EXPECTED_TOOLS, names)
         self.assertEqual(20, len(tools.ALL_TOOLS))
-        self.assertEqual({"research"}, set(tools.SKILL_TOOLS))
-        self.assertNotIn(tools.SKILL_TOOLS["research"][0], tools.ALL_TOOLS)
+        self.assertEqual({}, tools.SKILL_TOOLS)
         self.assertEqual({}, config.MCP_SERVERS)
 
         removed_modules = (

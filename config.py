@@ -4,9 +4,10 @@
 
 """config.py — ENDEAVOR_AGENT_V2 configuration
 
-default: Qwen/Qwen3-14B-MLX-4bit @ :8085 via mlx_vlm.server
+default: mlx-community/Qwen3.5-9B-4bit @ :8085 via mlx_vlm.server (>= 0.7.10)
 lightweight test VLM: mlx-community/Qwen3.5-2B-OptiQ-4bit
-compact VLM option: mlx-community/Qwen3.5-9B-4bit
+text-only option: Qwen/Qwen3-14B-MLX-4bit
+balanced VLM option: mlx-community/Qwen3.8-27B-4bit
 optional high-quality model: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit
 สลับด้วย shared runtime config หรือ env var — ไม่ต้องแก้ code
 """
@@ -32,11 +33,13 @@ _SHARED_MAX_TEST_PORT = 8085
 _DEFAULT_URL = f"http://localhost:{_DEFAULT_SERVER_PORT}/v1"
 _DEFAULT_MODEL_SPEC = REGISTRY.role("default")
 _LIGHT_MODEL_SPEC = REGISTRY.role("light")
-_COMPACT_MODEL_SPEC = REGISTRY.role("compact")
+_TEXT_MODEL_SPEC = REGISTRY.role("text")
+_BALANCED_MODEL_SPEC = REGISTRY.role("balanced")
 _HIGH_QUALITY_MODEL_SPEC = REGISTRY.role("high_quality")
 DEFAULT_MODEL = REGISTRY.default_model
 LIGHT_VLM_MODEL = _LIGHT_MODEL_SPEC.repo_id
-COMPACT_VLM_MODEL = _COMPACT_MODEL_SPEC.repo_id
+TEXT_MODEL = _TEXT_MODEL_SPEC.repo_id
+BALANCED_VLM_MODEL = _BALANCED_MODEL_SPEC.repo_id
 HIGH_QUALITY_MODEL = _HIGH_QUALITY_MODEL_SPEC.repo_id
 LOW_RAM_WARNING_BYTES = int((_HIGH_QUALITY_MODEL_SPEC.ram_warning_below_gib or 0) * 1024**3)
 SERVER_MODES = ("standalone", "shared_max")
@@ -454,6 +457,19 @@ PDF_TO_TEXT_MAX_BYTES = 250 * 1024 * 1024
 PDF_TO_TEXT_OCR_DPI = _pdf_env_int("V2_PDF_OCR_DPI", 180, 120, 300)
 PDF_TO_TEXT_OCR_MAX_PIXELS = 20_000_000
 PDF_TO_TEXT_NATIVE_MIN_CHARS = _pdf_env_int("V2_PDF_NATIVE_MIN_CHARS", 40, 0, 500)
+
+# Direct Electron Translate panel. Translation uses the selected model in no-think
+# mode and writes user-facing Markdown into the workspace; resumable checkpoints and
+# uploads stay in the ignored private directory.
+TRANSLATE_PRIVATE_DIR = os.path.join(WORKSPACE, ".translate")
+TRANSLATE_OUTPUT_DIR = os.path.join(WORKSPACE, "translate")
+TRANSLATE_MAX_BYTES = _pdf_env_int("V2_TRANSLATE_MAX_BYTES", 250 * 1024 * 1024, 1 * 1024 * 1024, 1024 * 1024 * 1024)
+TRANSLATE_LLM_BLOCK_CHARS = _pdf_env_int("V2_TRANSLATE_BLOCK_CHARS", 5500, 1000, 14000)
+TRANSLATE_LLM_BATCH_BLOCKS = _pdf_env_int("V2_TRANSLATE_BATCH_BLOCKS", 3, 1, 8)
+TRANSLATE_LLM_MAX_TOKENS = _pdf_env_int("V2_TRANSLATE_MAX_TOKENS", 8192, 512, 16384)
+TRANSLATE_LLM_TIMEOUT_SECONDS = _pdf_env_int("V2_TRANSLATE_LLM_TIMEOUT", 180, 10, 600)
+TRANSLATE_CACHE_MAX_AGE_SECONDS = _pdf_env_int("V2_TRANSLATE_CACHE_MAX_AGE", 7 * 86400, 3600, 30 * 86400)
+os.makedirs(TRANSLATE_PRIVATE_DIR, exist_ok=True)
 PDF_TO_TEXT_LLM_BATCH_PAGES = _pdf_env_int("V2_PDF_LLM_BATCH_PAGES", 4, 1, 8)
 PDF_TO_TEXT_LLM_BATCH_CHARS = _pdf_env_int("V2_PDF_LLM_BATCH_CHARS", 6000, 1000, 16000)
 PDF_TO_TEXT_LLM_TIMEOUT_SECONDS = _pdf_env_int("V2_PDF_LLM_TIMEOUT", 90, 10, 300)

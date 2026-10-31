@@ -52,9 +52,10 @@ class SharedRuntimeConfigTests(unittest.TestCase):
 
     def test_labels_options_and_default_server_contract(self) -> None:
         settings = config.get_runtime_settings()
-        self.assertEqual(config.get_model_label(), "Qwen3 14B · text")
+        self.assertEqual(config.get_model_label(), "Qwen3.5 9B · VLM")
         self.assertEqual(config.MODEL_LABELS[config.LIGHT_VLM_MODEL], "Qwen3.5 2B · VLM")
-        self.assertEqual(config.MODEL_LABELS[config.COMPACT_VLM_MODEL], "Qwen3.5 9B · VLM")
+        self.assertEqual(config.MODEL_LABELS[config.TEXT_MODEL], "Qwen3 14B · text")
+        self.assertEqual(config.MODEL_LABELS[config.BALANCED_VLM_MODEL], "Qwen3.8 27B · VLM")
         self.assertEqual(config.MODEL_LABELS[config.HIGH_QUALITY_MODEL], "Qwen3.6 35B · VLM")
         self.assertEqual(config.get_thinking_budget_label(), "High")
         self.assertEqual(settings["server_mode"], "standalone")
@@ -127,14 +128,16 @@ class SharedRuntimeConfigTests(unittest.TestCase):
         self.assertNotIn("thinking_budget", no_think["extra_body"])
         self.assertIs(no_think["extra_body"]["enable_thinking"], False)
 
-    def test_default_model_is_qwen3_14b_and_2b_9b_vlms_are_selectable(self) -> None:
-        self.assertEqual(config.DEFAULT_MODEL, "Qwen/Qwen3-14B-MLX-4bit")
+    def test_default_model_is_qwen35_9b_and_other_models_are_selectable(self) -> None:
+        self.assertEqual(config.DEFAULT_MODEL, "mlx-community/Qwen3.5-9B-4bit")
         self.assertEqual(config.LIGHT_VLM_MODEL, "mlx-community/Qwen3.5-2B-OptiQ-4bit")
-        self.assertEqual(config.COMPACT_VLM_MODEL, "mlx-community/Qwen3.5-9B-4bit")
+        self.assertEqual(config.TEXT_MODEL, "Qwen/Qwen3-14B-MLX-4bit")
+        self.assertEqual(config.BALANCED_VLM_MODEL, "mlx-community/Qwen3.8-27B-4bit")
         self.assertEqual(config.MODEL_CHOICES[0], config.DEFAULT_MODEL)
         self.assertEqual(config.MODEL_CHOICES[1], config.LIGHT_VLM_MODEL)
-        self.assertEqual(config.MODEL_CHOICES[2], config.COMPACT_VLM_MODEL)
-        self.assertEqual(config.MODEL_CHOICES[3], config.HIGH_QUALITY_MODEL)
+        self.assertEqual(config.MODEL_CHOICES[2], config.TEXT_MODEL)
+        self.assertEqual(config.MODEL_CHOICES[3], config.BALANCED_VLM_MODEL)
+        self.assertEqual(config.MODEL_CHOICES[4], config.HIGH_QUALITY_MODEL)
 
     def test_runtime_port_moves_endpoint_and_persists_owner_state(self) -> None:
         changed = config.set_runtime_settings(
@@ -206,7 +209,7 @@ class SharedRuntimeConfigTests(unittest.TestCase):
         restart.assert_not_called()
 
     def test_cli_model_change_restarts_owned_standalone_server(self) -> None:
-        new = config.COMPACT_VLM_MODEL
+        new = config.TEXT_MODEL
         with patch.object(endeavor_agent, "get_model_server_control_settings", return_value={"desired_state": "running"}), \
              patch.object(endeavor_agent, "restart_owner_model_server", return_value={"healthy": True}) as restart:
             changed = endeavor_agent._apply_cli_runtime_settings(new, 2048)

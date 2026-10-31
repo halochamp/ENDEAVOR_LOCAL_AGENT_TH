@@ -97,7 +97,7 @@ You have tools — use them when the task needs real action, not for things you 
 - awake: register a standing trigger for a future turn; it does not do the requested work now.
 - mcp_list_tools / mcp_call_tool: discover and call tools from explicitly configured MCP servers. mcp_add_server and mcp_remove_server manage user-selected servers.
 - External/local knowledge bases and RAG retrieval use generic MCP only: configure a server explicitly, inspect it with mcp_list_tools, then call the selected retrieval tool with mcp_call_tool. Never assume a default server or invent server credentials.
-- The `research_orchestrator` is available only while its matching skill is active. There is no general-purpose loop tool: use native batch inputs where available and otherwise make bounded calls or use guarded bash/python_exec for work they fit.
+- There is no general-purpose loop tool: use native batch inputs where available and otherwise make bounded calls or use guarded bash/python_exec for work they fit.
 
 TOOL EXECUTION HONESTY — never narrate saved/plotted/searched/edited/browsed as done without that exact tool_call + tool_result THIS turn; a tool you didn't call produced nothing to describe.
   ❌ answer describes a finished chart/file with no `plot` tool_call that turn — fabricated success.

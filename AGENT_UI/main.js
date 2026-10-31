@@ -278,7 +278,7 @@ ipcMain.on('open-workspace', () => {
 
 ipcMain.handle('get-token', () => AGENT_TOKEN)
 
-function _agentJsonRequest({ method = 'GET', route, headers = {}, body = null, filePath = '' }) {
+function _agentJsonRequest({ method = 'GET', route, headers = {}, body = null, filePath = '', timeoutMs = 300_000, timeoutMessage = 'Agent request timed out' }) {
   return new Promise(resolve => {
     const req = http.request({
       hostname: '127.0.0.1', port: AGENT_PORT, path: route, method,
@@ -305,7 +305,7 @@ function _agentJsonRequest({ method = 'GET', route, headers = {}, body = null, f
       })
     })
     req.on('error', err => resolve({ ok: false, error: String(err && err.message || err) }))
-    req.setTimeout(300_000, () => req.destroy(new Error('PDF upload timed out')))
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(timeoutMessage)))
     if (filePath) {
       const stream = fs.createReadStream(filePath)
       stream.on('error', err => req.destroy(err))
@@ -352,6 +352,7 @@ ipcMain.handle('pdf-to-text-start', async (_e, rewriteThai) => {
       method: 'POST',
       route: '/pdf-to-text/start',
       filePath,
+      timeoutMessage: 'PDF upload timed out',
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Length': String(info.size),
@@ -368,6 +369,70 @@ ipcMain.handle('pdf-to-text-status', async (_e, jobId) => {
   const id = String(jobId || '')
   return _agentJsonRequest({ route: `/pdf-to-text/status?job_id=${encodeURIComponent(id)}` })
 })
+
+ipcMain.handle('translate-start', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'เลือกเอกสารเพื่อแปลเป็นภาษาไทย',
+    properties: ['openFile'],
+    filters: [{
+      name: 'Documents',
+      extensions: [
+        'pdf', 'doc', 'docx', 'txt', 'md', 'markdown', 'log', 'rst',
+        'csv', 'tsv', 'html', 'htm', 'rtf', 'xlsx', 'xls',
+      ],
+    }],
+  })
+  if (canceled || !filePaths.length) return { ok: false, cancelled: true }
+  const filePath = filePaths[0]
+  try {
+    const info = await fs.promises.stat(filePath)
+    if (!info.isFile() || info.size <= 0) return { ok: false, error: 'ไฟล์ว่างหรืออ่านไม่ได้' }
+    if (info.size > 250 * 1024 * 1024) return { ok: false, error: 'ไฟล์ใหญ่เกิน 250MB' }
+    const ext = path.extname(filePath).toLowerCase()
+    const contentTypes = {
+      '.pdf': 'application/pdf', '.doc': 'application/msword',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls': 'application/vnd.ms-excel', '.html': 'text/html', '.htm': 'text/html',
+      '.txt': 'text/plain', '.md': 'text/markdown', '.markdown': 'text/markdown',
+      '.csv': 'text/csv', '.tsv': 'text/tab-separated-values', '.rtf': 'application/rtf',
+    }
+    return await _agentJsonRequest({
+      method: 'POST',
+      route: '/translate/start',
+      filePath,
+      timeoutMs: 600_000,
+      timeoutMessage: 'Translate upload timed out',
+      headers: {
+        'Content-Type': contentTypes[ext] || 'application/octet-stream',
+        'Content-Length': String(info.size),
+        'X-File-Name': encodeURIComponent(path.basename(filePath)),
+        'X-Target-Language': 'th',
+      },
+    })
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) }
+  }
+})
+
+ipcMain.handle('translate-status', async (_e, jobId) => {
+  const id = String(jobId || '')
+  return _agentJsonRequest({
+    route: `/translate/status?job_id=${encodeURIComponent(id)}`,
+  })
+})
+
+async function _translateControl(route, jobId) {
+  const id = String(jobId || '')
+  return _agentJsonRequest({
+    method: 'POST',
+    route: `${route}?job_id=${encodeURIComponent(id)}`,
+  })
+}
+
+ipcMain.handle('translate-pause', async (_e, jobId) => _translateControl('/translate/pause', jobId))
+ipcMain.handle('translate-resume', async (_e, jobId) => _translateControl('/translate/resume', jobId))
+ipcMain.handle('translate-cancel', async (_e, jobId) => _translateControl('/translate/cancel', jobId))
 
 // Compact mode: renderer toggles its CSS, but only the main process can resize
 // the BrowserWindow. Shrink to a floating mini-chat pinned above other windows;
@@ -484,7 +549,7 @@ ipcMain.handle('show-pin-dialog', async () => {
   return { paths, rejected }
 })
 
-// Approved Edit / Focus selection is directory-only. The backend remains the
+// Approved Edit / Active Workspace selection is directory-only. The backend remains the
 // policy authority and validates every returned path again before persisting it.
 ipcMain.handle('show-approved-edit-folder-dialog', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {

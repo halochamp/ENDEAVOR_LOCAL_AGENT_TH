@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from langchain_core.tools import tool
-from tools.bash import _build_sandbox_profile
+from tools.bash import _active_workspace_cwd, _build_sandbox_profile
 
 _MAX_JOBS = 5
 _KILL_GRACE_SECONDS = 3
@@ -205,7 +205,8 @@ def bash_bg(action: str, command: str = "", job_id: str = "") -> str:
                 proc = subprocess.Popen(
                     ["sandbox-exec", "-f", profile_path, "bash", "-c", command],
                     stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                    cwd=WORKSPACE,
+                    # Same relative base as bash; the profile still limits writes.
+                    cwd=_active_workspace_cwd() or WORKSPACE,
                 )
         except Exception as e:
             try:

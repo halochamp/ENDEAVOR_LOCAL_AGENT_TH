@@ -233,6 +233,23 @@ body {
   padding: 4px 0; letter-spacing: 1px; user-select: none;
 }
 
+/* Activity log: turn cards, newest first, with each call's arguments and result */
+.act-turn { display: flex; flex-direction: column; }
+.act-status { margin-left: 6px; font: 9px var(--mono); color: var(--text-faint); font-weight: 400; }
+.act-status-running { color: var(--orange); }
+.act-status-returned { color: var(--green); }
+.act-status-failed, .act-status-blocked { color: var(--red); }
+.act-detail, .act-result { white-space: pre-wrap; overflow-wrap: anywhere; }
+.act-result { margin: 2px 0 0 10px; font: 10px var(--mono); color: var(--text-dim); }
+.act-full { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.act-disclosure > summary { cursor: pointer; list-style: none; }
+.act-disclosure > summary::-webkit-details-marker { display: none; }
+.act-more { margin-left: 6px; color: var(--accent); font-size: 9px; }
+.act-less { margin-left: 6px; color: var(--accent); font-size: 9px; display: none; }
+.act-disclosure[open] > summary .act-compact, .act-disclosure[open] > summary .act-more { display: none; }
+.act-disclosure[open] > summary .act-less { display: inline; }
+.act-source-truncated { margin: 2px 0 0 10px; font-size: 9px; color: var(--text-faint); }
+
 /* ── History panel ─────────────────────────────────────── */
 #history-list {
   flex: 1; overflow-y: auto; padding: 5px 6px;
@@ -289,10 +306,10 @@ body {
 }
 .settings-toggle-row input { accent-color:var(--accent); }
 .settings-runtime {
-  display:grid; grid-template-columns:18px 1fr; gap:6px 7px; align-items:center;
+  display:grid; grid-template-columns:82px minmax(0,1fr); gap:6px 7px; align-items:center;
   padding:2px 1px 10px; border-bottom:1px solid var(--border);
 }
-.settings-glyph { color:var(--text-faint); font-size:11px; text-align:center; }
+.settings-runtime-label { font-size:10px; color:var(--text-dim); align-self:center; }
 .settings-select {
   min-width:0; width:100%; box-sizing:border-box; background:var(--bg2); color:var(--text);
   border:1px solid var(--border); border-radius:5px; padding:5px 7px;
@@ -378,6 +395,42 @@ body {
 .pdf-result-path { font: 9px var(--mono); color: var(--text-faint); overflow-wrap: anywhere; }
 .pdf-result-stats { color: var(--text); }
 .pdf-warning { color: var(--orange); }
+
+/* ── Translate panel ───────────────────────────────────── */
+.translate-body {
+  flex: 1; overflow-y: auto; padding: 12px 10px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.translate-note {
+  font-size: 10px; line-height: 1.5; color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg3); padding: 9px;
+}
+.translate-meta {
+  font: 9px var(--mono); color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.translate-actions { display: flex; gap: 6px; }
+.translate-actions .btn { flex: 1; }
+.translate-status {
+  min-height: 18px; font-size: 10px; line-height: 1.4;
+  color: var(--text-dim); overflow-wrap: anywhere;
+}
+.translate-status.error { color: var(--red); }
+.translate-progress {
+  min-height: 16px; font: 9px var(--mono); color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.translate-result {
+  display: none; flex-direction: column; gap: 6px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg3); padding: 9px;
+  font-size: 10px; line-height: 1.45; color: var(--text-dim);
+}
+.translate-result.show { display: flex; }
+.translate-result-path { font: 9px var(--mono); color: var(--text-faint); overflow-wrap: anywhere; }
+.translate-result-stats { color: var(--text); }
+.translate-warning { color: var(--orange); }
 
 /* ── Chat panel ────────────────────────────────────────── */
 #chat-panel {
@@ -469,7 +522,6 @@ body {
 /* ── Thinking spinner bubble ───────────────────────────── */
 .thinking-bubble { padding: 8px 12px; display: flex; flex-direction: column; gap: 3px; }
 .ts-main { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 12px; }
-.ts-frame { color: var(--accent); font-size: 13px; width: 14px; flex-shrink: 0; }
 .ts-label { color: var(--text-dim); }
 .ts-sub   { display: flex; align-items: baseline; gap: 5px; padding-left: 20px; min-height: 16px; }
 .ts-arrow { color: var(--text-faint); font-size: 11px; flex-shrink: 0; }
@@ -699,6 +751,10 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       <span class="icon-btn-icon">📄</span>
       <span class="icon-btn-label">PDF Text</span>
     </button>
+    <button class="icon-btn" id="btn-translate" title="Translate to Thai">
+      <span class="icon-btn-icon">🌐</span>
+      <span class="icon-btn-label">Translate</span>
+    </button>
     <button class="icon-btn" id="btn-settings" title="Settings">
       <span class="icon-btn-icon">⚙️</span>
       <span class="icon-btn-label">Settings</span>
@@ -721,7 +777,7 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       <button class="files-open-btn">เปิดใน Finder</button>
     </div>
 
-    <!-- Focus view: temporary scope, separate from persistent approvals. -->
+    <!-- Active Workspace view: temporary scope, separate from persistent approvals. -->
     <div id="left-focus" class="left-view">
       <div class="panel-hdr focus-header">
         <span>🎯</span>
@@ -776,18 +832,48 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       </div>
     </div>
 
+    <!-- Document translation view -->
+    <div id="left-translate" class="left-view">
+      <div class="panel-hdr">🌐 Translate → ไทย</div>
+      <div class="translate-body">
+        <div class="translate-note">
+          รับ PDF ที่มี text layer, PDF ภาพถ่าย/สแกนด้วย OCR, ไฟล์ข้อความ และเอกสาร Office
+          แล้วเขียนผลลัพธ์เป็น Markdown พร้อมหัวข้อหน้าและเส้นแบ่งหน้า
+        </div>
+        <div class="translate-meta" id="translate-model-note">ใช้ model ปัจจุบัน · no-think · target ไทย</div>
+        <div class="translate-actions">
+          <button class="btn btn-primary" id="translate-start-btn">เลือกไฟล์และแปล</button>
+        </div>
+        <div class="translate-actions">
+          <button class="btn btn-ghost" id="translate-pause-btn" disabled>พัก</button>
+          <button class="btn btn-ghost" id="translate-resume-btn" disabled>ทำต่อ</button>
+          <button class="btn btn-ghost" id="translate-cancel-btn" disabled>ยกเลิก</button>
+        </div>
+        <div class="translate-status" id="translate-status">พร้อม · แปลเป็นไทยด้วย model ปัจจุบันแบบ no-think</div>
+        <div class="translate-progress" id="translate-progress"></div>
+        <div class="translate-result" id="translate-result">
+          <div class="translate-result-stats" id="translate-result-stats"></div>
+          <div class="translate-result-path" id="translate-result-path"></div>
+          <div class="translate-warning" id="translate-result-warning"></div>
+          <div class="translate-actions">
+            <button class="btn btn-ghost" id="translate-open-output-btn">เปิด Markdown</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Settings view -->
     <div id="left-settings" class="left-view">
       <div class="panel-hdr">⚙️ Settings</div>
       <div class="settings-body">
         <div class="settings-runtime">
-          <span class="settings-glyph" title="Server mode">◆</span>
+          <span class="settings-runtime-label">Server Mode</span>
           <select class="settings-select" id="runtime-server-mode" title="Server mode"></select>
-          <span class="settings-glyph" title="Model">◉</span>
+          <span class="settings-runtime-label">Model</span>
           <select class="settings-select" id="runtime-model" title="Model"></select>
-          <span class="settings-glyph" title="Think budget">◌</span>
+          <span class="settings-runtime-label">Think Budget</span>
           <select class="settings-select" id="runtime-think" title="Think budget"></select>
-          <span class="settings-glyph" title="Model server port">:</span>
+          <span class="settings-runtime-label">Port</span>
           <input class="settings-input" id="runtime-port" type="number" min="1024" max="65535" step="1" title="Model server port">
           <div class="settings-runtime-status" id="runtime-status"></div>
         </div>
@@ -892,6 +978,7 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
 <script src="./node_modules/dompurify/dist/purify.min.js"></script>
 <script src="./node_modules/@highlightjs/cdn-assets/highlight.min.js"></script>
 <script src="lib/format.js"></script>
+<script src="lib/activity_log.js"></script>
 <script src="lib/busy_state.js"></script>
 <script src="lib/waiting_status.js"></script>
 <script src="lib/workspace_mentions.js"></script>

@@ -5,7 +5,16 @@ const test = require('node:test')
 
 const { normalizeState, focusIsPersistent, focusStatus, folderCount } = require('../lib/edit_access')
 
-test('Focus state remains separate from persistent Approved Edit Folders', () => {
+test('Active Workspace status labels use the Active Workspace name', () => {
+  assert.equal(focusStatus(normalizeState({})), 'No Active Workspace')
+  assert.equal(
+    focusStatus(normalizeState({ folders: ['/a'], focus_folder: '/a' })),
+    'Approved + active',
+  )
+  assert.equal(focusStatus(normalizeState({ folders: [], focus_folder: '/b' })), 'Temporary')
+})
+
+test('Active Workspace state remains separate from persistent Approved Edit Folders', () => {
   const state = normalizeState({
     folders: ['/approved'],
     focus_folder: '/focused',

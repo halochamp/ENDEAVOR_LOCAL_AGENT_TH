@@ -46,7 +46,8 @@ def _classify_error(stderr: str) -> str | None:
                 f"scipy/sklearn/statsmodels. Do not pip install — retry with an available "
                 f"library instead.")
     if "FileNotFoundError" in last_line:
-        return "cwd is workspace/ — call bash (for example: rg --files or find) to confirm the exact filename, then retry."
+        return ("python_exec cwd is workspace/; bash runs in the Active Workspace when one is set — "
+                "confirm the file with bash (rg --files or find) and pass its absolute path, then retry.")
     if "UnicodeDecodeError" in last_line:
         return "retry the read with encoding='utf-8-sig' or encoding='latin-1'."
     if "KeyError" in last_line and "pandas" in stderr:

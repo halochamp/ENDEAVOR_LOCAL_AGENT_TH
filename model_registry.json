@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
-  "default_model": "Qwen/Qwen3-14B-MLX-4bit",
+  "default_model": "mlx-community/Qwen3.5-9B-4bit",
   "models": [
     {
-      "repo_id": "Qwen/Qwen3-14B-MLX-4bit",
-      "label": "Qwen3 14B · text",
+      "repo_id": "mlx-community/Qwen3.5-9B-4bit",
+      "label": "Qwen3.5 9B · VLM",
       "role": "default",
       "selectable": true,
       "ram_warning_below_gib": null,
       "native_apc": {
         "enabled": true,
         "exact_cache_entries": 2,
-        "template_policy": "qwen3_tool_call"
+        "template_policy": "qwen35_tool_call"
       }
     },
     {
@@ -27,15 +27,28 @@
       }
     },
     {
-      "repo_id": "mlx-community/Qwen3.5-9B-4bit",
-      "label": "Qwen3.5 9B · VLM",
-      "role": "compact",
+      "repo_id": "Qwen/Qwen3-14B-MLX-4bit",
+      "label": "Qwen3 14B · text",
+      "role": "text",
       "selectable": true,
       "ram_warning_below_gib": null,
       "native_apc": {
         "enabled": true,
         "exact_cache_entries": 2,
-        "template_policy": "qwen35_tool_call"
+        "template_policy": "qwen3_tool_call"
+      }
+    },
+    {
+      "repo_id": "mlx-community/Qwen3.8-27B-4bit",
+      "label": "Qwen3.8 27B · VLM",
+      "role": "balanced",
+      "selectable": true,
+      "ram_warning_below_gib": 32,
+      "native_apc": {
+        "enabled": true,
+        "exact_cache_entries": 2,
+        "memory_max_gb": 6,
+        "template_policy": "native_preserve"
       }
     },
     {

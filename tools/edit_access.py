@@ -1,6 +1,6 @@
 """Shared persistent Approved Edit Folders and temporary Active Workspace state.
 
-Persistent approvals are explicit user choices. Focus is a separate,
+Persistent approvals are explicit user choices. Active Workspace is a separate,
 temporary grant and is never copied into the persistent approval list.
 """
 

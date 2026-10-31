@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,8 @@ class NativeAPCContract:
     enabled: bool
     exact_cache_entries: int
     template_policy: str
+    # Optional ceiling (GB) for the native APC snapshot memory; needs mlx-vlm >= 0.7.
+    memory_max_gb: float | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,18 @@ def _parse_model(raw: Any, *, index: int) -> ModelSpec:
             f"{repo_id} disabled native APC requires non-negative exact_cache_entries"
         )
 
+    memory_max_gb = apc.get("memory_max_gb")
+    if memory_max_gb is not None:
+        if (
+            type(memory_max_gb) not in (int, float)
+            or not math.isfinite(memory_max_gb)
+            or memory_max_gb <= 0
+        ):
+            raise ModelRegistryError(
+                f"{repo_id} native_apc.memory_max_gb must be null or a positive finite number"
+            )
+        memory_max_gb = float(memory_max_gb)
+
     return ModelSpec(
         repo_id=repo_id,
         label=label,
@@ -134,6 +149,7 @@ def _parse_model(raw: Any, *, index: int) -> ModelSpec:
             enabled=enabled,
             exact_cache_entries=int(entries),
             template_policy=policy,
+            memory_max_gb=memory_max_gb,
         ),
     )
 

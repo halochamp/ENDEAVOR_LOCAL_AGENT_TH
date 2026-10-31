@@ -593,6 +593,7 @@ def _last_human_content(messages: list) -> str:
 _FOCUS_FOLDER_DIRECTIVE = (
     "[ACTIVE WORKSPACE — temporary edit access]\n"
     "Active Workspace: {folder}\n"
+    "Relative paths in bash, read_file, read_image and edit resolve here; use them, never retype this path. "
     "This is a temporary user-selected context and edit grant while it remains focused; "
     "it is not a persistent Approved Edit Folder. Do not assume it remains available after "
     "the user changes or clears Active Workspace. Keep writes within the workspace, explicitly approved "
@@ -781,9 +782,9 @@ def _react_node_impl(state: V2State, config: RunnableConfig) -> dict:
             from tools.computer_use import set_computer_turn_scope
             set_computer_turn_scope(block_destructive=True)
 
-    # Focus is an ephemeral model-context/authorization hint. It is injected
+    # Active Workspace is an ephemeral model-context/authorization hint. It is injected
     # only into this invocation window; the original user message and graph
-    # history remain unchanged, so changing/clearing Focus revokes the old
+    # history remain unchanged, so changing/clearing Active Workspace revokes the old
     # temporary grant on the next turn.
     trimmed = _inject_focus_folder_prompt(trimmed, config)
 

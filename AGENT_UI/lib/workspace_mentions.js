@@ -102,5 +102,40 @@
     return { value: nextValue, caret: left.length + token.length + spacer.length }
   }
 
-  return { findMentionContext, buildMentionCandidates, extractMentionPaths, insertMention }
+  // A leading /command is completed from the text up to the end of the word under the
+  // caret, so "/sk| @file ..." still suggests skills and the rest of the message
+  // (mentions, instruction) survives the completion.
+  function findCommandContext(value, caret) {
+    const text = String(value || '')
+    if (!text.startsWith('/')) return null
+    const at = Number.isInteger(caret) ? Math.max(0, Math.min(caret, text.length)) : text.length
+    const tail = text.slice(at).search(/\s/u)
+    const end = tail < 0 ? text.length : at + tail
+    return { prefix: text.slice(0, end), end }
+  }
+
+  function insertCommand(value, end, name) {
+    const head = '/' + String(name || '') + ' '
+    const right = String(value || '').slice(Math.max(0, end)).replace(/^\s+/u, '')
+    return { value: head + right, caret: head.length }
+  }
+
+  // "/skill <instruction>" for a skill that exists runs that instruction for one turn.
+  // A bare "/skill" (no instruction) stays the persistent mode toggle, and an unknown
+  // name is left for the server to report.
+  function parseSkillInvocation(value, skillNames) {
+    const text = String(value || '').trim()
+    const m = text.match(/^\/(\S+)\s+([\s\S]+)$/u)
+    if (!m) return null
+    const name = m[1].toLowerCase()
+    const known = new Set((skillNames || []).map(s => String(s).toLowerCase()))
+    if (!known.has(name)) return null
+    const instruction = m[2].trim()
+    return instruction ? { name, instruction } : null
+  }
+
+  return {
+    findMentionContext, buildMentionCandidates, extractMentionPaths, insertMention,
+    findCommandContext, insertCommand, parseSkillInvocation,
+  }
 })

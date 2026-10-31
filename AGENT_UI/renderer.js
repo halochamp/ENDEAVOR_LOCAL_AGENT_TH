@@ -3,9 +3,6 @@
 const WS_URL = 'ws://localhost:8765/ws?transport=desktop'
 const MAX_ACTIVITY = 500
 
-const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-let frameIdx = 0
-let spinTimer = null
 
 let ws = null
 let wsConnected = false
@@ -33,7 +30,7 @@ let focusMentionFiles = []
 let wsToken = null  // cached once; '' in browser dev mode (server needs AGENT_AUTH_DISABLED=1)
 let currentRunId = null  // set on 'start' event, cleared on done/error/cancelled
 let cancelPending = false  // true between clicking stop and the turn actually stopping; locks the "stopping…" notice so late phase/progress events don't overwrite it
-let activePanel = null  // workspace | activity | history | pdf | settings | null
+let activePanel = null  // workspace | focus | activity | history | pdf | translate | settings | null
 let attachedFilePath = null  // path of file attached via 📎 button (turn-only)
 let pinnedFiles = []         // persistent per-Electron-session working set, up to PIN_MAX
 const PIN_MAX = window.PinnedFiles ? window.PinnedFiles.PIN_MAX : 10
@@ -55,6 +52,9 @@ let modelServerSettings = {
 }
 let pdfTextState = {
   busy: false, jobId: '', outputPath: '', sourceName: '', rewriteThai: false,
+}
+let translateState = {
+  busy: false, jobId: '', outputPath: '', sourceName: '', status: 'idle',
 }
 let modelServerStatusTimer = null
 let pendingRuntimeRequest = null
@@ -271,11 +271,12 @@ function handleEvent(ev) {
       cancelPending = false  // fresh turn — clear any leftover stop lock
       streamingActive = false
       currentToolName = ''
+      runningTools.clear()
       firstAgentBubbleThisTurn = null  // reset so refs attach to this turn's first bubble, not a stale one
       addActivitySeparator()
       setPhase(normalizePhase('thinking…', ''), true)
       showThinking()
-      updateThinkingLabel(normalizePhase('thinking…', ''))
+      updateThinkingLabel(ActivityLog.toolStatusLabel([]))
       scheduleWaitingSummary()
       showCancelButton(true)
       break
@@ -291,10 +292,18 @@ function handleEvent(ev) {
       clearWaitingSummary()
       {
         const ui = toolDisplay(ev.name, ev.detail || '')
-        addActivity(ev.name, ui.activityDetail || '')
-        updateThinkingLabel(ui.label)
+        addActivity(ev.name, ui.activityDetail || '', ev.call_id || '', ev.arguments || '')
+        if (ev.call_id) runningTools.set(ev.call_id, ev.name || '')
+        // Status while a tool runs is plain text ("กำลังใช้ bash"), not an animation.
+        updateThinkingLabel(ActivityLog.toolStatusLabel(
+          ev.call_id ? [...runningTools.values()] : [ev.name]))
         updateThinkingSub(ui.sub || '')
       }
+      break
+    case 'tool_result':
+      finishActivity(ev)
+      runningTools.delete(ev.call_id)
+      updateThinkingLabel(ActivityLog.toolStatusLabel([...runningTools.values()]))
       break
     case 'plan':
       addPlanBlock(ev.steps || [])
@@ -462,9 +471,18 @@ function setPhase(_label, active) {
 }
 
 // ── Activity ───────────────────────────────────────────────────────────────────
+// Newest turn first, newest call first inside a turn. lib/activity_log.js owns the
+// data (ordering, caps, result matching); this only draws it and keeps the reader's
+// scroll position steady while new rows arrive above.
+
+const activityModel = ActivityLog.createActivityModel({ maxTurns: 100, maxEntries: MAX_ACTIVITY })
+const activityOpen = new Set()   // disclosure keys the user expanded
+const runningTools = new Map()   // call_id -> tool name, for the plain-text status line
 
 function clearActivity() {
-  document.getElementById('activity-list').innerHTML = ''
+  activityModel.clear()
+  runningTools.clear()
+  renderActivity()
 }
 
 // actTimestamp(date) is defined in lib/format.js (loaded as a global via <script>
@@ -474,14 +492,8 @@ function _actTs() {
 }
 
 function addActivitySeparator() {
-  const list = document.getElementById('activity-list')
-  // Skip if list is empty (first turn)
-  if (!list.children.length) return
-  const el = document.createElement('div')
-  el.className = 'act-sep'
-  el.textContent = `─── ${_actTs()} ───`
-  list.appendChild(el)
-  list.scrollTop = list.scrollHeight
+  activityModel.startTurn(_actTs())
+  renderActivity()
 }
 
 const TOOL_ICONS = {
@@ -493,32 +505,124 @@ const TOOL_ICONS = {
   mcp_add_server: '🔌', mcp_remove_server: '🔌',
 }
 
-function addActivity(name, detail) {
-  const list = document.getElementById('activity-list')
-  const el = document.createElement('div')
-  el.className = 'act-item'
-  const icon = TOOL_ICONS[name] || '⚙'
-  el.innerHTML = `
-    <div class="act-name">${icon} ${esc(name)}<span class="act-ts">${_actTs()}</span></div>
-    ${detail ? `<div class="act-detail">⎿ ${esc(detail)}</div>` : ''}
-  `
-  list.appendChild(el)
-  while (list.children.length > MAX_ACTIVITY) list.removeChild(list.firstChild)
-  list.scrollTop = list.scrollHeight
+function addActivity(name, detail, callId = '', args = '') {
+  activityModel.addCall({
+    callId: callId || `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name, detail, args, ts: _actTs(),
+  })
+  renderActivity()
+}
+
+function finishActivity(ev) {
+  activityModel.finishCall({
+    callId: ev.call_id, status: ev.status, preview: ev.preview, truncated: ev.truncated,
+  })
+  renderActivity()
 }
 
 function addPlanBlock(steps) {
+  activityModel.addPlan(steps, _actTs())
+  renderActivity()
+}
+
+const ACTIVITY_STATUS_WORDS = {
+  running: 'กำลังทำงาน', returned: 'เสร็จแล้ว', failed: 'ไม่สำเร็จ', blocked: 'ถูกบล็อก',
+}
+
+function _activityText(parent, key, value, cls) {
+  const d = ActivityLog.describeText(value)
+  if (!d.collapsed) {
+    const el = document.createElement('div')
+    el.className = cls
+    el.textContent = d.full
+    parent.appendChild(el)
+    return
+  }
+  const details = document.createElement('details')
+  details.className = 'act-disclosure'
+  if (activityOpen.has(key)) details.open = true
+  details.addEventListener('toggle', () => {
+    if (details.open) activityOpen.add(key)
+    else activityOpen.delete(key)
+  })
+  const summary = document.createElement('summary')
+  const compact = document.createElement('span')
+  compact.className = `${cls} act-compact`
+  compact.textContent = d.compact
+  const more = document.createElement('span')
+  more.className = 'act-more'
+  more.textContent = 'มีต่อ · แสดงเพิ่มเติม'
+  const less = document.createElement('span')
+  less.className = 'act-less'
+  less.textContent = 'ย่อ'
+  summary.append(compact, more, less)
+  const full = document.createElement('pre')
+  full.className = `${cls} act-full`
+  full.textContent = d.full
+  details.append(summary, full)
+  parent.appendChild(details)
+}
+
+function _activityHead(icon, label, ts, status) {
+  const head = document.createElement('div')
+  head.className = 'act-name'
+  head.append(document.createTextNode(`${icon} ${label}`))
+  if (status) {
+    const badge = document.createElement('span')
+    badge.className = `act-status act-status-${status}`
+    badge.textContent = ACTIVITY_STATUS_WORDS[status] || status
+    head.appendChild(badge)
+  }
+  const stamp = document.createElement('span')
+  stamp.className = 'act-ts'
+  stamp.textContent = ts
+  head.appendChild(stamp)
+  return head
+}
+
+function renderActivity() {
   const list = document.getElementById('activity-list')
-  const el = document.createElement('div')
-  el.className = 'act-item'
-  const stepsHtml = steps.map((s, i) => `<div class="act-detail">⎿ ${i + 1}. ${esc(s)}</div>`).join('')
-  el.innerHTML = `
-    <div class="act-name">📋 แผน · ${steps.length} ขั้นตอน<span class="act-ts">${_actTs()}</span></div>
-    ${stepsHtml}
-  `
-  list.appendChild(el)
-  while (list.children.length > MAX_ACTIVITY) list.removeChild(list.firstChild)
-  list.scrollTop = list.scrollHeight
+  if (!list) return
+  const wasAtTop = list.scrollTop <= 48
+  const prevTop = list.scrollTop
+  const prevHeight = list.scrollHeight
+  const frag = document.createDocumentFragment()
+  for (const turn of activityModel.snapshot()) {
+    const card = document.createElement('div')
+    card.className = 'act-turn'
+    const sep = document.createElement('div')
+    sep.className = 'act-sep'
+    sep.textContent = `─── ${turn.ts} ───`
+    card.appendChild(sep)
+    for (const e of turn.entries) {
+      const el = document.createElement('div')
+      el.className = 'act-item'
+      if (e.kind === 'plan') {
+        el.appendChild(_activityHead('📋', `แผน · ${e.steps.length} ขั้นตอน`, e.ts, ''))
+        e.steps.forEach((step, i) => {
+          const row = document.createElement('div')
+          row.className = 'act-detail'
+          row.textContent = `⎿ ${i + 1}. ${step}`
+          el.appendChild(row)
+        })
+      } else {
+        el.appendChild(_activityHead(TOOL_ICONS[e.name] || '⚙', e.name, e.ts, e.status))
+        if (e.args) _activityText(el, `${e.id}:args`, e.args, 'act-detail')
+        else if (e.detail) _activityText(el, `${e.id}:detail`, `⎿ ${e.detail}`, 'act-detail')
+        if (e.preview) _activityText(el, `${e.id}:result`, e.preview, 'act-result')
+        if (e.truncated) {
+          const note = document.createElement('div')
+          note.className = 'act-source-truncated'
+          note.textContent = 'ผลลัพธ์ถูกย่อ · แสดงเฉพาะส่วนต้น'
+          el.appendChild(note)
+        }
+      }
+      card.appendChild(el)
+    }
+    frag.appendChild(card)
+  }
+  list.replaceChildren(frag)
+  list.scrollTop = wasAtTop ? 0 : Math.max(0, prevTop + (list.scrollHeight - prevHeight))
 }
 
 // ── Messages ───────────────────────────────────────────────────────────────────
@@ -570,7 +674,6 @@ function clearMessages() {
 function startStreamingBubble() {
   if (!thinkingEl) showThinking()
   clearWaitingSummary()
-  stopSpin()  // stop AFTER ensuring thinkingEl exists (showThinking calls startSpin)
   thinkingEl.classList.add('streaming')
   const bubble = thinkingEl.querySelector('.msg-bubble')
   bubble.className = 'msg-bubble stream-bubble'
@@ -613,7 +716,6 @@ function appendWebRefs(refs) {
 
 function finalizeStreaming(content) {
   if (!thinkingEl) return
-  stopSpin()
   thinkingEl.classList.remove('streaming')
   const bubble = thinkingEl.querySelector('.msg-bubble')
   bubble.className = 'msg-bubble'
@@ -641,8 +743,7 @@ function showThinking() {
     <div class="msg-label">${agentLabel()}</div>
     <div class="msg-bubble thinking-bubble">
       <div class="ts-main">
-        <span class="ts-frame">${FRAMES[0]}</span>
-        <span class="ts-label">thinking…</span>
+        <span class="ts-label">กำลังคิด…</span>
       </div>
       <div class="ts-sub" style="display:none">
         <span class="ts-arrow">⎿</span>
@@ -652,11 +753,9 @@ function showThinking() {
   `
   box.appendChild(thinkingEl)
   box.scrollTop = box.scrollHeight
-  startSpin()
 }
 
 function removeThinking() {
-  stopSpin()
   clearWaitingSummary()
   if (thinkingEl) { thinkingEl.remove(); thinkingEl = null }
 }
@@ -692,20 +791,6 @@ function updateThinkingSub(msg) {
   if (sub) sub.style.display = msg ? '' : 'none'
 }
 
-function startSpin() {
-  stopSpin()
-  frameIdx = 0
-  spinTimer = setInterval(() => {
-    if (!thinkingEl) return
-    const el = thinkingEl.querySelector('.ts-frame')
-    if (el) { el.textContent = FRAMES[frameIdx % FRAMES.length]; frameIdx++ }
-  }, 80)
-}
-
-function stopSpin() {
-  if (spinTimer) { clearInterval(spinTimer); spinTimer = null }
-}
-
 // ── Send ───────────────────────────────────────────────────────────────────────
 
 function sendMessage() {
@@ -714,7 +799,14 @@ function sendMessage() {
   hideSuggestions()
   if ((!q && !attachedFilePath) || !wsConnected || isBusy) return
 
-  if (q.startsWith('/')) {
+  // "/skill <instruction>" for a known skill is one turn under that skill (mentions
+  // included); a bare "/skill" still toggles the persistent mode below.
+  const skillCall = window.WorkspaceMentions
+    ? window.WorkspaceMentions.parseSkillInvocation(q, availableSkills.map(s => s.name || s))
+    : null
+  const queryText = skillCall ? skillCall.instruction : q
+
+  if (q.startsWith('/') && !skillCall) {
     const cmd = q.toLowerCase()
     if (cmd === '/clear') { sendClear(); inp.value = ''; autoResize(inp); return }
     if (cmd === '/exit' || cmd === '/quit') {
@@ -743,7 +835,7 @@ function sendMessage() {
 
   const mentionFiles = editAccessState.focus_folder ? focusMentionFiles : workspaceMentionFiles
   const mentionPaths = window.WorkspaceMentions
-    ? window.WorkspaceMentions.extractMentionPaths(q, mentionFiles)
+    ? window.WorkspaceMentions.extractMentionPaths(queryText, mentionFiles)
     : []
   const workspaceMentions = editAccessState.focus_folder ? [] : mentionPaths
   const turnAttachment = attachedFilePath
@@ -751,7 +843,7 @@ function sendMessage() {
   const effectiveAttachments = window.PinnedFiles
     ? window.PinnedFiles.withoutPinned(turnAttachments, pinnedFiles)
     : turnAttachments.filter(p => !pinnedFiles.includes(p))
-  const currentQuestion = q || (turnAttachment ? 'สรุปไฟล์ที่แนบมาให้หน่อย' : '')
+  const currentQuestion = queryText || (turnAttachment ? 'สรุปไฟล์ที่แนบมาให้หน่อย' : '')
   const content = effectiveAttachments.length
     ? (currentQuestion ? `${currentQuestion}\n\n${_fileHint(effectiveAttachments[0])}` : _fileHint(effectiveAttachments[0]))
     : currentQuestion
@@ -772,6 +864,7 @@ function sendMessage() {
   }
   if (editAccessState.focus_folder) payload.focus_mentions = mentionPaths
   else Object.assign(payload, { workspace_mentions: workspaceMentions })
+  if (skillCall) payload.skill_once = skillCall.name
   wsSend(payload)
 }
 
@@ -1122,22 +1215,27 @@ function updateSuggestions(val) {
   const inp = document.getElementById('input')
   const caret = inp ? inp.selectionStart : String(val || '').length
 
-  if (String(val || '').startsWith('/')) {
+  const WM = window.WorkspaceMentions
+  // An @ under the caret wins, so "/skill <instruction> @file" can pick a file after
+  // the command; otherwise a leading / completes the command word under the caret.
+  const mention = WM ? WM.findMentionContext(val, caret) : null
+  const command = mention ? null : (WM
+    ? WM.findCommandContext(val, caret)
+    : (String(val || '').startsWith('/') ? { prefix: String(val), end: String(val).length } : null))
+  if (mention) {
+    suggestMode = 'mention'
+    suggestContext = mention
+    const mentionFiles = editAccessState.focus_folder ? focusMentionFiles : workspaceMentionFiles
+    suggestItems = WM.buildMentionCandidates(mentionFiles, mention.query, 20)
+  } else if (command) {
     suggestMode = 'command'
-    suggestContext = null
-    const query = String(val || '').slice(1).toLowerCase()
+    suggestContext = command
+    const query = command.prefix.slice(1).toLowerCase()
     const all = getAllCommands()
     suggestItems = (query === '' ? all : all.filter(c => c.name.toLowerCase().startsWith(query)))
       .map(c => ({ kind: 'command', name: c.name, desc: c.desc }))
   } else {
-    const ctx = window.WorkspaceMentions
-      ? window.WorkspaceMentions.findMentionContext(val, caret)
-      : null
-    if (!ctx) { hideSuggestions(); return }
-    suggestMode = 'mention'
-    suggestContext = ctx
-    const mentionFiles = editAccessState.focus_folder ? focusMentionFiles : workspaceMentionFiles
-    suggestItems = window.WorkspaceMentions.buildMentionCandidates(mentionFiles, ctx.query, 20)
+    hideSuggestions(); return
   }
 
   suggestIdx = -1
@@ -1171,6 +1269,11 @@ function applySuggestion(item) {
     const inserted = window.WorkspaceMentions.insertMention(
       inp.value, suggestContext.start, suggestContext.end, item.token,
     )
+    inp.value = inserted.value
+    inp.setSelectionRange(inserted.caret, inserted.caret)
+  } else if (suggestContext && suggestContext.prefix !== undefined && window.WorkspaceMentions) {
+    // Replace only the leading /token; mentions and the instruction typed after it stay.
+    const inserted = window.WorkspaceMentions.insertCommand(inp.value, suggestContext.end, item.name)
     inp.value = inserted.value
     inp.setSelectionRange(inserted.caret, inserted.caret)
   } else {
@@ -1364,6 +1467,195 @@ function openPdfTextOutput() {
   wsSend({ type: 'open_file', path: pdfTextState.outputPath })
 }
 
+function _translateIsActive(status) {
+  return ['uploading', 'queued', 'running', 'pausing', 'cancelling'].includes(String(status || ''))
+}
+
+function _setTranslateControls(status = translateState.status) {
+  const active = _translateIsActive(status)
+  const paused = status === 'paused' || status === 'error'
+  const start = document.getElementById('translate-start-btn')
+  const pause = document.getElementById('translate-pause-btn')
+  const resume = document.getElementById('translate-resume-btn')
+  const cancel = document.getElementById('translate-cancel-btn')
+  if (start) {
+    start.disabled = active || paused
+    start.textContent = active || paused ? 'กำลังแปล…' : 'เลือกไฟล์และแปล'
+  }
+  if (pause) pause.disabled = !(status === 'queued' || status === 'running')
+  if (resume) resume.disabled = !paused
+  if (cancel) cancel.disabled = !(active || paused)
+  translateState.busy = active || paused
+}
+
+function renderTranslateState(job, error = '') {
+  const statusEl = document.getElementById('translate-status')
+  const progressEl = document.getElementById('translate-progress')
+  const resultEl = document.getElementById('translate-result')
+  const statsEl = document.getElementById('translate-result-stats')
+  const pathEl = document.getElementById('translate-result-path')
+  const warningEl = document.getElementById('translate-result-warning')
+  const modelEl = document.getElementById('translate-model-note')
+  if (!statusEl || !progressEl || !resultEl || !statsEl || !pathEl || !warningEl || !modelEl) return
+
+  if (error) {
+    translateState.status = 'error'
+    statusEl.textContent = error
+    statusEl.classList.add('error')
+    _setTranslateControls('error')
+    return
+  }
+  statusEl.classList.remove('error')
+  const value = job || {}
+  const status = String(value.status || translateState.status || 'idle')
+  translateState.status = status
+  if (value.job_id) translateState.jobId = value.job_id
+  if (value.source_name) translateState.sourceName = value.source_name
+  if (value.output_path) translateState.outputPath = value.output_path
+  const model = value.model || ''
+  modelEl.textContent = model
+    ? `model: ${model} · no-think · target ไทย`
+    : 'ใช้ model ปัจจุบัน · no-think · target ไทย'
+  statusEl.textContent = value.message || (status === 'idle'
+    ? 'พร้อม · แปลเป็นไทยด้วย model ปัจจุบันแบบ no-think'
+    : status)
+  const page = Number(value.page || 0)
+  const total = Number(value.total_pages || 0)
+  const stats = value.stats || {}
+  const block = Number(stats.block || 0)
+  const blocks = Number(stats.blocks || 0)
+  progressEl.textContent = page || total || block || blocks
+    ? `${translateState.sourceName || 'เอกสาร'} · หน้า ${page}/${total || '?'}${blocks ? ` · block ${block}/${blocks}` : ''}`
+    : ''
+  _setTranslateControls(status)
+
+  if (!['done', 'error', 'cancelled'].includes(status)) return
+  if (status !== 'done') {
+    resultEl.classList.remove('show')
+    return
+  }
+  const warnings = Array.isArray(value.warnings) ? value.warnings : []
+  const translatedPages = Number(stats.translated_pages || 0)
+  const totalBlocks = Number(stats.total_blocks || 0)
+  statsEl.textContent = `${Number(value.total_pages || 0)} หน้า · แปลแล้ว ${translatedPages} หน้า · ${totalBlocks} blocks · page basis ${value.page_basis || 'logical_text'}`
+  pathEl.textContent = translateState.outputPath
+  warningEl.textContent = warnings.length ? `⚠ ${warnings.join(' · ')}` : ''
+  resultEl.classList.add('show')
+}
+
+let translatePollPromise = null
+function _pollTranslateJob() {
+  if (!translatePollPromise) {
+    translatePollPromise = _pollTranslateJobLoop().finally(() => { translatePollPromise = null })
+  }
+  return translatePollPromise
+}
+
+async function _pollTranslateJobLoop() {
+  if (!translateState.jobId || !window.electronAPI || !window.electronAPI.translateStatus) return
+  while (true) {
+    await new Promise(resolve => setTimeout(resolve, 500))
+    const response = await window.electronAPI.translateStatus(translateState.jobId)
+    if (!response || !response.ok) throw new Error((response && response.error) || 'อ่านสถานะ Translate ไม่สำเร็จ')
+    const job = response.job || {}
+    renderTranslateState(job)
+    if (['done', 'error', 'cancelled'].includes(job.status)) return job
+  }
+}
+
+async function startTranslate() {
+  if (translateState.busy) return
+  if (!window.electronAPI || !window.electronAPI.translateStart || !window.electronAPI.translateStatus) {
+    renderTranslateState(null, 'Translate ใช้งานไม่ได้ใน runtime นี้')
+    return
+  }
+  translateState.outputPath = ''
+  translateState.status = 'uploading'
+  const resultEl = document.getElementById('translate-result')
+  if (resultEl) resultEl.classList.remove('show')
+  _setTranslateControls('uploading')
+  renderTranslateState({ status: 'uploading', message: 'กำลังเลือกไฟล์…' })
+  try {
+    const started = await window.electronAPI.translateStart()
+    if (started && started.cancelled) {
+      translateState.status = 'idle'
+      renderTranslateState({ status: 'idle' })
+      return
+    }
+    if (!started || !started.ok) throw new Error((started && started.error) || 'เริ่ม Translate ไม่สำเร็จ')
+    const first = started.job || {}
+    translateState.jobId = first.job_id || ''
+    translateState.sourceName = first.source_name || ''
+    if (!translateState.jobId) throw new Error('ไม่ได้รับ Translate job id')
+    renderTranslateState(first)
+    const terminal = await _pollTranslateJob()
+    if (terminal && terminal.status === 'done') {
+      wsSend({ type: 'get_files', path: workspaceRoot || '' })
+    }
+    if (terminal && terminal.status === 'error') throw new Error(terminal.error || 'Translate ไม่สำเร็จ')
+  } catch (err) {
+    renderTranslateState(null, `Translate ไม่สำเร็จ: ${err && err.message ? err.message : err}`)
+  } finally {
+    _setTranslateControls(translateState.status)
+  }
+}
+
+async function pauseTranslate() {
+  if (!translateState.jobId || !window.electronAPI.translatePause) return
+  const response = await window.electronAPI.translatePause(translateState.jobId)
+  if (!response || !response.ok) {
+    renderTranslateState(null, (response && response.error) || 'พักงานแปลไม่สำเร็จ')
+    return
+  }
+  renderTranslateState(response.job || {})
+}
+
+async function resumeTranslate() {
+  if (!translateState.jobId || !window.electronAPI.translateResume) return
+  const response = await window.electronAPI.translateResume(translateState.jobId)
+  if (!response || !response.ok) {
+    renderTranslateState(null, (response && response.error) || 'ทำงานแปลต่อไม่สำเร็จ')
+    return
+  }
+  renderTranslateState(response.job || {})
+  try {
+    const terminal = await _pollTranslateJob()
+    if (terminal && terminal.status === 'done') wsSend({ type: 'get_files', path: workspaceRoot || '' })
+  } catch (err) {
+    renderTranslateState(null, `อ่านสถานะ Translate ไม่สำเร็จ: ${err && err.message ? err.message : err}`)
+  }
+}
+
+async function cancelTranslate() {
+  if (!translateState.jobId || !window.electronAPI.translateCancel) return
+  const response = await window.electronAPI.translateCancel(translateState.jobId)
+  if (!response || !response.ok) {
+    renderTranslateState(null, (response && response.error) || 'ยกเลิกงานแปลไม่สำเร็จ')
+    return
+  }
+  renderTranslateState(response.job || {})
+}
+
+function openTranslateOutput() {
+  if (!translateState.outputPath) return
+  wsSend({ type: 'open_file', path: translateState.outputPath })
+}
+
+async function restoreTranslateJob() {
+  if (!window.electronAPI || !window.electronAPI.translateStatus || translateState.busy) return
+  try {
+    const response = await window.electronAPI.translateStatus(translateState.jobId || '')
+    if (!response || !response.ok || !response.job || response.job.status === 'idle') return
+    renderTranslateState(response.job)
+    if (_translateIsActive(response.job.status)) {
+      const terminal = await _pollTranslateJob()
+      if (terminal && terminal.status === 'done') wsSend({ type: 'get_files', path: workspaceRoot || '' })
+    }
+  } catch (err) {
+    renderTranslateState(null, `อ่านสถานะ Translate ไม่สำเร็จ: ${err && err.message ? err.message : err}`)
+  }
+}
+
 function openWorkspace() {
   if (window.electronAPI) window.electronAPI.openWorkspace()
 }
@@ -1403,6 +1695,9 @@ function togglePanel(name) {
     }
     if (name === 'history') {
       wsSend({ type: 'get_history' })
+    }
+    if (name === 'translate') {
+      restoreTranslateJob()
     }
     if (name === 'settings') {
       wsSend({ type: 'get_runtime_settings' })
@@ -1911,6 +2206,7 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#btn-workspace', () => togglePanel('workspace'))
   on('#btn-focus', () => togglePanel('focus'))
   on('#btn-activity', () => togglePanel('activity'))
+  on('#btn-translate', () => togglePanel('translate'))
   on('#btn-history', () => togglePanel('history'))
   on('#btn-pdf', () => togglePanel('pdf'))
   on('#btn-settings', () => togglePanel('settings'))
@@ -1924,6 +2220,11 @@ document.addEventListener('DOMContentLoaded', () => {
   if (runtimePort) runtimePort.addEventListener('change', saveRuntimeSettings)
   on('#pdf-start-btn', startPdfToText)
   on('#pdf-open-output-btn', openPdfTextOutput)
+  on('#translate-start-btn', startTranslate)
+  on('#translate-pause-btn', pauseTranslate)
+  on('#translate-resume-btn', resumeTranslate)
+  on('#translate-cancel-btn', cancelTranslate)
+  on('#translate-open-output-btn', openTranslateOutput)
   const pdfRewriteThai = document.getElementById('pdf-rewrite-thai')
   if (pdfRewriteThai) pdfRewriteThai.addEventListener('change', () => {
     pdfTextState.rewriteThai = !!pdfRewriteThai.checked

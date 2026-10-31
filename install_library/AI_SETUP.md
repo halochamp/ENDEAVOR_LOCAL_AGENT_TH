@@ -18,16 +18,17 @@ the verification checks — each step gates the next.
 ```bash
 uname -s   # must be "Darwin"
 uname -m   # must be "arm64"
-sysctl hw.memsize   # informational only; default is Qwen3-14B; 2B is test-only; 16GB can select Qwen3.5-9B VLM
+sysctl hw.memsize   # informational only; default is Qwen3.5-9B VLM (fits 16GB); 2B is test-only; 14B is text-only; 27B/35B are optional
 command -v conda    # must exist — if missing, tell user to install Miniforge:
                      # https://github.com/conda-forge/miniforge
 ```
 
 If the platform/Python/conda checks fail, stop and explain what's missing. RAM does not
-block installation: Qwen3-14B is the default, `mlx-community/Qwen3.5-2B-OptiQ-4bit`
-is available as a lightweight test/diagnostic VLM, while a 16 GB Mac can select
-`mlx-community/Qwen3.5-9B-4bit` for the compact VLM path. If the user explicitly selects
-Qwen3.6-35B on a Mac below 24 GB, warn that download/load may use substantial disk/RAM/swap;
+block installation: `mlx-community/Qwen3.5-9B-4bit` (VLM, fits a 16 GB Mac) is the default,
+`mlx-community/Qwen3.5-2B-OptiQ-4bit` is available as a lightweight test/diagnostic VLM,
+Qwen3-14B is the text-only option, and `mlx-community/Qwen3.8-27B-4bit` is the larger VLM
+(warn below 32 GB). If the user explicitly selects Qwen3.6-35B on a Mac below 24 GB (or
+Qwen3.8-27B below 32 GB), warn that download/load may use substantial disk/RAM/swap;
 continue only after the user confirms, because the warning is advisory rather than a hard block.
 
 ## 2. Install dependencies (one command, idempotent)
@@ -41,7 +42,7 @@ This script:
 - installs the hash-locked dependencies in `install_library/requirements.txt`
 - attempts to install the optional Playwright Chromium browser (the agent still installs if this download fails)
 - copies `.env.example` → `.env` if `.env` doesn't exist yet
-- does **not** pre-download all model choices: Qwen3-14B is the default; Qwen3.5-2B test VLM, Qwen3.5-9B VLM and Qwen3.6-35B are fetched only when the user actually selects/starts them
+- does **not** pre-download all model choices: Qwen3.5-9B VLM is the default; the Qwen3.5-2B test VLM, Qwen3-14B, Qwen3.8-27B and Qwen3.6-35B are fetched only when the user actually selects/starts them
 
 Safe to re-run — it skips steps that are already done (existing env, satisfied pip
 versions, already-downloaded chromium).
@@ -125,7 +126,7 @@ so generic custom clients are not forced to consume desktop-only status frames. 
 | `[error] ไม่พบ conda` | Miniforge not installed | install Miniforge, restart shell |
 | install.sh exits at `[1/6]` | not Apple Silicon / not macOS | this project requires M1+ Mac |
 | agent says model offline | Standalone owner failed to start, or Shared MAX server is offline/wrong port | check Settings / `python model_runtime.py status`; Shared MAX must already be running |
-| out of memory / swap thrashing | selected model is too large for available memory | use Qwen3.5-2B-OptiQ-4bit for lightweight testing/diagnostic; on a 16GB Mac choose Qwen3.5-9B-4bit for normal compact use; Qwen3-14B remains the fresh default and Qwen3.6-35B remains optional |
+| out of memory / swap thrashing | selected model is too large for available memory | use Qwen3.5-2B-OptiQ-4bit for lightweight testing/diagnostic; Qwen3.5-9B-4bit is the fresh default and fits a 16GB Mac; Qwen3-14B, Qwen3.8-27B and Qwen3.6-35B are optional larger choices |
 | `playwright install chromium` fails | network/proxy issue | retry; required only for rendered table extraction in `browse_url` and interactive `browser_use` |
 | Thai text broken on plot (squares / floating vowels) | pyobjc not installed correctly | run `python -c "import Quartz, CoreText"` in the mlx env — if it fails, re-run `pip install pyobjc-framework-Quartz pyobjc-framework-CoreText` |
 | Thai text OK but font looks wrong | Thonburi missing or wrong font picked | install Noto Sans Thai via `brew install --cask font-noto-sans-thai` and rebuild font cache |
@@ -151,8 +152,7 @@ up). Key things to know:
 | Command | What it does |
 |---|---|
 | `menu` | open the mode menu |
-| `/research <topic>` | toggle into research skill mode (multi-step web research) |
-| `/pdf_to_text <path>` | toggle into PDF → text skill mode |
+| `/pdf_text <path>` | convert a PDF to text with the same pipeline as the Electron panel |
 | `/history` | reload previous conversation history (from `logs/history.db`) |
 | `/compact` | compress/trim conversation context |
 | `/clear` | start a fresh session |
@@ -164,8 +164,9 @@ paths) but only **writes/creates files inside `workspace/`**. If the user asks t
 agent to "save this file" or "create a script", point them to `workspace/` — that's
 where outputs land. In Electron, the sidebar calls this area **Workspace** and typing
 `@` in the composer opens Workspace file autocomplete; selecting a file produces a
-validated `@file` reference for the turn. Electron also has a direct **PDF to Text**
-tab; deterministic extraction/OCR works without an LLM, while the optional rewrite
+validated `@file` reference for the turn. In the composer, `/skill <instruction> @file` runs one turn under that skill with the
+referenced Active Workspace files. Electron also has a direct **PDF to Text**
+and a resumable **Translate** (document to Thai) tab; deterministic extraction/OCR works without an LLM, while the optional rewrite
 uses the currently configured local model with thinking disabled. See README.md
 "Security" section for the full read/write model.
 
@@ -180,9 +181,11 @@ remains TH-owned, and lifecycle/model controls cannot mutate MAX. Returning to S
 restores TH's previous standalone model instead of keeping MAX's shared model. The paired
 `V2_MODEL` + non-default `MLX_BASE_URL` environment override remains the advanced
 custom-backend path and locks runtime selection. Qwen3.5-2B-OptiQ-4bit is the lightweight
-test/diagnostic VLM, Qwen3.5-9B-4bit is the compact vision-capable option for 16GB Macs;
-Qwen3-14B remains the default text/tool model and uses
-full-OCR fallback for `read_image`; Qwen3.6-35B remains the higher-quality vision-capable option.
+test/diagnostic VLM, Qwen3.5-9B-4bit is the default vision-capable model and fits 16GB Macs;
+Qwen3-14B is the text-only option and uses full-OCR fallback for `read_image`; Qwen3.8-27B and
+Qwen3.6-35B are the higher-quality vision-capable options. The model server needs mlx-vlm >= 0.7.10:
+the installer pins it, and the owned launcher refuses an older release (set `V2_MODEL_SERVER_PYTHON`
+to point the server at another environment).
 
 **Restarting / stopping servers** — if the agent seems stuck, offline, or the user
 wants a clean restart:

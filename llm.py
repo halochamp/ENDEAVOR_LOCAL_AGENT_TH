@@ -237,6 +237,15 @@ def build_llm(*, apc_cache: bool = True, **overrides) -> ChatOpenAI:
     params.update(overrides)
 
     extra_body = {**_DEFAULT_EXTRA_BODY, **override_extra_body}
+    # langchain-openai renames ``max_tokens`` to ``max_completion_tokens`` before
+    # sending a chat-completions request, but mlx_vlm.server only reads the legacy
+    # top-level ``max_tokens`` field. Its request model accepts unknown extras, so the
+    # renamed field is silently ignored and every request falls back to the server
+    # default of 2048 tokens (long answers/thinking were cut mid-way). OpenAI's
+    # ``extra_body`` merges this recognised field into the top-level JSON body.
+    requested_max_tokens = params.get("max_tokens")
+    if requested_max_tokens is not None:
+        extra_body["max_tokens"] = requested_max_tokens
     if extra_body.get("enable_thinking") is False:
         extra_body.pop("thinking_budget", None)
     else:
