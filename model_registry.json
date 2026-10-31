@@ -43,7 +43,7 @@
       "label": "Qwen3.8 27B · VLM",
       "role": "balanced",
       "selectable": true,
-      "ram_warning_below_gib": 32,
+      "ram_warning_below_gib": 20,
       "native_apc": {
         "enabled": true,
         "exact_cache_entries": 2,

@@ -373,6 +373,8 @@ def _runtime_settings_payload(
     error: str = "",
     confirmation_required: bool = False,
     ram_gb: int = 0,
+    model_label: str = "",
+    warning_gib: int = 0,
 ) -> dict:
     state = str(switch_state or "idle")
     if error and state == "idle":
@@ -384,6 +386,8 @@ def _runtime_settings_payload(
         "switch_state": state,
         "confirmation_required": bool(confirmation_required),
         "ram_gb": int(ram_gb or 0),
+        "model_label": str(model_label or ""),
+        "warning_gib": int(warning_gib or 0),
         "error": str(error or ""),
     }
 
@@ -605,6 +609,8 @@ async def _apply_runtime_settings(
         return _runtime_settings_payload(
             confirmation_required=True,
             ram_gb=ram_gb,
+            model_label=_config.MODEL_LABELS.get(requested_model, requested_model),
+            warning_gib=_config.get_model_spec(requested_model).ram_warning_below_gib or 0,
         )
 
     control = _get_model_server_control_settings()

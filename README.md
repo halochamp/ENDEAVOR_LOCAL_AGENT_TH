@@ -77,7 +77,7 @@ cd AGENT_UI && npm install && npm start
 
 ค่าเริ่มต้นคือ **Standalone** ที่ port `8085`. ถ้า `:8085` ถูก Agent MAX VLM ครอบครองด้วย patched launcher ที่ตรวจยืนยันได้ Agent TH จะเข้า **Shared MAX test server** แบบ read-only อัตโนมัติ: ใช้ model ที่ MAX โหลดอยู่ได้ แต่ไม่ Start/Stop/Reset/Watchdog หรือเปลี่ยน model ของ MAX. Listener อื่นที่ไม่ใช่ MAX จะไม่ถูก adopt หรือ kill
 
-> การติดตั้ง **ไม่บังคับดาวน์โหลดทุกโมเดล**: fresh install ใช้ `Qwen3.5-9B-4bit` เป็น default และดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. ผู้ใช้สามารถเลือก `Qwen3.5-2B-OptiQ-4bit` สำหรับการทดสอบเบา ๆ, `Qwen3-14B` (text-only), `Qwen3.8-27B` หรือ `Qwen3.6-35B` สำหรับคุณภาพสูงได้ภายหลัง; 27B บน RAM <32GB และ 35B บน RAM <24GB จะมีคำเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
+> การติดตั้ง **ไม่บังคับดาวน์โหลดทุกโมเดล**: fresh install ใช้ `Qwen3.5-9B-4bit` เป็น default และดาวน์โหลดเฉพาะโมเดลที่ถูกเปิดใช้งานจริง. ผู้ใช้สามารถเลือก `Qwen3.5-2B-OptiQ-4bit` สำหรับการทดสอบเบา ๆ, `Qwen3-14B` (text-only), `Qwen3.8-27B` หรือ `Qwen3.6-35B` สำหรับคุณภาพสูงได้ภายหลัง; 27B บน RAM <20GB และ 35B บน RAM <24GB จะมีคำเตือนก่อน แต่ผู้ใช้ยังยืนยันทำต่อได้
 
 > เพิ่งเคย clone ครั้งแรก หรืออยากดูทุกขั้นตอนแบบละเอียด (รวม `git clone`, config, ติดตั้งแบบไม่ใช้สคริปต์) → ดู [Setup](#setup)
 
@@ -375,7 +375,7 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 - **Qwen3.5-2B-OptiQ 4-bit (lightweight test VLM):** ตัวเลือกสำหรับทดสอบ agent/runtime และเครื่องทรัพยากรจำกัด; รองรับ image input โดยตรง แต่ไม่ใช่ quality target หลักของโปรเจกต์
 - **Qwen3.5-9B 4-bit (default VLM):** ใช้งาน Agent TH ได้บน unified memory **16GB** และรองรับ image input โดยตรง
 - **Qwen3-14B 4-bit (text-only):** unified memory ประมาณ **24GB ขั้นต่ำเชิงปฏิบัติ**, **32GB+ แนะนำ**
-- **Qwen3.8-27B 4-bit (VLM):** โมเดลใหญ่ — ระบบเตือนเมื่อ unified memory ต่ำกว่า **32GB** (เตือนเท่านั้น ไม่บล็อก); native APC ถูกจำกัดที่ 6GB ผ่าน `memory_max_gb` ใน `model_registry.json`
+- **Qwen3.8-27B 4-bit (VLM):** โมเดลใหญ่ (น้ำหนักราว 15GB เล็กกว่า 35B ที่ราว 20GB) — ระบบเตือนเมื่อ unified memory ต่ำกว่า **20GB** (เตือนเท่านั้น ไม่บล็อก; แนะนำ 32GB+ เพื่อ headroom ของ KV/APC); native APC ถูกจำกัดที่ 6GB ผ่าน `memory_max_gb` ใน `model_registry.json`
 - **Qwen3.6-35B-A3B 4-bit (optional high-quality):** โมเดลใหญ่กว่าและใช้ RAM/swap สูงกว่า; บนเครื่อง RAM <24GB ระบบจะเตือนก่อนเริ่ม download/load แต่ผู้ใช้ยังยืนยันทำต่อได้
 - ปริมาณ RAM ที่ใช้จริงขึ้นกับ context length, KV cache, tools และโปรแกรมอื่นที่เปิดพร้อมกัน ตัวเลขข้างต้นจึงเป็นแนวทางสำหรับการใช้งาน Agent ไม่ใช่เพียงการโหลด weights ให้สำเร็จ
 - Python 3.11 via conda (`mlx` env)
@@ -538,7 +538,7 @@ def my_tool(query: str) -> str:
 
 ### ใช้โมเดลอื่น
 
-default runtime model คือ **Qwen3.5-9B-4bit (VLM)**. สามารถเลือก **Qwen3.5-2B-OptiQ-4bit (VLM)** สำหรับ testing/diagnostic, **Qwen3-14B** (text-only), **Qwen3.8-27B (VLM)** และถ้าต้องการคุณภาพ reasoning สูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)**; เครื่องที่มี RAM ต่ำกว่า 32GB จะได้รับคำเตือนก่อน download/load เฉพาะ 27B (และต่ำกว่า 24GB เฉพาะ 35B) แต่ยังยืนยันใช้ได้. `read_image` บน 14B ใช้ OCR fallback ส่วน 2B/9B/27B/35B รองรับ direct vision ตาม capability probe
+default runtime model คือ **Qwen3.5-9B-4bit (VLM)**. สามารถเลือก **Qwen3.5-2B-OptiQ-4bit (VLM)** สำหรับ testing/diagnostic, **Qwen3-14B** (text-only), **Qwen3.8-27B (VLM)** และถ้าต้องการคุณภาพ reasoning สูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)**; เครื่องที่มี RAM ต่ำกว่า 20GB จะได้รับคำเตือนก่อน download/load เฉพาะ 27B (และต่ำกว่า 24GB เฉพาะ 35B) แต่ยังยืนยันใช้ได้. `read_image` บน 14B ใช้ OCR fallback ส่วน 2B/9B/27B/35B รองรับ direct vision ตาม capability probe
 
 วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` โดยใช้ `workspace/runtime_settings.json` ร่วมกัน. ใน `Standalone` Agent TH เป็น owner ของ model server และสามารถ restart model/ย้าย port ของตัวเองได้; Settings มี Watchdog + Start/Stop/Reset. ใน `Shared MAX` TH เป็น client read-only: Model ล็อกตาม MAX VLM, Think Budget ยังเป็นของ TH และ lifecycle controls ถูกปิด. เมื่อกลับจาก Shared MAX ระบบคืน **standalone model เดิมของ TH** ไม่เอา model ของ MAX มาทับค่าที่เคยเลือกไว้
 

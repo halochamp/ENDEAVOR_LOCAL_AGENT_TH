@@ -537,15 +537,17 @@ def _runtime_model_matches_active_server() -> tuple[bool, str]:
 
 
 def _confirm_high_quality_model_on_low_ram(model: str) -> bool:
-    """Ask before selecting 35B on <24 GB RAM; warning is never a hard block."""
+    """Ask before selecting a large model below its registry RAM floor; never a hard block."""
     if not config.high_quality_model_warning_required(model):
         return True
     ram_bytes = config.physical_memory_bytes()
     ram_gb = max(1, round(ram_bytes / (1024 ** 3))) if ram_bytes else 0
-    shown = f"ประมาณ {ram_gb}GB" if ram_gb else "ต่ำกว่า 24GB"
-    print(f" {C_WARN}⚠ เครื่องนี้มี RAM {shown}; Qwen3.6 35B · VLM เป็นโมเดลขนาดใหญ่{R}")
+    floor_gib = config.get_model_spec(model).ram_warning_below_gib or 0
+    label = config.MODEL_LABELS.get(model, model)
+    shown = f"ประมาณ {ram_gb}GB" if ram_gb else f"ต่ำกว่า {floor_gib}GB"
+    print(f" {C_WARN}⚠ เครื่องนี้มี RAM {shown}; {label} เป็นโมเดลขนาดใหญ่{R}")
     print(f" {C_WARN}  การดาวน์โหลด/โหลดอาจใช้พื้นที่และ swap สูง แต่ยังเลือกใช้ได้{R}")
-    print(f" {C_META}  ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B · VLM ต่อหรือไม่? [y/N]{R}")
+    print(f" {C_META}  ต้องการดาวน์โหลด/ใช้ {label} ต่อหรือไม่? [y/N]{R}")
     answer = (prompt_user() or "").strip().lower()
     return answer in {"y", "yes", "ใช่", "ตกลง"}
 

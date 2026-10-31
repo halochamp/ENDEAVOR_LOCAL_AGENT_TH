@@ -190,6 +190,31 @@ class SharedRuntimeConfigTests(unittest.TestCase):
             config.DEFAULT_MODEL, ram_bytes=16 * gb,
         ))
 
+    def test_27b_warning_floor_is_below_35b_and_matches_weight_size(self) -> None:
+        gb = 1024 ** 3
+        floor_27b = config.get_model_spec(config.BALANCED_VLM_MODEL).ram_warning_below_gib
+        floor_35b = config.get_model_spec(config.HIGH_QUALITY_MODEL).ram_warning_below_gib
+        # 27B (15 GB weights) needs less than 35B (20 GB weights), so its floor must be lower
+        self.assertEqual(floor_27b, 20)
+        self.assertLess(floor_27b, floor_35b)
+        for ram, warn_27b, warn_35b in ((16, True, True), (18, True, True), (20, False, True), (24, False, False)):
+            with self.subTest(ram_gb=ram):
+                self.assertEqual(
+                    config.high_quality_model_warning_required(config.BALANCED_VLM_MODEL, ram_bytes=ram * gb), warn_27b)
+                self.assertEqual(
+                    config.high_quality_model_warning_required(config.HIGH_QUALITY_MODEL, ram_bytes=ram * gb), warn_35b)
+
+    def test_cli_warning_names_the_selected_model_not_a_hardcoded_one(self) -> None:
+        gb = 1024 ** 3
+        shown: list[str] = []
+        with patch.object(config, "physical_memory_bytes", return_value=16 * gb), \
+             patch.object(endeavor_agent, "prompt_user", return_value="n"), \
+             patch("builtins.print", side_effect=lambda *a, **k: shown.append(" ".join(map(str, a)))):
+            endeavor_agent._confirm_high_quality_model_on_low_ram(config.BALANCED_VLM_MODEL)
+        text = "\n".join(shown)
+        self.assertIn("Qwen3.8 27B", text)
+        self.assertNotIn("35B", text)
+
     def test_cli_35b_low_ram_warning_is_confirmable_not_blocked(self) -> None:
         gb = 1024 ** 3
         with patch.object(config, "high_quality_model_warning_required", return_value=True), \

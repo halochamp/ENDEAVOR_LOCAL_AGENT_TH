@@ -79,6 +79,16 @@ test('requiresLargeModelWarning warns only for 35B below 24GB', () => {
   }), false)
 })
 
+test('low-RAM confirmation text comes from the server payload, not a hardcoded model or size', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8')
+  const start = renderer.indexOf('if (ev.confirmation_required && previousPending)')
+  assert.ok(start > 0)
+  const block = renderer.slice(start, start + 900)
+  assert.match(block, /ev\.model_label/)
+  assert.match(block, /ev\.warning_gib/)
+  assert.doesNotMatch(block, /35B|24GB/)
+})
+
 test('runtime selection uses authenticated REST owner seam and clears stale pending state on reconnect', () => {
   const root = path.join(__dirname, '..')
   const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')

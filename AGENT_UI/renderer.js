@@ -1910,10 +1910,12 @@ function applyRuntimeSettings(ev) {
 
   if (ev.confirmation_required && previousPending) {
     const ramText = ev.ram_gb ? ` (RAM ประมาณ ${ev.ram_gb}GB)` : ''
+    const modelLabel = String(ev.model_label || 'โมเดลนี้')
+    const floorText = ev.warning_gib ? `ต่ำกว่า ${ev.warning_gib}GB` : 'ต่ำเกินไป'
     const confirmed = window.confirm(
-      `เครื่องนี้มี RAM ต่ำกว่า 24GB${ramText}\n\n`
-      + 'Qwen3.6 35B · VLM เป็นโมเดลขนาดใหญ่ การดาวน์โหลด/โหลดโมเดลอาจใช้พื้นที่และ swap สูงมาก\n\n'
-      + 'ต้องการดาวน์โหลด/ใช้ Qwen3.6 35B · VLM ต่อหรือไม่?'
+      `เครื่องนี้มี RAM ${floorText}${ramText}\n\n`
+      + `${modelLabel} เป็นโมเดลขนาดใหญ่ การดาวน์โหลด/โหลดโมเดลอาจใช้พื้นที่และ swap สูงมาก\n\n`
+      + `ต้องการดาวน์โหลด/ใช้ ${modelLabel} ต่อหรือไม่?`
     )
     if (confirmed) {
       void dispatchRuntimeSettings({ ...previousPending, confirmed_low_ram: true })
