@@ -18,8 +18,7 @@ Before changing code:
 2. Inspect Git status and preserve unrelated work.
 3. Classify the change: orchestration/planner, shared runtime, CLI, Web/API, tool, persistence, standing trigger, model/generation, sandbox/security, packaging/docs.
 4. Read the relevant README section.
-5. Identify whether the affected logic is public Python/HTML source or an opaque compiled `.so`.
-6. State the exact invariant and the strongest verification available from this public repository.
+5. State the exact invariant and the strongest verification available from this public repository.
 
 ## 2. Architecture ownership
 
@@ -142,22 +141,7 @@ For `agent_server.py`, WebSocket/REST, Electron integration, or an explicit cust
 - do not expose workspace file contents to third-party resources by default;
 - keep CLI and Electron runtime model/Think Budget state on the shared owner config rather than UI-private state.
 
-## 11. Compiled `.so` artifacts
-
-The current public tree does not track compiled Python extension artifacts. An
-ignored/local `.so` may still exist in a developer environment; it is not part
-of the public product.
-
-If corresponding source is not present:
-
-1. Treat the binary as opaque.
-2. Do not claim line-level/source-level inspection.
-3. Do not reverse-engineer or binary-patch it as the normal workflow.
-4. Test only observable interfaces/behavior you can invoke safely.
-5. If a requested fix requires missing source, state that limitation explicitly.
-6. Do not fabricate source paths or infer exact internals from symbol/file names.
-
-## 12. Testing procedure
+## 11. Testing procedure
 
 Unlike several other public projects, this repository currently does not document
 one canonical root deterministic regression command. It does contain targeted
@@ -169,12 +153,12 @@ Therefore:
 2. Run syntax/static/import checks only where source and dependencies make them meaningful.
 3. Run the smallest local runtime acceptance check for the changed path when safe.
 4. Use the documented production model for production-behavior claims.
-5. Never invent a test command or call a compiled artifact a source regression suite.
+5. Never invent a test command.
 6. Report verification limits explicitly.
 
 If a proper deterministic public test suite is added later, update `CLAUDE.md`, `AGENT.md`, this section, and README together.
 
-## 13. Documentation changes
+## 12. Documentation changes
 
 Keep roles distinct:
 
@@ -185,18 +169,16 @@ Keep roles distinct:
 
 Public agent docs must remain self-contained and must not rely on private parent-repository workflow.
 
-## 14. Git/release hygiene
+## 13. Git/release hygiene
 
 Before commit/push:
 
 - inspect status/diff;
 - stage only intended files;
 - ensure `.agent_token`, `.env`, logs, history DBs, memory, workspace output, credentials, screenshots/private docs, and machine-specific absolute paths are not staged;
-- distinguish source changes from regenerated/compiled artifacts;
-- do not commit a regenerated binary unless the project release process intentionally requires it and its provenance is understood;
 - never force-push unless explicitly requested and appropriate.
 
-## 15. Completion criteria
+## 14. Completion criteria
 
 A task is complete when applicable items hold:
 
@@ -204,8 +186,7 @@ A task is complete when applicable items hold:
 - shared runtime/front-end semantics remain consistent;
 - auth/sandbox/local-model boundaries remain intact;
 - verification claims match what was actually tested;
-- missing-source/compiled-artifact limitations are disclosed;
 - final diff contains only intended changes;
 - no runtime secret/private state is staged.
 
-**Decision rule:** preserve shared local-runtime/security invariants; never compensate for missing evidence by guessing about opaque binaries.
+**Decision rule:** preserve shared local-runtime/security invariants; never compensate for missing evidence by guessing.

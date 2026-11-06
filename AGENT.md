@@ -29,9 +29,7 @@ Important components documented by the project include:
 - `awake_engine.py` — standing-trigger execution;
 - `workspace/`, logs/history/memory — runtime state.
 
-The tracked public release ships its runtime as source. Ignored local `.so`
-artifacts, if present in a developer environment, are not part of the product;
-treat them as opaque when their source is absent.
+The whole runtime ships as open-source Python/HTML.
 
 ## Start every task
 
@@ -66,15 +64,6 @@ Preserve:
 The harness is tuned for its documented production model. A different model may be useful for experimentation, but its behavior is not production verification.
 
 When changing prompts, tools, planner/routing, context trimming, or generation parameters, explicitly check whether the production model path is available. If it is not, report that limit rather than silently substituting another model.
-
-## Compiled artifact rule
-
-If source for a `.so` is absent:
-
-- do not claim source audit of its internals;
-- do not patch/reverse-engineer it by default;
-- reason from interfaces and observed behavior only;
-- do not promise a source fix that cannot be made in this repository.
 
 ## Testing
 
