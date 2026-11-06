@@ -395,18 +395,30 @@ CONTEXT_MAX_CHARS = int(os.getenv("V2_CONTEXT_MAX_CHARS", "200000"))
 # ── Web cache + summarization ─────────────────────────────────────────────
 # Process-level in-memory cache for web tool outputs (web_search / browse_url /
 # browser_use). Raw bodies are stored once; messages only carry compact
-# summaries. Agent can call recall_web(url) to fetch full content back.
+# deterministic evidence (no inner LLM summarizer). recall_web(url) returns the
+# deeper raw content.
 WEB_CACHE_MAX_ENTRIES   = int(os.getenv("V2_WEB_CACHE_MAX_ENTRIES",   "50"))
 WEB_CACHE_MAX_BYTES     = int(os.getenv("V2_WEB_CACHE_MAX_BYTES",     "3000000"))
 WEB_CACHE_PER_ENTRY_MAX = int(os.getenv("V2_WEB_CACHE_PER_ENTRY_MAX", "50000"))
 SUMMARY_MAX_CHARS       = int(os.getenv("V2_SUMMARY_MAX_CHARS",       "800"))
-# Skip LLM summarization if raw ≤ this — saves ~15-40s per call.
-# Most web_search trafilatura results are ≤1500 chars → skip LLM entirely
+# Used only by workflows that still explicitly summarize (not the core
+# web_search/browse_url evidence path).
 SUMMARY_SKIP_LLM_BELOW  = int(os.getenv("V2_SUMMARY_SKIP_LLM_BELOW",  "1500"))
 RECALL_WEB_MAX_CHARS    = int(os.getenv("V2_RECALL_WEB_MAX_CHARS",    "20000"))
 
 # ── Web tool limits ───────────────────────────────────────────────────────
 BROWSE_URL_MAX_CHARS     = int(os.getenv("V2_BROWSE_URL_MAX_CHARS",     "20000"))
+# Direct extracts below this are often JS shells. web_search may still return
+# them as evidence, but must not poison the shared raw cache that recall/browse
+# rely on for a later deeper fetch.
+WEB_DEEP_CACHE_MIN_CHARS = int(os.getenv("V2_WEB_DEEP_CACHE_MIN_CHARS", "800"))
+# Deterministic evidence caps: one-page reads can keep more context; an 8-URL
+# batch uses a smaller per-source cap to keep the combined tool result compact.
+WEB_EVIDENCE_MAX_CHARS = int(os.getenv("V2_WEB_EVIDENCE_MAX_CHARS", "2200"))
+BATCH_BROWSE_EVIDENCE_MAX_CHARS = int(os.getenv("V2_BATCH_BROWSE_EVIDENCE_MAX_CHARS", "1800"))
+# Live market facts (e.g. stock quotes) must not inherit the ordinary 30-minute
+# raw-cache TTL; keep a short per-query reuse window for them.
+WEB_LIVE_CACHE_TTL_SECONDS = int(os.getenv("V2_WEB_LIVE_CACHE_TTL_SECONDS", "30"))
 BROWSER_USE_MAX_CHARS    = int(os.getenv("V2_BROWSER_USE_MAX_CHARS",    "8000"))
 WEB_SEARCH_MAX_RESULTS   = int(os.getenv("V2_WEB_SEARCH_MAX_RESULTS",   "10"))
 WEB_SEARCH_FETCH_TOP     = int(os.getenv("V2_WEB_SEARCH_FETCH_TOP",     "4"))

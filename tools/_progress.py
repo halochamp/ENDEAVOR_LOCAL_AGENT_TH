@@ -19,8 +19,10 @@ Usage in UI layer (e.g. endeavor_agent.py):
 """
 from __future__ import annotations
 import sys
+import time
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextvars import ContextVar
-from typing import Callable
+from typing import Callable, Iterable, Iterator, TypeVar
 
 
 class ToolCancelled(BaseException):
@@ -96,6 +98,40 @@ def check_cancel() -> None:
     chk = _cv_cancel.get()
     if chk is not None and chk():
         raise ToolCancelled("turn cancelled by user")
+
+
+_T = TypeVar("_T")
+
+
+def cancelable_as_completed(
+    futures: Iterable[Future[_T]], *, poll_seconds: float = 0.05,
+    timeout_seconds: float | None = None,
+) -> Iterator[Future[_T]]:
+    """Yield futures as they finish while polling the current turn's cancel flag.
+
+    ``concurrent.futures.as_completed`` can sleep until the next worker finishes,
+    which makes a cancel button ineffective for slow siblings. This bounded poll
+    keeps the caller responsive without changing worker/result ordering semantics.
+    """
+    pending = set(futures)
+    poll = max(0.01, float(poll_seconds))
+    deadline = (
+        None if timeout_seconds is None
+        else time.monotonic() + max(0.0, float(timeout_seconds))
+    )
+    while pending:
+        check_cancel()
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError("future batch timed out")
+        done, pending = wait(
+            pending,
+            timeout=poll if remaining is None else min(poll, remaining),
+            return_when=FIRST_COMPLETED,
+        )
+        for future in done:
+            yield future
+    check_cancel()
 
 
 def progress(msg: str) -> None:

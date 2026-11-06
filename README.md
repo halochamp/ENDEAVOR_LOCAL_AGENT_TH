@@ -209,7 +209,7 @@ START → react (agent คุมเองทั้งหมด) → END
 ### Context & Memory Management
 
 - **Context trimming**: ตัดข้อความเก่าทิ้งเมื่อ conversation ยาวเกิน `CONTEXT_MAX_CHARS` (default 200K chars ≈ 50K tokens) — กัน context overflow บน session ยาว
-- **Web cache**: ผลลัพธ์จาก `web_search` / `browse_url` / `browser_use` ถูกเก็บ raw ไว้ใน process memory แยกจาก message history — agent เห็นแค่ summary สั้น ๆ แล้วเรียก `recall_web` ถ้าต้องการเนื้อหาเต็ม
+- **Web cache**: ผลลัพธ์จาก `web_search` / `browse_url` / `browser_use` ถูกเก็บ raw ไว้ใน process memory แยกจาก message history — agent เห็นแค่ evidence สั้น ๆ ที่โค้ดคัดจากหน้าเว็บให้ตรงกับคำถาม (ไม่มี LLM สรุปคั่นกลาง) แล้วเรียก `recall_web` ถ้าต้องการเนื้อหาดิบเชิงลึก
 - **Persistent memory**: `remember` tool เขียนข้อเท็จจริงสำคัญลง `logs/memory.md` ข้าม session
 - **Conversation history**: เก็บผ่าน LangGraph `SqliteSaver` (`logs/history.db`) — `/history` ใน CLI โหลดกลับมาได้
 
@@ -305,10 +305,10 @@ Agent เลือก tool เองตาม docstring ของแต่ละ
 
 | Tool | คำอธิบาย |
 |---|---|
-| `web_search` | ค้นข้อมูลภายนอกและข้อมูลล่าสุดผ่าน DuckDuckGo พร้อม source URLs |
-| `browse_url` | อ่าน URL เดียวหรือ `urls=[...]` แบบจำกัดจำนวน; ใช้ `mode="sitemap"` เพื่อสำรวจ sitemap; normal read แนบ numeric Markdown table evidence ที่พบ และ `table_index=-1` ใช้แสดงตาราง JS-rendered ก่อนเลือกตารางด้วย index |
+| `web_search` | ค้นข้อมูลภายนอกและข้อมูลล่าสุดผ่าน DuckDuckGo พร้อม source URLs; คืนข้อความจริงจากหน้าเว็บที่โค้ดคัด (ไม่มี LLM สรุป) และรับ `query` เป็นรายการ 2-4 คำค้นเพื่อค้นพร้อมกันใน tool call เดียว |
+| `browse_url` | อ่าน URL เดียวหรือ `urls=[...]` (สูงสุด 8 URL ดึงพร้อมกันใน call เดียว) แล้วคืน evidence ที่โค้ดคัดตาม `user_query` โดยไม่มี LLM สรุป; ใช้ `mode="sitemap"` เพื่อสำรวจ sitemap; normal read แนบ numeric Markdown table evidence ที่พบ และ `table_index=-1` ใช้แสดงตาราง JS-rendered ก่อนเลือกตารางด้วย index |
 | `browser_use` | ควบคุม browser สำหรับ login, forms, clicks, และ navigation ที่ต้องโต้ตอบ; ไม่ใช้แทนการอ่านหน้าปกติ |
-| `recall_web` | ดึงเนื้อหาเต็มจาก web cache หลัง browse โดยไม่ fetch ซ้ำ |
+| `recall_web` | ดึงเนื้อหาดิบเชิงลึกจาก web cache หลัง browse โดยไม่ fetch ซ้ำ (ใส่ `query` เพื่อโฟกัสหน้ายาว) |
 
 `browse_url(mode="sitemap", url=..., filter_keyword=...)` คืนรายการ URL แบบจำกัด; เลือกหน้าที่เกี่ยวข้องแล้วส่งให้ `browse_url(urls=[...], user_query=...)` อ่านต่อ. `table_index` คืน CSV แบบจำกัดโดยไม่เขียนไฟล์ลง workspace.
 
@@ -445,8 +445,8 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 | Agent Server | `AGENT_SERVER_PORT`, `AGENT_SERVER_TOKEN`, `AGENT_AUTH_DISABLED` | ตั้งค่า authenticated backend สำหรับ Electron/custom clients |
 | Workspace & Logs | `V2_WORKSPACE`, `V2_LOG_DIR`, `V2_LOG_MAX_ENTRIES` | path สำหรับไฟล์งานและ log |
 | File & Vision Batch | `V2_READ_FILE_BATCH_MAX_FILES`, `V2_READ_FILE_BATCH_MAX_CHARS` | จำกัดจำนวนไฟล์และขนาดผลรวมของ parallel `read_file` batch; `read_image` จำกัด 10 ภาพต่อ batch ตาม vision turn budget |
-| Web Tool Limits | `V2_WEB_SEARCH_MAX_RESULTS`, `V2_BROWSE_URL_MAX_CHARS`, ฯลฯ | จำกัดขนาดผลลัพธ์จาก web tools |
-| Web Cache | `V2_WEB_CACHE_MAX_ENTRIES`, `V2_WEB_CACHE_MAX_BYTES` | จัดการ cache เนื้อหาเว็บ |
+| Web Tool Limits | `V2_WEB_SEARCH_MAX_RESULTS`, `V2_BROWSE_URL_MAX_CHARS`, `V2_WEB_EVIDENCE_MAX_CHARS`, `V2_BATCH_BROWSE_EVIDENCE_MAX_CHARS`, ฯลฯ | จำกัดขนาดผลลัพธ์จาก web tools |
+| Web Cache | `V2_WEB_CACHE_MAX_ENTRIES`, `V2_WEB_CACHE_MAX_BYTES`, `V2_WEB_LIVE_CACHE_TTL_SECONDS` | จัดการ cache เนื้อหาเว็บ (ข้อมูลสด เช่น ราคา ใช้ TTL สั้น) |
 | Summarization | `V2_SUMMARY_MAX_CHARS`, `V2_SUMMARY_SKIP_LLM_BELOW` | ควบคุมการสรุปผลลัพธ์ก่อนเข้า context |
 
 ดูรายละเอียดทั้งหมดพร้อม comment อธิบายในไฟล์ `.env.example`

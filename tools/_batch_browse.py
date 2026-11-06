@@ -5,35 +5,52 @@
 """Internal URL-batch engine used only by the public browse_url tool.
 
 Architecture:
-  Phase 1 (parallel):   HTTP fetch เท่านั้น — ไม่มี LLM ใน thread
-  Phase 2 (batched):    URL ที่ต้องใช้ LLM ถูก summarize รวมใน request เดียว (F1)
-                        — fallback ทีละ URL เมื่อ batch ใช้ไม่ได้/parse ไม่ผ่าน
+  Phase 1 (parallel): HTTP fetch only — no LLM in worker threads.
+  Phase 2 (local):    the same deterministic evidence selection browse_url uses.
 
-Cache-aware: summary hit ข้ามทั้ง 2 phase; raw hit ข้าม Phase 1 (แค่
-re-summarize สำหรับ query ใหม่ — ห้าม raw-slice ตาม Tool Output Contract)
-Web counter นับเฉพาะ fetch ใหม่ที่สำเร็จ — cache hit ทุกแบบไม่กิน budget
+Cache-aware and LLM-free: a raw-cache hit skips the network; a miss fetches and
+caches the raw body once. No query-aware summary is read or written. Every
+outbound fetch reserves web budget before its worker is submitted, so a batch
+cannot race another tool past the per-turn ceiling; cache hits stay free.
 """
 from __future__ import annotations
 import sys
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tools.browse_url import _fetch_body
-from tools._summarize import summarize, summarize_batch
-from config import (
-    SUMMARY_SKIP_LLM_BELOW,
-    BATCH_BROWSE_MAX_WORKERS as _MAX_WORKERS,
-    BATCH_BROWSE_MAX_URLS as _MAX_URLS,
+from tools.browse_url import (
+    _append_table_evidence,
+    _fetch_body,
+    _get_browse_cache,
+    _select_browse_evidence,
 )
-from tools._progress import phase as _phase, progress as _progress
+from config import (
+    BATCH_BROWSE_EVIDENCE_MAX_CHARS as _EVIDENCE_CAP,
+    BATCH_BROWSE_MAX_URLS as _MAX_URLS,
+    BATCH_BROWSE_MAX_WORKERS as _MAX_WORKERS,
+    WEB_LIVE_CACHE_TTL_SECONDS,
+)
+from tools._bounded_executor import BoundedExecutor
+from tools._progress import (
+    cancelable_as_completed as _cancelable_as_completed,
+    check_cancel as _check_cancel,
+    phase as _phase,
+    progress as _progress,
+)
 from tools import web_cache
-from tools.web_cache import web_count_check as _wc_check, web_count_check_and_inc as _wc_check_and_inc, web_count_remaining as _wc_remaining
+from tools.web_cache import (
+    web_count_check as _wc_check,
+    web_count_release_reservation as _wc_release_reservation,
+    web_count_reserve_up_to as _wc_reserve_up_to,
+)
+
+_HTTP_EXECUTOR = BoundedExecutor(_MAX_WORKERS, thread_name_prefix="batch-http")
 
 
 def _http_only(url: str, query: str) -> tuple[str, str]:
-    """HTTP fetch เท่านั้น ไม่มี LLM — safe ใน thread"""
+    """HTTP fetch only, no LLM — safe in a worker thread."""
     return url, _fetch_body(url, query)
 
 
@@ -47,33 +64,40 @@ def _extract_url(entry: str) -> str:
 
 
 def browse_urls(urls: list, user_query: str = "") -> str:
-    """Fetch a bounded URL list while retaining TH cache and budget semantics."""
+    """Fetch a bounded URL list in parallel and return per-URL evidence in request order."""
     if not urls:
         return "[error] urls is required"
 
+    _check_cancel()
     clean = [_extract_url(str(u).strip()) for u in urls if u and str(u).strip()]
     clean = [u for u in clean if u][:_MAX_URLS]
     if not clean:
         return "[error] no valid URLs provided"
 
-    # normalize + dedup — URL ซ้ำห้าม fetch/นับ budget/summarize ซ้ำ
+    # normalize + dedup — a duplicate URL must not fetch/count/process twice
     clean = [u if u.startswith("http") else "https://" + u for u in clean]
     clean = list(dict.fromkeys(clean))
 
-    uq = (user_query or "").strip()
-
-    # ── แยก summary hit / raw hit (re-summarize) / miss (fetch) ────────
+    # Source scope is a per-turn provenance policy, including cache reads.
     results: dict[str, str] = {}
+    requested = clean
+    clean = []
+    for u in requested:
+        source_err = web_cache.web_source_scope_url_error(u)
+        if source_err:
+            results[u] = source_err
+        else:
+            clean.append(u)
+
+    uq = (user_query or "").strip()
+    from tools.web_search import is_live_market_query, runtime_date_grounding_notice
+    cache_max_age = WEB_LIVE_CACHE_TTL_SECONDS if is_live_market_query(uq) else None
+
+    # ── raw cache hit / miss ─────────────────────────────────────────
     pending: list[dict] = []  # [{"url", "raw", "is_new"}]
     to_fetch: list[str] = []
     for u in clean:
-        hit_sum = web_cache.get_summary(u, uq)
-        if hit_sum is not None:
-            raw = web_cache.get(u) or ""
-            from tools.browse_url import _append_table_evidence
-            results[u] = _append_table_evidence(f"[web:{u}] {hit_sum}", raw)
-            continue
-        hit_raw = web_cache.get(u)
+        hit_raw = _get_browse_cache(u, max_age_seconds=cache_max_age)
         if hit_raw is not None:
             if hit_raw.strip():
                 pending.append({"url": u, "raw": hit_raw, "is_new": False})
@@ -82,88 +106,89 @@ def browse_urls(urls: list, user_query: str = "") -> str:
             continue
         to_fetch.append(u)
 
-    if to_fetch:
-        err = _wc_check()
-        if err:
-            if not results and not pending:
-                return err
-            _progress("web budget exhausted — serving cached URLs only")
-            for u in to_fetch:
+    # Reserve each outbound attempt before submitting a worker: a read-only check
+    # followed by a post-fetch increment lets another tool take the last slot
+    # while this batch is already fetching.
+    requested_fetches = list(to_fetch)
+    to_fetch = []
+    if requested_fetches:
+        reserved = _wc_reserve_up_to(len(requested_fetches))
+        if reserved < len(requested_fetches):
+            err = _wc_check() or "[web_limit] ค้นครบแล้ว — หยุดค้นและสรุปจากข้อมูลที่มีได้เลย"
+            _progress(f"web budget: capping fetch to {reserved}/{len(requested_fetches)} URLs")
+            for u in requested_fetches[reserved:]:
                 results[u] = err
-            to_fetch = []
-        else:
-            # Cap to_fetch to remaining budget so Phase 1 doesn't launch fetches
-            # that will be discarded once the budget runs out mid-batch.
-            remaining = _wc_remaining()
-            if remaining < len(to_fetch):
-                _progress(f"web budget: capping fetch to {remaining}/{len(to_fetch)} URLs")
-                to_fetch = to_fetch[:remaining]
+        to_fetch = requested_fetches[:reserved]
 
-    n_fetch = len(to_fetch)
-    _phase(f"📄 batch browse: {n_fetch} fetch + {len(pending)} re-summarize + {len(results)} cached")
+    _phase(f"📄 batch browse: {len(to_fetch)} fetch + {len(pending)} cached + {len(results)} ready")
 
-    # ── Phase 1: parallel HTTP fetch (ไม่มี LLM ใน thread) ───────────
+    # ── Phase 1: parallel HTTP fetch (no LLM in the workers) ─────────
     raw_map: dict[str, str] = {}
-    if to_fetch:
-        try:
-            pool = ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, n_fetch))
+    submitted: list[str] = []
+    # BoundedExecutor admits one task per worker; drain bounded waves so every
+    # URL is fetched without growing its queue or the parallelism limit.
+    wave_size = max(1, int(_MAX_WORKERS))
+    for offset in range(0, len(to_fetch), wave_size):
+        wave_futures = {}
+        wave_urls = to_fetch[offset:offset + wave_size]
+        for u in wave_urls:
             try:
-                futures = {pool.submit(_http_only, u, uq): u for u in to_fetch}
-                done = 0
-                for future in as_completed(futures, timeout=35):
-                    try:
-                        done += 1
-                        url, raw = future.result(timeout=35)
-                        raw_map[url] = raw
-                        _progress(f"HTTP {done}/{n_fetch}: {url[:55]}")
-                    except Exception:
-                        pass
-            finally:
-                # wait=False — don't let cleanup block on stragglers past the 35s budget
-                pool.shutdown(wait=False)
+                future = _HTTP_EXECUTOR.submit(copy_context().run, _http_only, u, uq)
+            except Exception:
+                future = None
+            if future is not None:
+                wave_futures[future] = u
+                submitted.append(u)
+            else:
+                # No worker accepted it, so no network attempt consumes this reservation.
+                _wc_release_reservation()
+                results[u] = "[error] browse fetch workers are busy — retry later"
+        try:
+            done = 0
+            for future in _cancelable_as_completed(wave_futures, timeout_seconds=35.0):
+                try:
+                    done += 1
+                    url, raw = future.result()
+                    raw_map[url] = raw
+                    _progress(f"HTTP {done}/{len(wave_futures)}: {url[:55]}")
+                except Exception:
+                    pass
         except Exception:
-            pass  # timeout or executor error — use empty raw for affected URLs
+            # Reservations for later waves never became network attempts.
+            for u in to_fetch[offset + len(wave_urls):]:
+                _wc_release_reservation()
+                results[u] = "[error] batch fetch stopped before this URL was submitted"
+            break  # timeout/cancellation — affected URLs fall through as "fetch missing"
 
-    # นับ budget เฉพาะ fetch ที่สำเร็จ — error ไม่กิน web budget
-    for url in to_fetch:
-        raw = raw_map.get(url, "[error] fetch missing")
-        if raw.startswith("[error]"):
-            results[url] = raw
+    # Every submitted attempt keeps its reservation, successful or not, so an
+    # error path cannot be used to exceed the per-turn hard ceiling.
+    for u in submitted:
+        raw = raw_map.get(u, "[error] fetch missing")
+        if raw.startswith(("[error]", "[source_blocked]", "[web_limit]")):
+            results[u] = raw
             continue
-        err = _wc_check_and_inc()
-        if err:
-            results[url] = err
-            continue
-        pending.append({"url": url, "raw": raw, "is_new": True})
+        pending.append({"url": u, "raw": raw, "is_new": True})
 
-    # ── Phase 2: summarize — batch เดียวเมื่อ ≥2 URL ต้องใช้ LLM (F1) ─
-    def _finish(p: dict, s: str) -> None:
+    # ── Phase 2: deterministic evidence — no inner LLM ───────────────
+    for p in pending:
+        raw = p["raw"]
         if p["is_new"]:
-            web_cache.put(p["url"], p["raw"])
-        web_cache.put_summary(p["url"], uq, s, raw=p["raw"])
-        from tools.browse_url import _append_table_evidence
-        results[p["url"]] = _append_table_evidence(f"[web:{p['url']}] {s}", p["raw"])
+            web_cache.put(p["url"], raw, official_verified=web_cache.web_source_scope_official_only())
+        evidence = _select_browse_evidence(raw, p["url"], uq, cap=_EVIDENCE_CAP)
+        if evidence.startswith(("[error]", "[source_blocked]")):
+            results[p["url"]] = evidence
+            continue
+        if not evidence:
+            results[p["url"]] = f"[web:{p['url']}] [no usable evidence]"
+            continue
+        results[p["url"]] = _append_table_evidence(f"[web:{p['url']}] {evidence}", raw)
+        _progress(f"evidence ready: {p['url'][:55]} ({len(evidence)} chars)")
 
-    need_llm = [p for p in pending if len(p["raw"].strip()) > SUMMARY_SKIP_LLM_BELOW]
-    skip_llm = [p for p in pending if p not in need_llm]
-
-    for p in skip_llm:
-        _finish(p, summarize(p["raw"], url=p["url"], user_query=uq or None))
-
-    if len(need_llm) >= 2:
-        _phase(f"📄 summarize batch: {len(need_llm)} URLs")
-        batch = summarize_batch([(p["url"], p["raw"]) for p in need_llm], uq or None)
-        if batch is not None:
-            for p in need_llm:
-                _finish(p, batch[p["url"]])
-            need_llm = []
-    for p in need_llm:
-        _phase(f"📄 summarize: {p['url'][:50]}")
-        _finish(p, summarize(p["raw"], url=p["url"], user_query=uq or None))
-
-    # ── รวม results ตาม order เดิม ────────────────────────────────────
-    lines = [f"[browse_url batch] {len(clean)} URLs ({n_fetch} fetched, {len(clean) - n_fetch} cached)"]
-    for u in clean:
+    # ── merge in the original request order ──────────────────────────
+    n_fetch = len(submitted)
+    lines = [f"[browse_url batch] {len(requested)} URLs ({n_fetch} fetched, {len(requested) - n_fetch} cached)"]
+    for u in requested:
         lines.append(results.get(u, f"[error] missing: {u}"))
-
-    return "\n\n".join(lines)
+    output = "\n\n".join(lines)
+    date_notice = runtime_date_grounding_notice(f"{uq}\n" + "\n".join(results.values()))
+    return f"{date_notice}\n{output}" if date_notice else output

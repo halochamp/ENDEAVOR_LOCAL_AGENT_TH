@@ -1236,6 +1236,8 @@ def _tool_detail(name: str, args: dict) -> str:
 
     if name == "web_search":
         q = args.get("query", "")
+        if isinstance(q, list):  # a concurrent multi-query batch
+            q = " | ".join(str(item) for item in q)
         return f'"{q}"' if q else ""
     if name == "browse_url":
         mode = str(args.get("mode", "read") or "read")

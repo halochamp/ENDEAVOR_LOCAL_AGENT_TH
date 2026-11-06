@@ -48,26 +48,83 @@ CACHE_TTL_SECONDS = int(os.getenv("V2_WEB_CACHE_TTL", "1800"))  # 30 min default
 _WEB_COUNT: list[int] = [0]
 _WEB_MAX = int(os.getenv("V2_MAX_WEB_CALLS", "20"))
 # Per-turn cap, defaults to _WEB_MAX. graph.py lowers this for simple-search
-# turns (S2: code-enforced "≤2 web_search") and raises it for create_plan/complex
-# turns; web_count_reset() restores the default each turn.
+# turns (S2: code-enforced "≤5 web_search") and raises it for create_plan/complex
+# turns ("≤30 web_search") unless a handbook/current-facts turn requires the
+# tighter finance cap; web_count_reset() restores the default each turn.
 _WEB_LIMIT: list[int] = [_WEB_MAX]
+# Some turns have a non-negotiable ceiling rather than an ordinary working
+# limit.  `tool_loop` may legitimately raise an ordinary limit for a large
+# batch, but it must never expand a handbook/current-facts turn past the cap
+# that graph.py set for it.
+_WEB_HARD_LIMIT: list[int | None] = [None]
+
+# Source provenance scope for the active turn.  The model may omit "official"
+# from a follow-up tool argument even when the user's original request required
+# primary sources, so this constraint must live beside the atomic turn counter
+# rather than be inferred independently from each tool call.
+_WEB_OFFICIAL_ONLY: list[bool] = [False]
 
 
 def web_count_reset() -> None:
     with _LOCK:
         _WEB_COUNT[0] = 0
         _WEB_LIMIT[0] = _WEB_MAX
+        _WEB_HARD_LIMIT[0] = None
+        _WEB_OFFICIAL_ONLY[0] = False
 
 
 def web_count_set_limit(n: int) -> None:
     """Lower this turn's web-call cap to n (used for simple-search turns)."""
     with _LOCK:
-        _WEB_LIMIT[0] = n
+        limit = max(0, int(n))
+        hard_limit = _WEB_HARD_LIMIT[0]
+        _WEB_LIMIT[0] = min(limit, hard_limit) if hard_limit is not None else limit
+
+
+def web_count_set_hard_limit(n: int) -> None:
+    """Set a per-turn ceiling that batch helpers cannot raise past."""
+    with _LOCK:
+        limit = max(0, int(n))
+        _WEB_HARD_LIMIT[0] = limit
+        _WEB_LIMIT[0] = min(_WEB_LIMIT[0], limit)
+
+
+def web_source_scope_set_official_only(enabled: bool = True) -> None:
+    """Latch the active turn to primary/issuer sources until the next reset."""
+    if not enabled:
+        return
+    with _LOCK:
+        _WEB_OFFICIAL_ONLY[0] = True
+
+
+def web_source_scope_official_only() -> bool:
+    with _LOCK:
+        return _WEB_OFFICIAL_ONLY[0]
+
+
+def web_source_scope_url_error(url: str) -> str | None:
+    """Return a source-policy error for a disallowed URL in this turn.
+
+    URL-consuming tools must call this before consulting their cache as well as
+    before network I/O: an old non-official cache entry is not valid evidence
+    merely because the current user asked for primary sources.
+    """
+    if not web_source_scope_official_only():
+        return None
+    try:
+        # Lazy import avoids a module-import cycle: web_search itself imports
+        # this cache module, while the policy helper is only needed at runtime.
+        from tools.web_search import _is_official_domain
+    except Exception:
+        return "[source_blocked] official-only turn — unable to validate the source domain"
+    if _is_official_domain(url):
+        return None
+    return "[source_blocked] official-only turn — browse an official/issuer domain instead"
 
 
 def web_count_check() -> str | None:
     """Read-only peek — does not reserve a slot. Safe for fast-path bail-outs
-    that aren't paired 1:1 with an increment (e.g. a bounded URL batch's pre-fetch
+    that aren't paired 1:1 with an increment (e.g. _batch_browse's pre-fetch
     early exit). Do NOT use this immediately before a real fetch; use
     web_count_check_and_inc() there to avoid the TOCTOU race below."""
     with _LOCK:
@@ -82,14 +139,42 @@ def web_count_check_and_inc() -> str | None:
     ToolNode (langgraph.prebuilt) runs multiple tool_calls from a single
     AIMessage concurrently via a real ThreadPoolExecutor — a separate
     check-then-increment lets two threads both pass the check before either
-    increments, silently overrunning the cap. Call this immediately before
-    doing the actual fetch; if it returns an error, no slot was reserved.
+    increments, silently overrunning the cap (audit.md CONC-2). Call this
+    immediately before doing the actual fetch; if it returns an error, no
+    slot was reserved.
     """
     with _LOCK:
         if _WEB_COUNT[0] >= _WEB_LIMIT[0]:
             return f"[web_limit] ค้นครบ {_WEB_LIMIT[0]} ครั้งแล้ว — หยุดค้นและสรุปจากข้อมูลที่มีได้เลย"
         _WEB_COUNT[0] += 1
         return None
+
+
+def web_count_reserve_up_to(n: int) -> int:
+    """Atomically reserve up to ``n`` outbound web attempts for a batch.
+
+    Batch tools must reserve before starting their worker threads.  Checking
+    now and incrementing after a fetch lets a concurrent tool consume the
+    final slot while this batch is already on the network.
+    """
+    wanted = max(0, int(n))
+    with _LOCK:
+        granted = min(wanted, max(0, _WEB_LIMIT[0] - _WEB_COUNT[0]))
+        _WEB_COUNT[0] += granted
+        return granted
+
+
+def web_count_release_reservation(n: int = 1) -> None:
+    """Release slots reserved for work that could not be submitted.
+
+    Only call this immediately after ``web_count_reserve_up_to`` when no
+    outbound attempt was started (for example, a bounded executor was busy).
+    Started attempts stay counted even if their fetch later fails, matching
+    the single-URL tools' budget semantics.
+    """
+    release = max(0, int(n))
+    with _LOCK:
+        _WEB_COUNT[0] = max(0, _WEB_COUNT[0] - release)
 
 
 def web_count_inc() -> None:
@@ -106,7 +191,7 @@ def web_count_remaining() -> int:
 def web_count_ensure_headroom(extra: int, hard_max: int) -> int:
     """Atomically raise the per-turn limit to fit `extra` more calls if needed.
 
-    Used before a large bounded batch: reads current count + limit under
+    Used by tool_loop before a large batch: reads current count + limit under
     _LOCK in one step so there is no TOCTOU gap between reading _WEB_COUNT and
     calling web_count_set_limit (which previously let two concurrent ToolNode
     tool-calls each see a stale count and over-raise the limit independently).
@@ -114,13 +199,18 @@ def web_count_ensure_headroom(extra: int, hard_max: int) -> int:
     Returns the remaining slots after the potential limit raise (never negative).
     """
     with _LOCK:
-        needed = _WEB_COUNT[0] + extra
+        requested_hard_max = max(0, int(hard_max))
+        turn_hard_limit = _WEB_HARD_LIMIT[0]
+        effective_hard_max = min(requested_hard_max, turn_hard_limit) \
+            if turn_hard_limit is not None else requested_hard_max
+        _WEB_LIMIT[0] = min(_WEB_LIMIT[0], effective_hard_max)
+        needed = _WEB_COUNT[0] + max(0, int(extra))
         if needed > _WEB_LIMIT[0]:
-            _WEB_LIMIT[0] = min(needed, hard_max)
+            _WEB_LIMIT[0] = min(needed, effective_hard_max)
         return max(0, _WEB_LIMIT[0] - _WEB_COUNT[0])
 
 
-# ── adaptive DDG rate-limit ────────────────────────────────────────────────────
+# ── adaptive DDG rate-limit (F3) ───────────────────────────────────────────────
 # Process-wide last-DDG-call timestamp. Sleeps only the remaining gap to
 # _DDG_MIN_INTERVAL instead of an unconditional 1s before every call.
 # Separate lock from _LOCK so a 1-second sleep here doesn't block all cache ops.
@@ -144,7 +234,7 @@ def ddg_wait() -> None:
 def _query_hash(query: str) -> str:
     """Full SHA-256 of a normalised query. Empty query → empty string.
 
-    An 8-hex MD5 prefix has only 32 bits of key space, so unrelated user
+    The old 8-hex MD5 prefix had only 32 bits of key space, so unrelated user
     questions could realistically alias within a long-lived process and reuse
     the wrong query-aware summary. This cache is in-memory only, so there is no
     persisted-key compatibility cost to using the full digest.
@@ -159,8 +249,12 @@ def _summary_key(url: str, query: str) -> str:
     return f"{url}|{h}" if h else url
 
 
+def _age_seconds(entry: dict) -> float:
+    return max(0.0, time.monotonic() - entry["fetched_at"])
+
+
 def _is_expired(entry: dict) -> bool:
-    return (time.monotonic() - entry["fetched_at"]) > CACHE_TTL_SECONDS
+    return _age_seconds(entry) > CACHE_TTL_SECONDS
 
 
 # ── raw body cache ────────────────────────────────────────────────────────────
@@ -175,24 +269,47 @@ def _purge_url_locked(url: str) -> None:
         _SUMMARY_CACHE.pop(k, None)
 
 
-def get(url: str) -> str | None:
-    """Return cached raw body for url, or None on miss / TTL expiry."""
+def get(url: str, *, max_age_seconds: float | None = None) -> str | None:
+    """Return cached raw body for url, or None on miss / expiry.
+
+    ``max_age_seconds`` is a caller-specific freshness ceiling. If the entry is
+    older than that ceiling but still inside the ordinary cache TTL, treat it as
+    a miss without purging it; a live quote can then refetch while stable readers
+    can still reuse the older body if the refresh fails.
+
+    Official-only turns also require provenance recorded by the fetch path. A
+    cache entry from an earlier ordinary turn may have followed a redirect, so
+    its initial URL alone is not enough to reuse it as primary evidence.
+    """
     with _LOCK:
         entry = _RAW_CACHE.get(url)
         if entry is None:
             return None
-        if _is_expired(entry):
+        age = _age_seconds(entry)
+        if age > CACHE_TTL_SECONDS:
             _purge_url_locked(url)
+            return None
+        if max_age_seconds is not None and age > max(0.0, float(max_age_seconds)):
+            return None
+        if _WEB_OFFICIAL_ONLY[0] and not entry.get("official_verified", False):
             return None
         entry["last_accessed"] = time.monotonic()
         return entry["raw"]
 
 
-def put(url: str, raw: str) -> None:
-    """Store raw body. Refuses errors/empty. Truncates + evicts LRU if needed."""
+def put(url: str, raw: str, *, official_verified: bool = False,
+        page_dates: tuple[str, str] | None = None) -> None:
+    """Store raw body. Refuses errors/empty. Truncates + evicts LRU if needed.
+
+    ``official_verified`` is set only by a fetch path that checked the final
+    effective URL. It lets a later official-only turn reuse genuinely primary
+    cached evidence without trusting legacy or ordinary-turn cache entries.
+    ``page_dates`` is the page's own (published, modified) ISO metadata; a
+    same-body re-put without it keeps the dates already recorded.
+    """
     if not url or not raw:
         return
-    if raw.lstrip().startswith("[error]"):
+    if raw.lstrip().startswith(("[error]", "[source_blocked]", "[web_limit]")):
         return
     if len(raw) > WEB_CACHE_PER_ENTRY_MAX:
         raw = raw[:WEB_CACHE_PER_ENTRY_MAX] + "\n...[cache-truncated]"
@@ -203,17 +320,34 @@ def put(url: str, raw: str) -> None:
     now = time.monotonic()
     with _LOCK:
         previous = _RAW_CACHE.get(url)
-        if previous is None or previous["raw"] != raw:
+        same_generation = previous is not None and previous["raw"] == raw
+        if not same_generation:
             # A summary describes one exact raw generation. Never let it
             # survive a refetch whose body changed.
             _purge_url_locked(url)
+        verified = bool(official_verified) or bool(
+            same_generation and previous and previous.get("official_verified", False)
+        )
+        if page_dates is None and same_generation and previous:
+            page_dates = previous.get("page_dates")
         _RAW_CACHE[url] = {
             "raw": raw,
             "fetched_at": now,
             "last_accessed": now,
             "size_bytes": size,
+            "official_verified": verified,
+            "page_dates": tuple(page_dates) if page_dates else ("", ""),
         }
         _evict_if_needed_locked()
+
+
+def get_page_dates(url: str) -> tuple[str, str]:
+    """(published, modified) ISO dates recorded with url's raw body, or ("", "")."""
+    with _LOCK:
+        entry = _RAW_CACHE.get(url)
+        if entry is None or _is_expired(entry):
+            return ("", "")
+        return tuple(entry.get("page_dates") or ("", ""))
 
 
 # ── query-aware summary cache ─────────────────────────────────────────────────
@@ -222,23 +356,25 @@ def get_summary(url: str, query: str = "") -> str | None:
     """Return cached summary for (url, query), or None on miss / raw TTL expiry."""
     with _LOCK:
         # If raw has expired, the summary is stale too — purge both (matches get()'s
-        # expiry behavior; otherwise a dead raw entry + its summaries sit in cache
-        # until something else touches that URL).
+        # expiry behavior; previously only get() purged, leaving a dead raw entry +
+        # its summaries sitting in cache until something else touched that URL).
         raw_entry = _RAW_CACHE.get(url)
         if raw_entry is None:
             return None
         if _is_expired(raw_entry):
             _purge_url_locked(url)
             return None
+        if _WEB_OFFICIAL_ONLY[0] and not raw_entry.get("official_verified", False):
+            return None
         key = _summary_key(url, query)
         if key not in _SUMMARY_CACHE:
             return None
         _SUMMARY_CACHE.move_to_end(key)  # LRU: mark as recently used
-        # A summary hit is a use of its parent raw generation. Most callers
-        # (browse_url, web_search, browser_use) return straight
-        # from here and never call get(), so without this the URL ranks as
-        # the oldest raw entry and _evict_one_locked() drops it — together
-        # with every summary keyed off it — while genuinely cold URLs
+        # A summary hit is a use of its parent raw generation. Summary-producing
+        # workflows such as research_orchestrator can return straight from here
+        # without calling get(), so without this the URL ranks as the oldest raw
+        # entry and _evict_one_locked() drops it —
+        # together with every summary keyed off it — while genuinely cold URLs
         # survive. Same lock, same clock source as get().
         raw_entry["last_accessed"] = time.monotonic()
         return _SUMMARY_CACHE[key]

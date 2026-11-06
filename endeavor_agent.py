@@ -121,7 +121,10 @@ def _get_active_tools(online: bool) -> list:
 
 def _get_tool_detail(name: str, args: dict) -> str:
     if name == "web_search":
-        return f'"{args.get("query", "")[:55]}"'
+        q = args.get("query", "")
+        if isinstance(q, list):  # a concurrent multi-query batch
+            q = " | ".join(str(item) for item in q)
+        return f'"{q[:55]}"'
     if name == "create_plan":
         q = args.get("query", "")
         return q[:55] if q else ""

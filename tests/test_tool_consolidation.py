@@ -149,12 +149,15 @@ class ToolConsolidationTests(unittest.TestCase):
 | 2026 | 42 |
 """
         try:
+            summarizer = importlib.import_module("tools._summarize")
             with patch.object(browse_module, "_wc_check_and_inc", return_value=None), \
                  patch.object(browse_module, "_fetch_body", return_value=raw) as fetch, \
-                 patch.object(browse_module, "summarize", return_value="Quarterly summary"):
+                 patch.object(summarizer, "summarize", side_effect=AssertionError("browse_url must not call an LLM")), \
+                 patch.object(summarizer, "summarize_batch", side_effect=AssertionError("browse_url must not call an LLM")):
                 result = browse_module.browse_url.invoke({"url": url, "user_query": "revenue"})
 
-            self.assertIn(f"[web:{url}] Quarterly summary", result)
+            self.assertIn(f"[web:{url}] ", result)
+            self.assertIn("Quarterly report", result)
             self.assertIn("[table evidence]", result)
             self.assertIn("| 2026 | 42 |", result)
             fetch.assert_called_once_with(url, "revenue")
@@ -174,17 +177,17 @@ class ToolConsolidationTests(unittest.TestCase):
         ]
         try:
             for index, url in enumerate(urls):
-                raw = f"cached body {index}"
-                web_cache.put(url, raw)
-                web_cache.put_summary(url, query, f"summary {index}", raw=raw)
+                web_cache.put(url, f"cached body {index} about {query}")
 
-            with patch.object(batch, "_wc_check", side_effect=AssertionError("cache hit spent budget")), \
+            with patch.object(batch, "_wc_reserve_up_to", side_effect=AssertionError("cache hit spent budget")), \
                  patch.object(batch, "_http_only", side_effect=AssertionError("cache hit fetched")):
                 result = batch.browse_urls([urls[0], urls[1], urls[0]], query)
 
             self.assertIn("[browse_url batch] 2 URLs (0 fetched, 2 cached)", result)
-            self.assertIn(f"[web:{urls[0]}] summary 0", result)
-            self.assertIn(f"[web:{urls[1]}] summary 1", result)
+            self.assertIn(f"[web:{urls[0]}] ", result)
+            self.assertIn("cached body 0", result)
+            self.assertIn(f"[web:{urls[1]}] ", result)
+            self.assertIn("cached body 1", result)
         finally:
             with web_cache._LOCK:
                 for url in urls:

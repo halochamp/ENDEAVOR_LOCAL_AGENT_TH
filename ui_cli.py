@@ -311,16 +311,24 @@ def print_web_refs(refs: list[tuple[str, str]]) -> None:
 
 
 def extract_refs_from_search_result(text: str) -> list[tuple[str, str]]:
-    """ดึง (title, url) จาก web_search ToolMessage — format: [web:<url>] summary"""
+    """ดึง (title, url) จาก web_search/browse_url ToolMessage — format: [web:<url>] evidence,
+    หรือ [web:<url>] ตามด้วยบรรทัด `Title: <title>` (web_search)"""
     refs: list[tuple[str, str]] = []
+    pending_title_for_last = False
     for line in (text or "").splitlines():
-        # Current format: [web:<url>] summary
         m = re.match(r"^\[web:(https?://[^\]]+)\]\s*(.*)", line)
         if m:
             url = m.group(1)
             summary = m.group(2).strip()
             title = summary[:55] if summary else url
             refs.append((title, url))
+            pending_title_for_last = not summary
+            continue
+        if pending_title_for_last and refs:
+            pending_title_for_last = False
+            t = re.match(r"^Title:\s*(.+)", line)
+            if t:
+                refs[-1] = (t.group(1).strip()[:55], refs[-1][1])
     return refs
 
 
