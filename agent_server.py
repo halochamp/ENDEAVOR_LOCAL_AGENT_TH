@@ -43,7 +43,9 @@ from agent_log import AgentLogger
 from awake_engine import AwakeEngine, Registry, drain_notices, restore_notices
 import config as _config
 import pdf_to_text
+import text_to_speech
 import translate_documents
+import user_settings
 from config import (
     RECURSION_LIMIT, WORKSPACE, CONTEXT_MAX_CHARS, SERVER_PORT, AUTH_DISABLED,
     READ_FILE_MAX_BYTES, READ_FILE_AUDIO_VIDEO_MAX_BYTES,
@@ -151,6 +153,9 @@ except (TypeError, ValueError):
 _system_net_prev: tuple[int, int, float] | None = None
 _system_net_lock = threading.Lock()
 _system_telemetry_task: asyncio.Task | None = None
+_internet_probe_task: asyncio.Task | None = None
+_INTERNET_PROBE_SECONDS = float(os.getenv("V2_INTERNET_PROBE_SECONDS", "30"))
+_internet_reachable: bool | None = None
 
 _GENERATION_RATE_WINDOW_SECONDS = 2.0
 _generation_token_times: deque[float] = deque()
@@ -287,7 +292,9 @@ class _State:
     def __init__(self):
         self.thread_id = str(uuid.uuid4())
         self._db_conn, self._saver = _open_memory_store(_MEMORY_DB, verbose=False)
-        self.online = _internet_up(retries=1)
+        # Owner choice from Settings (user_settings.json), NOT a probe: a one-shot startup ping that failed once
+        # used to hide web_search for the whole session while the UI still showed Internet as up.
+        self.online = user_settings.internet_online()
         self._rebuild_app()
         self.skill = ""
         self.skill_content = ""
@@ -307,10 +314,42 @@ class _State:
             memory=_load_memory_md(),
             tools=all_tools,
         )
+        bound = {t.name for t in all_tools}
+        log.info("agent graph built: internet=%s tools=%d web_tools=%s",
+                 "online" if self.online else "offline", len(bound), ",".join(sorted(bound & _WEB_TOOLS)) or "none")
         self.cfg = {
             "recursion_limit": RECURSION_LIMIT,
             "configurable": {"thread_id": self.thread_id},
         }
+
+    def set_online(self, online: bool) -> dict | None:
+        """Apply the owner's Internet/Offline choice: save it, rebuild the tool binding, keep both consistent.
+
+        Order: persist first (cheap, can fail early), then rebuild.  If the rebuild fails the previous choice is
+        written back and the previous graph kept, so the file, ``self.online`` and the graph always describe the
+        same mode.  Returns None on success, else a bounded error frame."""
+        previous = self.online
+        if online == previous:
+            return None
+        old_app, old_cfg = self.app, self.cfg
+        try:
+            user_settings.set_internet(online)
+        except OSError:
+            log.exception("internet setting could not be saved")
+            return {"error": True, "msg": "บันทึกการตั้งค่า Internet ไม่สำเร็จ"}
+        self.online = online
+        try:
+            self._rebuild_app()
+        except Exception:
+            self.online = previous
+            self.app, self.cfg = old_app, old_cfg
+            try:
+                user_settings.set_internet(previous)
+            except OSError:
+                log.exception("internet setting rollback could not be saved")
+            log.exception("internet mode rebuild failed; previous mode restored")
+            return {"error": True, "msg": "สลับโหมด Internet ไม่สำเร็จ — ใช้ค่าเดิมต่อ"}
+        return None
 
     def clear(self):
         if self.thread_id != _MEMORY_THREAD:
@@ -1341,6 +1380,10 @@ class _WSCallback(BaseCallbackHandler):
     def _cancel_timer(self) -> None:
         self._timer.cancel()
 
+    def on_superseded_answer(self) -> None:
+        """graph.py is about to replace an answer that was already streamed (the tool-claim follow-up): drop the draft."""
+        self._put({"type": "discard_stream"})
+
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         run_key = str(run_id or "default")
         self._generation_runs.add(run_key)
@@ -1560,16 +1603,21 @@ def _update_pdf_text_state(job_id: str, **changes) -> None:
 
 def _pdf_text_progress(job_id: str, stage: str, page: int, total: int, stats: dict) -> None:
     detail = dict(stats or {})
+    index, pages = int(detail.get("index") or 0), int(detail.get("pages") or 0)
     if stage == "extract":
         message = f"กำลังอ่าน PDF หน้า {page}/{total}…"
+    elif stage == "ocr":
+        message = f"กำลัง OCR หน้า {page}/{total} (หน้านี้ไม่มี text layer)…"
     elif stage == "rewrite":
-        batch = int(detail.get("batch") or 0)
-        batches = int(detail.get("batches") or 0)
-        message = f"กำลังใช้ local LLM แบบ no-think เกลาภาษาไทย · batch {batch}/{batches}…"
+        message = f"กำลังเตรียมหน้า {page}/{total} ให้โมเดล ({index}/{pages})…"
+    elif stage == "render":
+        message = f"กำลังวาดหน้า {page}/{total} เป็นภาพให้โมเดลดู ({index}/{pages})…"
+    elif stage == "model":
+        message = f"รอโมเดลเขียน Markdown หน้า {page}/{total} ({index}/{pages})…"
     elif stage == "write":
-        message = "กำลังเขียนไฟล์ข้อความ…"
+        message = "กำลังเขียนไฟล์ Markdown…"
     else:
-        message = "กำลังแปลง PDF เป็นข้อความ…"
+        message = "กำลังแปลง PDF เป็น Markdown…"
     _update_pdf_text_state(
         job_id,
         status="running",
@@ -1617,7 +1665,7 @@ async def _run_pdf_text_job(job_id: str, source: Path, source_name: str, rewrite
             job_id,
             status="done",
             event="done",
-            message="แปลง PDF → Text เสร็จแล้ว",
+            message="แปลง PDF → MD เสร็จแล้ว",
             total_pages=int(result.get("total_pages") or 0),
             output_path=str(result.get("output_path") or ""),
             stats=dict(result.get("stats") or {}),
@@ -1625,12 +1673,12 @@ async def _run_pdf_text_job(job_id: str, source: Path, source_name: str, rewrite
             error="",
         )
     except Exception as exc:
-        log.exception("PDF to Text job failed")
+        log.exception("PDF to MD job failed")
         _update_pdf_text_state(
             job_id,
             status="error",
             event="error",
-            message="PDF to Text ไม่สำเร็จ",
+            message="PDF to MD ไม่สำเร็จ",
             error=f"{type(exc).__name__}: {exc}",
         )
     finally:
@@ -2300,11 +2348,103 @@ api = FastAPI(title="ENDEAVOR Agent Server")
 # so neither needs CORS headers.
 
 
+async def _broadcast_status() -> None:
+    target = _active_ws
+    if target is None:
+        return
+    try:
+        await target.send_json({"type": "status", **await asyncio.to_thread(get_status)})
+    except Exception:
+        log.debug("status push to the desktop client failed", exc_info=True)
+
+
+async def _internet_probe_loop() -> None:
+    """Header dot = "is the internet reachable right now": display only, independent of the Settings choice."""
+    global _internet_reachable
+    while True:
+        try:
+            up = await asyncio.to_thread(_internet_up, 2)
+            if up != _internet_reachable:
+                _internet_reachable = up
+                await _broadcast_status()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("internet reachability probe failed")
+        await asyncio.sleep(_INTERNET_PROBE_SECONDS)
+
+
+def _ocr_status_fields() -> dict:
+    """OCR engine fields of /status; a failure here must never break the status poll."""
+    try:
+        from tools import _ocr as _ocr_tool
+
+        status = _ocr_tool.engine_status()
+        return {"ocr_engine": status["selected"], "ocr_effective": status["effective"], "ocr_engines": status["engines"]}
+    except Exception:
+        log.exception("ocr engine status unavailable")
+        return {"ocr_engine": "apple", "ocr_effective": "apple", "ocr_engines": {}}
+
+
+def _ocr_engine_state_frame(error: str = "") -> dict:
+    """Saved OCR engine + which engines are ready, for the Settings -> OCR switch (tools/_ocr.py owns the facts)."""
+    from tools import _ocr as _ocr_tool
+
+    status = _ocr_tool.engine_status()
+    return {
+        "type": "ocr_engine_state",
+        "engine": status["selected"],
+        "effective": status["effective"],
+        "engines": status["engines"],
+        "error": error,
+    }
+
+
+async def _set_ocr_engine_from_ui(raw_engine: object) -> dict:
+    """Settings -> OCR.  Saved at once and read by every OCR call (read_image, pdf_to_text, computer_use, ...) on its
+    next run, so nothing needs rebuilding.  Refused while a run is active (one job must not mix engines) and when
+    the chosen engine cannot run, so the switch never shows an engine that is not really in use."""
+    if not isinstance(raw_engine, str) or raw_engine not in user_settings.OCR_ENGINES:
+        return await asyncio.to_thread(_ocr_engine_state_frame, "engine must be one of: " + ", ".join(user_settings.OCR_ENGINES))
+    if _busy.locked():
+        return await asyncio.to_thread(_ocr_engine_state_frame, "agent is busy")
+    state = await asyncio.to_thread(_ocr_engine_state_frame)
+    option = state["engines"].get(raw_engine, {})
+    if not option.get("available"):
+        state["error"] = f"{raw_engine} OCR is not ready: {option.get('detail') or 'unavailable'}"
+        return state
+    try:
+        await asyncio.to_thread(user_settings.set_ocr_engine, raw_engine)
+    except OSError:
+        log.exception("ocr engine setting could not be saved")
+        return await asyncio.to_thread(_ocr_engine_state_frame, "บันทึกการตั้งค่า OCR ไม่สำเร็จ")
+    return await asyncio.to_thread(_ocr_engine_state_frame)
+
+
+def _internet_state_frame(error: str = "") -> dict:
+    return {"type": "internet_state", "enabled": _state.online, "error": error}
+
+
+async def _set_internet_from_ui(raw_online: object) -> dict:
+    """Settings -> Internet/Offline.  Saved at once; the web tools are bound or hidden by the same single flag the
+    graph is built from.  Refused while a run is active (the tool set must not change under it)."""
+    if not isinstance(raw_online, bool):
+        return _internet_state_frame("online must be true or false")
+    if _busy.locked():
+        return _internet_state_frame("agent is busy")
+    frame = await asyncio.to_thread(_state.set_online, raw_online)
+    return _internet_state_frame(str((frame or {}).get("msg") or ""))
+
+
 @api.get("/status", dependencies=[Depends(_require_token)])
 def get_status():
     return {
         "server_up": _mlx_up(),
-        "online": _internet_up(retries=1),
+        # `online` = the header dot: the periodic reachability probe (display only, /status never probes).
+        # `internet_enabled` = the owner's saved Internet/Offline choice, which alone binds or hides the web tools.
+        "online": _internet_reachable if _internet_reachable is not None else _internet_up(retries=1),
+        "internet_enabled": _state.online,
+        **_ocr_status_fields(),
         "skill": _state.skill,
         "skills": _list_skills(),
         "builtin_cmds": _load_builtin_cmds(),
@@ -2462,8 +2602,230 @@ async def pdf_to_text_start(request: Request):
 def pdf_to_text_status(job_id: str = ""):
     snapshot = _pdf_text_snapshot()
     if job_id and snapshot.get("job_id") != job_id:
-        return JSONResponse({"ok": False, "error": "ไม่พบ PDF to Text job นี้"}, status_code=404)
+        return JSONResponse({"ok": False, "error": "ไม่พบ PDF to MD job นี้"}, status_code=404)
     return {"ok": True, "job": snapshot}
+
+
+# ── Text to Speech panel ───────────────────────────────────────────────────────
+# One job at a time.  The job runs in a worker thread (text_to_speech.synthesize_document) and is controlled through two
+# events: pause (cooperative, takes effect before the next piece) and cancel.  Nothing here loads a model: the voice worker
+# is a child process of the job and ends with it.
+
+_TTS_STATE_LOCK = threading.RLock()
+_tts_state: dict | None = None
+_tts_task: asyncio.Task | None = None
+_tts_control: dict[str, threading.Event] = {"pause": threading.Event(), "cancel": threading.Event()}
+_TTS_UPLOAD_DIR = Path(_config.TTS_PRIVATE_DIR) / "uploads"
+_MANAGED_TTS_PREFIX = "th-tts-"
+_TTS_ACTIVE = {"uploading", "queued", "running", "pausing", "paused", "cancelling"}
+
+
+def _tts_snapshot() -> dict:
+    with _TTS_STATE_LOCK:
+        if not _tts_state:
+            return {"job_id": "", "status": "idle", "event": "idle", "message": "พร้อม", "source_name": "", "voice": "",
+                    "done": 0, "total": 0, "eta_sec": 0, "stats": {}, "warnings": [], "output_path": "", "duration_sec": 0, "error": ""}
+        snap = dict(_tts_state)
+        snap["stats"] = dict(snap.get("stats") or {})
+        snap["warnings"] = list(snap.get("warnings") or [])
+        return snap
+
+
+def _update_tts_state(job_id: str, **changes) -> None:
+    with _TTS_STATE_LOCK:
+        if not _tts_state or _tts_state.get("job_id") != job_id:
+            return
+        _tts_state.update(changes)
+
+
+def _tts_progress(job_id: str, stage: str, done: int, total: int, stats: dict) -> None:
+    done, total = int(done or 0), int(total or 0)
+    with _TTS_STATE_LOCK:
+        if not _tts_state or _tts_state.get("job_id") != job_id:
+            return
+        cancelling = _tts_control["cancel"].is_set()
+        if stage == "paused":
+            status, message = ("cancelling", "กำลังยกเลิก…") if cancelling else ("paused", f"หยุดชั่วคราว · อ่านแล้ว {done}/{total} ชิ้น")
+        elif stage == "synth":
+            status = "cancelling" if cancelling else ("pausing" if _tts_control["pause"].is_set() else "running")
+            message = f"กำลังอ่านออกเสียง ชิ้น {min(done + 1, total)}/{total}…" if done < total else "อ่านครบทุกชิ้นแล้ว"
+        elif stage == "master":
+            status, message = "running", "กำลังต่อเสียงและปรับระดับความดัง…"
+        elif stage == "load":
+            status, message = "running", "กำลังโหลดโมเดลเสียง…"
+        elif stage == "plan":
+            status, message = "running", "กำลังแบ่งข้อความ…"
+        else:
+            status, message = "running", "กำลังอ่านไฟล์…"
+        _tts_state.update(status=status, event=stage, message=message, done=done, total=total,
+                          eta_sec=int((stats or {}).get("eta_sec") or 0))
+
+
+def _cleanup_tts_uploads() -> None:
+    try:
+        entries = [p for p in _TTS_UPLOAD_DIR.iterdir() if p.name.startswith(_MANAGED_TTS_PREFIX) and p.is_file() and not p.is_symlink()]
+    except OSError:
+        return
+    cutoff = time.time() - _config.TTS_CACHE_MAX_AGE_SECONDS
+    for item in entries:
+        try:
+            if item.stat().st_mtime <= cutoff:
+                item.unlink()
+        except OSError:
+            pass
+
+
+async def _run_tts_job(job_id: str, source: Path, source_name: str, voice: str, speed: float) -> None:
+    try:
+        result = await asyncio.to_thread(
+            text_to_speech.synthesize_document,
+            source,
+            source_name=source_name,
+            options=text_to_speech.Options(voice=voice, speed=speed),
+            progress=lambda stage, done, total, stats: _tts_progress(job_id, stage, done, total, stats),
+            should_pause=_tts_control["pause"].is_set,
+            should_cancel=_tts_control["cancel"].is_set,
+        )
+        _update_tts_state(job_id, status="done", event="done", message="อ่านออกเสียงเสร็จแล้ว",
+                          done=int(result.get("pieces") or 0), total=int(result.get("pieces") or 0), eta_sec=0,
+                          output_path=str(result.get("output_path") or ""), duration_sec=float(result.get("duration_sec") or 0),
+                          stats=dict(result.get("stats") or {}), warnings=list(result.get("warnings") or []), error="")
+    except text_to_speech.TtsCancelled:
+        _update_tts_state(job_id, status="cancelled", event="cancelled", message="ยกเลิกแล้ว", eta_sec=0)
+    except Exception as exc:
+        log.exception("Text to Speech job failed")
+        text = str(exc) if isinstance(exc, ValueError) else f"{type(exc).__name__}: {exc}"
+        _update_tts_state(job_id, status="error", event="error", message="Text to Speech ไม่สำเร็จ", error=text[:500], eta_sec=0)
+    finally:
+        try:
+            source.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+@api.get("/tts/voices", dependencies=[Depends(_require_token)])
+def tts_voices():
+    return {"ok": True, "engine": text_to_speech.engine_status(), "voices": text_to_speech.list_voices(),
+            "voices_dir": str(text_to_speech.voices_root()), "outputs": text_to_speech.list_outputs(10)}
+
+
+@api.post("/tts/start", dependencies=[Depends(_require_token)])
+async def tts_start(request: Request):
+    """Stream one .txt/.md file into private staging and start reading it aloud (X-Voice = voice id, X-Speed = 0.8-1.2)."""
+    global _tts_state, _tts_task
+    name = Path(unquote(request.headers.get("x-file-name", ""))).name.strip()
+    if not name or name in {".", ".."} or len(name) > 512 or "\x00" in name or Path(name).suffix.casefold() not in {".txt", ".md", ".markdown"}:
+        return JSONResponse({"ok": False, "error": "เลือกไฟล์ .txt หรือ .md"}, status_code=400)
+    length = request.headers.get("content-length")
+    if length:
+        try:
+            declared = int(length)
+        except ValueError:
+            return JSONResponse({"ok": False, "error": "ขนาดไฟล์ไม่ถูกต้อง"}, status_code=400)
+        if declared <= 0:
+            return JSONResponse({"ok": False, "error": "ไฟล์ว่าง"}, status_code=400)
+        if declared > _config.TTS_MAX_BYTES:
+            return JSONResponse({"ok": False, "error": f"ไฟล์ใหญ่เกิน {_config.TTS_MAX_BYTES // (1024 * 1024)}MB"}, status_code=413)
+    voice = request.headers.get("x-voice", "").strip()
+    try:
+        speed = float(request.headers.get("x-speed", "1.0"))
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "ความเร็วต้องเป็นตัวเลข 0.8–1.2"}, status_code=400)
+    engine = text_to_speech.engine_status()
+    if not engine["ready"]:
+        return JSONResponse({"ok": False, "error": engine["reason"]}, status_code=400)
+    if text_to_speech.resolve_voice(voice) is None:
+        return JSONResponse({"ok": False, "error": "เลือกเสียงที่ใช้ได้ก่อน (โฟลเดอร์เสียงต้องมี ref_voice.wav และ ref_voice.txt)"}, status_code=400)
+    with _TTS_STATE_LOCK:
+        if _tts_state and _tts_state.get("status") in _TTS_ACTIVE:
+            return {"ok": True, "already_running": True, "job": _tts_snapshot()}
+        job_id = f"tts-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+        _tts_control["pause"].clear()
+        _tts_control["cancel"].clear()
+        _tts_state = {"job_id": job_id, "status": "uploading", "event": "uploading", "message": "กำลังรับไฟล์…", "source_name": name,
+                      "voice": voice, "done": 0, "total": 0, "eta_sec": 0, "stats": {}, "warnings": [], "output_path": "",
+                      "duration_sec": 0, "error": ""}
+    stored_path: Path | None = None
+    try:
+        _TTS_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        _TTS_UPLOAD_DIR.chmod(0o700)
+        _cleanup_tts_uploads()
+        with tempfile.NamedTemporaryFile(mode="wb", prefix=_MANAGED_TTS_PREFIX, suffix=Path(name).suffix.casefold(), dir=_TTS_UPLOAD_DIR, delete=False) as handle:
+            stored_path = Path(handle.name)
+            total = 0
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > _config.TTS_MAX_BYTES:
+                    raise ValueError("too_large")
+                handle.write(chunk)
+            if total <= 0:
+                raise ValueError("empty")
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o600)
+    except Exception as exc:
+        if stored_path is not None:
+            try:
+                stored_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if str(exc) == "too_large":
+            error, code = f"ไฟล์ใหญ่เกิน {_config.TTS_MAX_BYTES // (1024 * 1024)}MB", 413
+        elif str(exc) == "empty":
+            error, code = "ไฟล์ว่าง", 400
+        else:
+            error, code = "รับไฟล์ไม่สำเร็จ", 400
+        _update_tts_state(job_id, status="error", event="error", message="รับไฟล์ไม่สำเร็จ", error=error)
+        return JSONResponse({"ok": False, "error": error}, status_code=code)
+    _update_tts_state(job_id, status="queued", event="queued", message="รับไฟล์แล้ว · กำลังเริ่มอ่าน…")
+    _tts_task = asyncio.create_task(_run_tts_job(job_id, stored_path, name, voice, speed))
+    return {"ok": True, "already_running": False, "job": _tts_snapshot()}
+
+
+@api.get("/tts/status", dependencies=[Depends(_require_token)])
+def tts_status(job_id: str = ""):
+    snapshot = _tts_snapshot()
+    if job_id and snapshot.get("job_id") != job_id:
+        return JSONResponse({"ok": False, "error": "ไม่พบ Text to Speech job นี้"}, status_code=404)
+    return {"ok": True, "job": snapshot}
+
+
+def _tts_control_endpoint(job_id: str, action: str):
+    snapshot = _tts_snapshot()
+    if job_id and snapshot.get("job_id") != job_id:
+        return JSONResponse({"ok": False, "error": "ไม่พบ Text to Speech job นี้"}, status_code=404)
+    status = snapshot.get("status")
+    if status not in _TTS_ACTIVE:
+        return JSONResponse({"ok": False, "error": "ไม่มีงานที่กำลังทำอยู่", "job": snapshot}, status_code=409)
+    jid = snapshot["job_id"]
+    if action == "pause":
+        _tts_control["pause"].set()
+        _update_tts_state(jid, status="pausing" if status == "running" else status, message="จะหยุดหลังชิ้นนี้อ่านเสร็จ…")
+    elif action == "resume":
+        _tts_control["pause"].clear()
+        _update_tts_state(jid, status="running" if status in {"paused", "pausing"} else status, message="กำลังอ่านต่อ…")
+    else:
+        _tts_control["cancel"].set()
+        _update_tts_state(jid, status="cancelling", message="กำลังยกเลิก…")
+    return {"ok": True, "job": _tts_snapshot()}
+
+
+@api.post("/tts/pause", dependencies=[Depends(_require_token)])
+def tts_pause(job_id: str = ""):
+    return _tts_control_endpoint(job_id, "pause")
+
+
+@api.post("/tts/resume", dependencies=[Depends(_require_token)])
+def tts_resume(job_id: str = ""):
+    return _tts_control_endpoint(job_id, "resume")
+
+
+@api.post("/tts/cancel", dependencies=[Depends(_require_token)])
+def tts_cancel(job_id: str = ""):
+    return _tts_control_endpoint(job_id, "cancel")
+
 
 
 @api.post("/translate/start", dependencies=[Depends(_require_token)])
@@ -3164,6 +3526,20 @@ async def ws_endpoint(websocket: WebSocket):
             elif msg_type == "get_status":
                 await websocket.send_json({"type": "status", **get_status()})
 
+            elif msg_type == "get_ocr_engine":
+                await websocket.send_json(await asyncio.to_thread(_ocr_engine_state_frame))
+
+            elif msg_type == "set_ocr_engine":
+                await websocket.send_json(await _set_ocr_engine_from_ui(data.get("engine")))
+                await websocket.send_json({"type": "status", **get_status()})
+
+            elif msg_type == "get_internet":
+                await websocket.send_json(_internet_state_frame())
+
+            elif msg_type == "set_internet":
+                await websocket.send_json(await _set_internet_from_ui(data.get("online")))
+                await websocket.send_json({"type": "status", **get_status()})
+
             elif msg_type == "get_runtime_settings":
                 _sync_runtime_settings_from_owner_file_if_idle()
                 await websocket.send_json(_runtime_settings_payload())
@@ -3250,7 +3626,7 @@ async def ws_endpoint(websocket: WebSocket):
 @api.on_event("startup")
 async def _start_awake_engine() -> None:
     """Start standalone model ownership/watchdog, telemetry, then Awake."""
-    global _awake_loop, _awake_engine, _awake_queue, _awake_worker_task, _model_watchdog_task, _system_telemetry_task
+    global _awake_loop, _awake_engine, _awake_queue, _awake_worker_task, _model_watchdog_task, _system_telemetry_task, _internet_probe_task
     _awake_loop = asyncio.get_running_loop()
 
     runtime = get_runtime_settings()
@@ -3274,6 +3650,7 @@ async def _start_awake_engine() -> None:
         _model_watchdog_task = asyncio.create_task(_model_server_watchdog_loop())
 
     _system_telemetry_task = asyncio.create_task(_system_telemetry_loop())
+    _internet_probe_task = asyncio.create_task(_internet_probe_loop())
     _awake_queue = asyncio.Queue()
     _awake_worker_task = asyncio.create_task(_awake_queue_worker())
     _awake_engine = AwakeEngine(fire=_awake_fire, registry=Registry(), owner="agent_server")
@@ -3283,7 +3660,7 @@ async def _start_awake_engine() -> None:
 
 @api.on_event("shutdown")
 async def _stop_awake_engine() -> None:
-    global _awake_worker_task, _model_watchdog_task, _system_telemetry_task
+    global _awake_worker_task, _model_watchdog_task, _system_telemetry_task, _internet_probe_task
     if _awake_engine is not None:
         _awake_engine.stop()
     if _awake_worker_task is not None:
@@ -3295,6 +3672,9 @@ async def _stop_awake_engine() -> None:
     if _system_telemetry_task is not None:
         _system_telemetry_task.cancel()
         _system_telemetry_task = None
+    if _internet_probe_task is not None:
+        _internet_probe_task.cancel()
+        _internet_probe_task = None
     # A pending coalesced fire left in _awake_pending would coalesce-skip
     # every future fire for that watch_id forever (the guard checks
     # `if watch_id in _awake_pending`) — clear it so a restart starts clean.

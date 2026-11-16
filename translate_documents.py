@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - production MAX includes httpx
     httpx = None  # type: ignore[assignment]
 
 import config
+from markdown_text import close_open_fence, text_to_markdown
 
 
 class TranslationPaused(RuntimeError):
@@ -699,6 +700,7 @@ def _write_markdown(path: Path, metadata: dict[str, Any], pages: list[Page], tra
         f"model: {json.dumps(metadata['model'], ensure_ascii=False)}",
         "---", "", f"# {metadata['source_name']} — ฉบับแปลภาษาไทย", "",
     ]
+    markdown_source = Path(str(metadata["source_name"])).suffix.casefold() in {".md", ".markdown"}
     by_page: dict[int, list[dict[str, Any]]] = {}
     for block in metadata["blocks"]:
         by_page.setdefault(int(block["page"]), []).append(block)
@@ -709,6 +711,12 @@ def _write_markdown(path: Path, metadata: dict[str, Any], pages: list[Page], tra
         page_blocks = by_page.get(page.number, [])
         rendered = [translated.get(block["id"], "[ยังแปลไม่สำเร็จ]") for block in page_blocks]
         body = "\n\n".join(value for value in rendered if value.strip())
+        # The model only translates; the structure of this file is the code's.  A page body is neutralised so it can
+        # never turn into code/HTML or swallow the next page's heading and break.  A translated Markdown document
+        # keeps its own formatting, but an unclosed code fence is closed (counted over the whole page, since a
+        # code block can span translation blocks).
+        if body:
+            body = close_open_fence(body) if markdown_source else text_to_markdown(body, hard_breaks=False)
         lines.append(body or ("[หน้าว่าง]" if page.blank else "[อ่านข้อความไม่ชัด]"))
         if index != len(pages) - 1:
             lines.extend(["", "---", ""])

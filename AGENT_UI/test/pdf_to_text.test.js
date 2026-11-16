@@ -9,7 +9,7 @@ const renderer = fs.readFileSync(path.join(ROOT, 'renderer.js'), 'utf8')
 const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
 const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
 
-test('Electron exposes a dedicated PDF to Text tab with opt-in no-think rewrite', () => {
+test('Electron exposes a dedicated PDF to MD tab with opt-in no-think page-by-page Markdown', () => {
   assert.match(html, /id="btn-pdf"/)
   assert.match(html, /id="left-pdf"/)
   assert.match(html, /id="pdf-rewrite-thai" type="checkbox"/)

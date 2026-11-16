@@ -3,6 +3,9 @@ import Vision
 import AppKit
 
 let args = CommandLine.arguments
+// Always .accurate: the .fast level reads Thai as Latin noise (measured 2026-11-15: 0 of 638 Thai labels found on a
+// scanned Thai PDF vs 638 with .accurate), so there is deliberately no fast mode.
+let imagePathIndex = 1
 
 // --langs : print supported recognition languages (accurate level)
 if args.count > 1 && args[1] == "--langs" {
@@ -14,10 +17,10 @@ if args.count > 1 && args[1] == "--langs" {
     exit(0)
 }
 
-guard args.count > 1,
-      let img = NSImage(contentsOfFile: args[1]),
+guard args.count > imagePathIndex,
+      let img = NSImage(contentsOfFile: args[imagePathIndex]),
       let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-    print("ERR: cannot load \(args.count > 1 ? args[1] : "<no path>")")
+    print("ERR: cannot load \(args.count > imagePathIndex ? args[imagePathIndex] : "<no path>")")
     exit(1)
 }
 

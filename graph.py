@@ -29,6 +29,7 @@ from react import (
     prepare_turn_vision_messages,
     suspend_vision_publication,
 )
+import tool_claim_guard
 from llm import build_llm
 from config import RECURSION_LIMIT, CONTEXT_MAX_CHARS
 from planner import plan as _plan
@@ -127,6 +128,61 @@ _DESTRUCTIVE_INTENT_RE = re.compile(
 )
 
 
+# Names of the tools bound in the running graph (set by build_graph): the code-enforced rows of tool_claim_guard
+# apply only to a tool the agent really has this run.
+_BOUND_TOOL_NAMES: set[str] = set()
+
+
+def _discard_streamed_answer(config: RunnableConfig | None) -> None:
+    """Tell the front end to drop an answer it already streamed, because the agent is about to replace it."""
+    callbacks = (config or {}).get("callbacks")
+    if callbacks is None:
+        return
+    handlers = callbacks if isinstance(callbacks, (list, tuple)) else (getattr(callbacks, "handlers", ()) or ())
+    for handler in handlers:
+        withdraw = getattr(handler, "on_superseded_answer", None)
+        if callable(withdraw):
+            withdraw()
+
+
+def _last_final_ai(messages: list):
+    """The last AI message that is an answer (not a tool call), or None."""
+    return next((m for m in reversed(messages) if isinstance(m, AIMessage) and not (getattr(m, "tool_calls", None) or [])), None)
+
+
+def _enforce_tool_claims(out: dict, trimmed: list, seeded: list, new_msgs: list, query: str,
+                         config: RunnableConfig) -> tuple[dict, list, dict | None]:
+    """Code-driven follow-up: the request needs a tool that never ran this turn and the answer claims its result.
+
+    Withdraw that draft and resume the agent once with a message that names the tool; the resume message itself is not kept in
+    the history.  Returns (out, new_msgs, rule that is STILL unbacked after the resume, else None); the caller appends the
+    honest note for that rule."""
+    attachments = bool(((config or {}).get("configurable") or {}).get("file_attachments"))
+    rules = tool_claim_guard.rules_for(query, _BOUND_TOOL_NAMES, has_attachments=attachments)
+    if not rules:
+        return out, new_msgs, None
+    evidence = [*seeded, *new_msgs]
+    last_ai = _last_final_ai(new_msgs)
+    content = str(last_ai.content or "").strip() if last_ai is not None else ""
+    if last_ai is not None and (last_ai.response_metadata or {}).get("finish_reason") == "length":
+        return out, new_msgs, None    # a cut-off answer is the truncation path's business, not a claim
+    any_tool_ran = any(getattr(m, "tool_calls", None) for m in evidence)
+    rule = tool_claim_guard.unbacked_claim(rules, evidence, content, empty_is_claim=any_tool_ran)
+    if rule is None:
+        return out, new_msgs, None
+    log.warning("[tool-claim-guard] %s never ran but the answer claims it; resuming the agent once", rule["tool"])
+    if last_ai is not None and content:
+        _discard_streamed_answer(config)
+    resume = HumanMessage(content=tool_claim_guard.continue_message(rule))
+    resumed = [m for m in out["messages"] if m is not last_ai] + [resume]
+    out = _REACT.invoke({"messages": resumed}, config={**config, "recursion_limit": RECURSION_LIMIT})
+    new_msgs = [m for m in out["messages"][len(trimmed):]
+                if not (isinstance(m, HumanMessage) and m.content == resume.content)]
+    final = _last_final_ai(new_msgs)
+    still = tool_claim_guard.unbacked_claim([rule], [*seeded, *new_msgs], str(final.content or "") if final is not None else "")
+    return out, new_msgs, still
+
+
 def _force_plan_or_directive(msgs: list) -> tuple[list, list]:
     """Deterministic research intercept — single path, no nudge-vs-nudge fallback.
 
@@ -164,7 +220,16 @@ def _force_plan_or_directive(msgs: list) -> tuple[list, list]:
         log.info("[awake-fired-intercept] computer scoped to max=%d, destructive blocked", _AWAKE_COMPUTER_ACTION_MAX)
         return patched, []
 
-    if content.startswith("[SEARCH DIRECTIVE") or not _SEARCH_VERB_RE.search(content):
+    # Chart pin: a chart request is a tool call (plot), stated in the turn itself.  BEFORE the search verbs so
+    # "ค้นหาราคา BTC แล้ววาดกราฟ" keeps the chart rung (the directive allows web_search first when live data is asked for).
+    # Ephemeral patch, not persisted.
+    if "plot" in _BOUND_TOOL_NAMES and tool_claim_guard.chart_directive_applies(content):
+        patched = list(msgs)
+        patched[idx] = HumanMessage(content=tool_claim_guard.CHART_DIRECTIVE + "\n\n" + content)
+        log.info("[chart-intercept] chart directive injected (chars=%d)", len(content))
+        return patched, []
+
+    if content.startswith(("[CHART DIRECTIVE", "[SEARCH DIRECTIVE")) or not _SEARCH_VERB_RE.search(content):
         return msgs, []
 
     # research-verb detected → planner classifies simple vs complex
@@ -812,6 +877,19 @@ def _react_node_impl(state: V2State, config: RunnableConfig) -> dict:
     # Update persisted context accounting without transient raw Pin evidence.
     ctx_stats["chars"] = sum(len(str(m.content)) for m in list(persisted_window) + list(new_msgs))
 
+    # Code-driven follow-up: a request that needs a tool (plot / a look at a web image) whose answer claims the result while
+    # that tool never ran is withdrawn and resumed once; a second skip is noted honestly at the end of the turn.
+    current_query = _last_human_content(state["messages"])
+    claim_note = None
+    try:
+        out, new_msgs, still_unbacked = _enforce_tool_claims(out, trimmed, seeded, new_msgs, current_query, config)
+        if still_unbacked:
+            log.warning("[tool-claim-guard] %s still not called after the resume; appending an honest note", still_unbacked["tool"])
+            claim_note = AIMessage(content=tool_claim_guard.unbacked_note(still_unbacked),
+                                   additional_kwargs={"_no_thinking": True, "_tool_claim_note": True})
+    except Exception:
+        log.exception("[tool-claim-guard] follow-up failed; keeping the first answer")
+
     # ตรวจว่ามี final synthesis หรือไม่
     if not _last_ai_content(new_msgs):
         log.warning("[react_node] final empty — retry synthesis once")
@@ -826,6 +904,9 @@ def _react_node_impl(state: V2State, config: RunnableConfig) -> dict:
             log.info(f"[react_node] retry synthesis OK ({len(synth)} chars)")
         else:
             log.warning("[react_node] retry synthesis also empty")
+
+    if claim_note is not None:
+        new_msgs = new_msgs + [claim_note]
 
     pinned_limitation = _pinned_limitation_message(pinned_status)
     if pinned_limitation:
@@ -844,8 +925,12 @@ def _react_node_impl(state: V2State, config: RunnableConfig) -> dict:
 
 
 def build_graph(checkpointer=None, memory: str = "", tools=None):
-    global _REACT
+    global _REACT, _BOUND_TOOL_NAMES
     _REACT = build_react_agent(checkpointer=None, memory=memory, tools=tools)
+    if tools is None:
+        from tools import ALL_TOOLS
+        tools = ALL_TOOLS
+    _BOUND_TOOL_NAMES = {getattr(t, "name", "") for t in tools}
     g = StateGraph(V2State)
     g.add_node("react", react_node)
     g.add_edge(START, "react")

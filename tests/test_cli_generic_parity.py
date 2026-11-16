@@ -231,7 +231,7 @@ class CliGenericParityTests(unittest.TestCase):
         ), contextlib.redirect_stdout(output):
             cli._dispatch_cli_pdf_text(["fixture.pdf"])
 
-        self.assertIn("PDF → Text ไม่สำเร็จ: invalid page dimensions", output.getvalue())
+        self.assertIn("PDF → MD ไม่สำเร็จ: invalid page dimensions", output.getvalue())
 
 
 if __name__ == "__main__":

@@ -127,13 +127,14 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 ### 2. AGENT_UI — Electron Desktop App
 
-- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง พร้อม **Workspace**, activity, history, streaming chat, file attachment, persistent **Pin File**, **PDF to Text**, **Translate** และ Settings
+- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง พร้อม **Workspace**, activity, history, streaming chat, file attachment, persistent **Pin File**, **PDF to MD**, **Translate** และ Settings
 - พิมพ์ `@` ในช่องข้อความเพื่อ tag ไฟล์จาก Workspace ได้โดยตรง เช่น `@world.doc สรุปไฟล์ให้หน่อย`; autocomplete รองรับไฟล์ในโฟลเดอร์ย่อยและชื่อซ้ำจะใช้ relative path เพื่อไม่เดาผิด. Backend ตรวจ canonical path ซ้ำก่อนส่ง grounding ให้ Agent จึงกัน `../`/symlink escape ได้
 - `/skill <คำสั่ง>` รันหนึ่ง turn ภายใต้ skill นั้นโดยไม่เปลี่ยนโหมดถาวร และใช้ร่วมกับ `@ไฟล์` ใน Active Workspace ได้ในข้อความเดียว เช่น `/research สรุป @report.pdf`; เมื่อมี `@` อยู่ใต้ caret ระบบเสนอไฟล์ก่อน และการเลือกคำสั่งจะแทนที่เฉพาะ token `/…` ต้นข้อความ ส่วนที่เหลือไม่หาย. `/skill` เปล่า ๆ ยังเป็นการเปิด/ปิดโหมดเหมือนเดิม และ skill ที่มีเครื่องมือเฉพาะต้องเปิดเป็นโหมด
 - แผง **Activity** แสดง log ของการทำงานเรียงจาก **ล่าสุดไปเก่าสุด** เป็นการ์ดต่อ turn: ทุก tool call แสดง arguments, สถานะ (กำลังทำงาน/เสร็จแล้ว/ไม่สำเร็จ) และตัวอย่างผลลัพธ์ ข้อความยาวย่อไว้พร้อมปุ่ม "มีต่อ"; ระหว่างเรียก tool แชตแสดงสถานะเป็นข้อความ (`กำลังใช้ bash`) ไม่ใช่แอนิเมชัน. arguments/ผลลัพธ์ผ่านการ redact ความลับ (token, password, private key, URL ที่มี credential, base64) ก่อนเสมอ
 - ปุ่ม **📌 Pin File** สร้าง working set ต่อเนื่องได้สูงสุด 10 ไฟล์จากที่ใดก็ได้บนเครื่องต่อ Electron session ตราบเท่าที่ path นั้นผ่าน permission เดียวกับ `read_file` (protected system/credential paths ยังคงถูกบล็อก). Pin อยู่ต่อหลัง Send และ `/clear` แต่ไม่ persist ข้ามการปิด/เปิด Electron ใหม่. ทุก normal query backend จะเรียก shared read-path guard เดิม, canonicalize/dedupe path และตรวจ existence/readability ใหม่ แล้ว graph จะ **อ่าน Pin ทุกไฟล์ก่อน reasoning**: เอกสารใช้ `read_file` แบบ question-aware และ batch สูงสุด 4 ไฟล์ต่อ call (10 ไฟล์ = 4+4+2), รูปใช้ progressive `read_image(..., detail="overview")` สูงสุด 10 ภาพ; OCR/zoom เป็น follow-up เมื่อจำเป็น. Source เดียวกันเลือกหลายทางจะใช้ลำดับ **Pin > Attach > @mention** และอ่านเพียงครั้งเดียวต่อ turn; ไฟล์ Pin ที่หาย/ย้าย/ถูก guard ปฏิเสธ/อ่านไม่ได้จะรายงาน `อ่านสำเร็จ X/Y` แทนการแกล้งทำว่าอ่านครบ
-- tab **PDF to Text** แปลง PDF โดยตรงนอก chat graph: PDF ที่มี text layer ใช้ข้อความเดิม, หน้า scan ใช้ OCR + deterministic Thai formatting cleanup. ตัวเลือก `LLM rewrite` ปิดเป็นค่าเริ่มต้น; เมื่อเปิดจะใช้ local model/port ปัจจุบันแบบ **no-think** (`enable_thinking=false`, `thinking_budget=0`) เพื่อแก้ OCR ภาษาไทยแบบอนุรักษ์นิยม พร้อม validation/fallback กลับ OCR เดิมถ้าข้อความหรือเลขเปลี่ยนเกินขอบเขต
+- tab **PDF to MD** แปลง PDF เป็น Markdown (`.md`) โดยตรงนอก chat graph: PDF ที่มี text layer ใช้ข้อความเดิม, หน้า scan ใช้ OCR (Apple Vision หรือ OpenThai ตามที่เลือกใน Settings) + deterministic Thai formatting cleanup; หัวข้อหน้า/เลขหน้า/เส้นแบ่งหน้าเขียนด้วยโค้ดเสมอ. ตัวเลือก LLM แบบ **no-think** จะส่ง **ภาพของหน้าพร้อมข้อความที่สกัดทีละหน้า** ให้โมเดลเขียนเป็น Markdown (หัวข้อ รายการ ตาราง) และบรรยายภาพ/แผนที่/กราฟในหน้านั้น; หน้าที่ request ล้มเหลว/ว่าง/ถูกตัดจะใช้ข้อความเดิมของหน้านั้น และถ้า model ที่เลือกอ่านภาพไม่ได้ (text-only) จะส่งเฉพาะข้อความ. ไม่ติ๊ก = ไม่เรียกโมเดลเลย (ข้อความที่อาจกลายเป็นไวยากรณ์ Markdown ถูก escape ให้แสดงตามต้นฉบับ). ผลลัพธ์อยู่ที่ `workspace/pdf_to_md/`
 - tab **Translate** แปลเอกสาร (PDF ที่มี text layer, PDF scan ด้วย OCR, ไฟล์ข้อความ, Word/Excel) เป็นภาษาไทยโดยตรงนอก chat graph ด้วย model ปัจจุบันแบบ **no-think** แล้วเขียนผลเป็น Markdown พร้อมหัวข้อหน้าและเส้นแบ่งหน้าใน `workspace/translate/`. งานแปลมี checkpoint: **พัก / ทำต่อ / ยกเลิก** ได้ และกู้งานที่ค้างหลัง agent server เริ่มใหม่ได้ (token, URL, ตัวเลข และโค้ดในเอกสารถูกคงไว้ ไม่แปล)
+- tab **TTS (Text to Speech)** อ่านไฟล์ `.txt` / `.md` ออกเสียงในเครื่องด้วย **OmniVoice** (k2-fsa) แล้วเขียนเป็น `.m4a` ปรับความดังให้เท่ากัน (-16 LUFS) ที่ `workspace/text_to_speech/`. ข้อความไทยถูกแปลงตัวเลขเป็นคำอ่านไทย ส่วนข้อความอังกฤษคงเดิมและส่งธงภาษาอังกฤษให้โมเดล; Markdown/ลิงก์/code block ถูกตัดก่อนอ่าน; มี **พัก / ทำต่อ / ยกเลิก**. เมื่อกดเข้าแท็บนี้ **จะถามก่อนทุก session ว่าจะใช้และโหลดโมเดลเสียงหรือไม่** (ตอบไม่ = แท็บไม่เปิดและไม่โหลดอะไร; โมเดลถูกโหลดเมื่อเริ่มอ่านและปล่อยเมื่อจบงาน). ต้องติดตั้ง OmniVoice เองและเตรียมเสียงอ้างอิง ดูหัวข้อ [Text to Speech, OCR และ Internet/Offline](#text-to-speech-ocr-และ-internetoffline-ตัวเลือกเสริม)
 - **ไม่ได้ bundle Electron ไว้ในรีโป** ต้อง `npm install` เองครั้งแรก:
   ```bash
   cd AGENT_UI
@@ -143,6 +144,7 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 - Electron เปิด authenticated `agent_server.py` เท่านั้น; **Python backend/model_runtime เป็น owner ของ MLX lifecycle** จึงทำงาน standalone ได้แม้ไม่มี Electron process manager อื่น
 - แถบข้อความ **ใต้กล่องพิมพ์และชิดขอบล่างสุดของ window** แสดง `CPU · GPU · RAM · TOK · NET` แบบ real-time แทนการแสดง phase ซ้ำกับใน chat. Telemetry มาจาก Agent TH เอง ไม่พึ่ง Server Monitor/private repo และไม่ hard-code path/สเปกของเครื่องผู้พัฒนา: CPU/RAM/Network ใช้ `psutil`, GPU ตรวจ capability ของเครื่องที่รันจริง (`ioreg` บน macOS หรือ `nvidia-smi` ถ้ามี) และถ้าอ่านไม่ได้จะแสดง `GPU —` โดยไม่กระทบ Agent. `TOK` คือ token/sec แบบ rolling average 2 วินาทีจาก streaming generation callback จริงของ LLM ที่กำลังทำงาน จึงไม่ fix ชื่อ model และไม่ประมาณจากจำนวนตัวอักษร; ถ้า generation เพิ่งเริ่มและยังไม่ครบ 2 วินาที ระบบจะหารด้วยช่วงเวลาที่สังเกตจริงเพื่อไม่กดค่า token/sec ให้ต่ำผิดจริง และหลัง generation จบ ค่ายังสะท้อน token ที่อยู่ในหน้าต่าง 2 วินาทีล่าสุดก่อนลดเป็น `0.0 t/s` เมื่อ window ว่าง. CPU/GPU/RAM/NET sample ทุก 5 วินาทีตามปกติ แต่ bar publish ทุก 1 วินาทีเพื่อให้ `TOK` ตอบสนองระหว่าง generation โดยไม่เพิ่ม system/GPU polling เป็น 1 Hz. Backend ส่ง event นี้เฉพาะ WebSocket ที่ประกาศ `transport=desktop` เพื่อไม่เพิ่ม unsolicited telemetry ให้ custom client ทั่วไป
 - Settings มี `Server Mode`, Model, Think Budget, Model Server Port, Watchdog และปุ่ม Start / Stop / Reset. Port default คือ `8085` และ standalone port เลือกได้ `1024–65535`
+- Settings มีสวิตช์ **Internet (Online/Offline)** ที่บันทึกลง `user_settings.json` และเป็นแหล่งเดียวที่ตัดสินว่าเครื่องมือเว็บ (`web_search`, `browse_url`, `browser_use`, `recall_web`) ถูกผูกกับโมเดลหรือไม่ — **ไม่ใช่การ ping ตอนเริ่ม** (การ ping ครั้งเดียวที่พลาดเคยซ่อน `web_search` ทั้ง session); จุดสถานะ Internet บนหัวเป็นการตรวจเครือข่ายแยกต่างหาก (แสดงผลเท่านั้น); CLI อ่านไฟล์เดียวกัน. และสวิตช์ **OCR** เลือก Apple Vision (ค่าเริ่มต้น) หรือ OpenThai 2.0 สำหรับทุกจุดที่ใช้ OCR (`read_image`, PDF to MD, `computer`, ...); ถ้า OpenThai เลือกอยู่แต่ใช้ไม่ได้ จะถอยไป Apple Vision ต่อการเรียกและบอกใน Settings
 - `Standalone`: TH ใช้ owner launcher ของตัวเอง, refuse foreign listener, pin `request.model` ให้ตรง owner model และ watchdog จะกู้เฉพาะ server ที่หายขณะที่ desired state=`running`
 - `Shared MAX test server`: ตรวจ process signature ของ Agent MAX VLM + `/health` ก่อน attach; Model ถูกล็อกตาม MAX และ Start/Stop/Reset/Watchdog ถูกปิดทั้งหมด. Generic external listener จะไม่ถูก adopt
 - ถ้าเปิด TH ขณะที่ MAX VLM ครอบครอง port ที่ TH ตั้งไว้ (default `:8085`) และตรวจยืนยันว่าเป็น MAX จริง TH จะ auto-attach read-only; ถ้า MAX ย้าย port ผู้ใช้ตั้ง Shared MAX port ตามได้
@@ -188,6 +190,11 @@ START → react (agent คุมเองทั้งหมด) → END
 ไม่มี `planner_node` / `execute_node` / `synthesize_node` แยกเป็น node ต่าง ๆ
 — main agent เห็น **full message history + tool results ทั้งหมด** ภายใน loop เดียว
 แล้วตัดสินใจเองว่าจะ "วางแผน → ทำตามแผน → สรุปคำตอบ" หรือ "ตอบตรง ๆ" ลด overhead จากการส่ง state ข้าม node และลดจุดที่ context หลุด
+
+**บังคับด้วยโค้ดและติดตามผลด้วยโค้ด** (`tool_claim_guard.py` + `graph.py`): กฎใน prompt อย่างเดียวไม่พอสำหรับโมเดลในเครื่อง จึงมี 2 ส่วนที่ไม่ใช้โมเดลตัดสิน —
+(1) ผู้ใช้ขอกราฟ → โค้ดแปะ `[CHART DIRECTIVE]` ที่หัว turn (ชั่วคราว ไม่บันทึกลงประวัติ) เพื่อให้เรียก `plot`;
+(2) ถ้าคำขอต้องใช้เครื่องมือ (กราฟ → `plot`, "หารูปบนเว็บแล้วอธิบาย" → `read_image`) แต่เครื่องมือนั้นไม่เคยรันใน turn นี้ **และ**คำตอบอ้างผลสำเร็จ โค้ดจะถอนร่างคำตอบ (UI ลบข้อความที่สตรีมไปแล้ว) แล้ว resume agent **1 ครั้ง** พร้อมบอกชื่อเครื่องมือ; ถ้ายังไม่เรียกอีก จะต่อท้ายหมายเหตุตรง ๆ ว่าเครื่องมือไม่ได้รัน.
+ตารางกฎอยู่ใน `TOOL_CLAIM_RULES` เพิ่มแถวเพื่อครอบคลุมเครื่องมืออื่นได้; แถวใช้เฉพาะเมื่อเครื่องมือนั้นถูกผูกจริงในรอบนั้น
 
 ทุก tool call ผ่าน `ToolNode` guard กลาง: ถ้าเรียก tool เดิมด้วย arguments เดิมติดกันครั้งที่สอง
 ระบบจะคืน hint โดยไม่รันซ้ำ และถ้ายังเรียกซ้ำครั้งที่สามจะหยุด turn อย่าง deterministic;
@@ -357,13 +364,13 @@ RAG และ knowledge-base retrieval ใช้ generic MCP เท่านั�
 
 MCP stdio ถูก spawn โดยไม่ผ่าน shell และอยู่ใต้ macOS sandbox เดียวกับ `bash`: เขียนได้เฉพาะ `workspace/` และ `/tmp` และยังติด sensitive-path read guards เดิม ส่วน registry อยู่ที่ `workspace/tool_mcp/servers.json` แบบ atomic และ permission `0600` เพื่อเก็บค่า config/HTTP headers ในเครื่อง
 
-PDF to Text และ Translate ยังคงเป็น UI/runtime capability แยกจาก agent tools ปกติ. การยุบ tools นี้ไม่ได้เพิ่ม `send_file`, `computer_sequence`, `extract_pdf_text`, `translate_pdf` หรือ Goal tools.
+PDF to MD, TTS และ Translate ยังคงเป็น UI/runtime capability แยกจาก agent tools ปกติ. การยุบ tools นี้ไม่ได้เพิ่ม `send_file`, `computer_sequence`, `extract_pdf_text`, `translate_pdf` หรือ Goal tools.
 
 ---
 
 ## Skill Modes
 
-Skill mode คือ system prompt + tool set เฉพาะทาง เปิด/ปิดได้ด้วยคำสั่งใน CLI รุ่นที่เผยแพร่ไม่ติด skill มาให้ — เพิ่มเองได้ตามหัวข้อ "เพิ่ม Skill Mode" ด้านล่าง ส่วนการแปลง PDF เป็นข้อความใช้ `/pdf_text` (CLI) หรือแผง PDF to Text ใน Electron
+Skill mode คือ system prompt + tool set เฉพาะทาง เปิด/ปิดได้ด้วยคำสั่งใน CLI รุ่นที่เผยแพร่ไม่ติด skill มาให้ — เพิ่มเองได้ตามหัวข้อ "เพิ่ม Skill Mode" ด้านล่าง ส่วนการแปลง PDF เป็น Markdown ใช้ `/pdf_text` (CLI) หรือแผง PDF to MD ใน Electron
 
 เปิด skill ซ้ำ = toggle ปิด, หรือใช้ `/exit` ออกจาก skill mode ปัจจุบัน
 
@@ -448,8 +455,32 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 | Web Tool Limits | `V2_WEB_SEARCH_MAX_RESULTS`, `V2_BROWSE_URL_MAX_CHARS`, `V2_WEB_EVIDENCE_MAX_CHARS`, `V2_BATCH_BROWSE_EVIDENCE_MAX_CHARS`, ฯลฯ | จำกัดขนาดผลลัพธ์จาก web tools |
 | Web Cache | `V2_WEB_CACHE_MAX_ENTRIES`, `V2_WEB_CACHE_MAX_BYTES`, `V2_WEB_LIVE_CACHE_TTL_SECONDS` | จัดการ cache เนื้อหาเว็บ (ข้อมูลสด เช่น ราคา ใช้ TTL สั้น) |
 | Summarization | `V2_SUMMARY_MAX_CHARS`, `V2_SUMMARY_SKIP_LLM_BELOW` | ควบคุมการสรุปผลลัพธ์ก่อนเข้า context |
+| Settings ที่บันทึกไว้ | `V2_USER_SETTINGS_PATH` | ไฟล์ `user_settings.json` (Internet/Offline, OCR engine); ค่าเริ่มต้นอยู่ในโฟลเดอร์โปรเจกต์ และไม่ถูก commit |
+| OCR (OpenThai) | `V2_OPENTHAI_OCR_DIR` | โฟลเดอร์ไฟล์โมเดล OpenThai (ค่าเริ่มต้น `~/Models/OpenThai2.0-OCR-Text`) |
+| PDF to MD | `V2_PDF_VISION_MAX_SIDE`, `V2_PDF_LLM_TIMEOUT`, `V2_PDF_OCR_DPI` | ขนาดภาพหน้าที่ส่งให้โมเดล, เวลารอต่อหน้า, ความละเอียด OCR |
+| Text to Speech | `V2_TTS_OMNIVOICE_PYTHON`, `V2_TTS_OMNIVOICE_DIR`, `V2_TTS_MAX_BYTES` | Python ของ env `omnivoice`, โฟลเดอร์ไฟล์โมเดล OmniVoice, ขนาดไฟล์สูงสุด |
 
 ดูรายละเอียดทั้งหมดพร้อม comment อธิบายในไฟล์ `.env.example`
+
+---
+
+## Text to Speech, OCR และ Internet/Offline (ตัวเลือกเสริม)
+
+ทั้งหมดนี้ **ไม่ถูกดาวน์โหลดให้อัตโนมัติ** และไม่ทำให้ agent หลักพึ่งสิ่งใดเพิ่ม: ถ้าไม่ได้ติดตั้ง แท็บ/สวิตช์จะบอกว่ายังใช้ไม่ได้ และ agent ทำงานตามปกติ
+
+**Internet / Offline** — ไม่ต้องติดตั้งอะไร: Settings → Internet. ค่าเริ่มต้น Online; เลือก Offline เพื่อซ่อนเครื่องมือเว็บจาก agent (สลับได้เมื่อ agent ว่างเท่านั้น)
+
+**OCR แบบ OpenThai 2.0** (Apache-2.0, ONNX, CPU, น้ำหนักรวม ~4 MB):
+```bash
+python scripts/install_openthai_ocr.py     # ดาวน์โหลดไฟล์โมเดล + ตรวจ SHA-256 ลง ~/Models/OpenThai2.0-OCR-Text
+pip install pyclipper                       # แพ็กเกจเสริมที่ runtime ต้องใช้ (numpy / opencv / onnxruntime มีอยู่แล้ว)
+```
+จากนั้นเลือก OpenThai ที่ Settings → OCR. ไฟล์ runtime ที่ vendor ไว้ใน `tools/_openthai_ocr/` เป็นสำเนา byte-for-byte ของต้นฉบับ (ดู `NOTICE` และ SHA-256 ที่ pin ไว้ในเทสต์). ที่เป็นข้อจำกัดที่วัดไว้: อ่านเอกสารไทยที่สแกนสะอาดได้เร็วและตัวเลขยาว (เลขบัตร/เลขที่) ผิดน้อยกว่า Apple Vision แต่ภาษาอังกฤษ/ลายมือ/ภาพถ่ายยังต้องใช้ Apple Vision เป็นหลัก
+
+**Text to Speech (OmniVoice)** — น้ำหนักโมเดลเป็น **CC-BY-NC: ใช้ส่วนตัว/ไม่ใช้เชิงพาณิชย์เท่านั้น**
+1. สร้าง conda env ชื่อ `omnivoice` และติดตั้งแพ็กเกจ `omnivoice` (k2-fsa) พร้อมไฟล์โมเดล (`model.safetensors` + `audio_tokenizer/`) ตามเอกสารของโปรเจกต์นั้น แล้วชี้ด้วย `V2_TTS_OMNIVOICE_PYTHON` / `V2_TTS_OMNIVOICE_DIR` ถ้าไม่ได้อยู่ที่ค่าเริ่มต้น (`~/Models/OmniVoice`)
+2. เตรียมเสียง: สร้างโฟลเดอร์ `workspace/text_to_speech/voices/<id>/` ที่มี `ref_voice.wav` (โมโน 16-bit ยาว 2–8 วินาที) และ `ref_voice.txt` (คำพูดในคลิปตรงตัว) และ `voice.json` (`{"label": "ชื่อที่แสดง"}` ไม่บังคับ). **ใช้เสียงที่คุณมีสิทธิ์ใช้เท่านั้น** — ไม่มีเสียงมากับรีโป
+3. เปิดแท็บ TTS → เลือกเสียง → เลือกไฟล์ `.txt`/`.md`
 
 ---
 

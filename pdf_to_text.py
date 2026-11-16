@@ -1,7 +1,11 @@
-"""Direct PDF -> text conversion for the Agent TH Electron panel.
+# ENDEAVOR_LOCAL_AGENT_TH — © HaloChamp
+# License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
+# Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-Uses a self-contained deterministic-first pipeline, with Agent TH's current
-local runtime model/port used only when the user explicitly enables LLM rewrite.
+"""Direct PDF -> Markdown conversion for the Agent TH Electron panel ("PDF to MD").
+
+Ported from Agent Lite's deterministic-first pipeline, with the currently selected
+model/port used only when the user explicitly enables LLM rewrite.
 
 The pipeline is deliberately deterministic-first and SSD-first:
 
@@ -9,24 +13,29 @@ The pipeline is deliberately deterministic-first and SSD-first:
 2. Use the embedded text layer when present; otherwise rasterize only that page
    and run Apple Vision OCR.
 3. Reconstruct a confident OCR grid with the same conservative table logic used
-   by this project's image/OCR tooling.
+   by the read_image sensor.
 4. Persist each page into SQLite immediately.  The complete document is never
    held as one Python string.
-5. Optionally clean Thai OCR prose with the currently selected local model.
-   One no-think request carries several pages; native PDF text and OCR tables
-   never use the LLM.
+5. When the user ticks "rewrite" (rewrite_thai), send EVERY page (native, OCR,
+   OCR tables, image-only; any language) through the currently selected
+   model ONE PAGE AT A TIME, giving it the page image and the extracted text; it
+   writes the page as Markdown (headings, lists, tables) reading mainly from the
+   image and describes any figure, chart, map or photo it contains.  The model's
+   page is written as it is (Markdown from an image can never be checked to 100%,
+   so there is no comparison with the extraction); a page whose request fails,
+   comes back empty or is cut off at max_tokens keeps its deterministic text.
+   Unticked = no LLM call at all and the deterministic text is written as-is.
 6. Stream the final rows back out in physical PDF page order with explicit page
    separators.
 
-SQLite is staging/cache state only.  The user-facing .txt output is written to
-workspace/pdf_to_text/; old staging rows are aged out automatically.
+SQLite is staging/cache state only.  The user-facing .md output is written to
+workspace/pdf_to_md/; old staging rows are aged out automatically.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-import difflib
+from collections.abc import Callable
+import base64
 import hashlib
-import json
 import math
 import re
 import sqlite3
@@ -39,6 +48,7 @@ from pathlib import Path
 import httpx
 
 import config
+from markdown_text import text_to_markdown as _text_to_markdown
 from tools._ocr import read_layout
 
 
@@ -56,10 +66,17 @@ _THAI_MARK_BEFORE_BASE_AFTER_SPACE_RE = re.compile(
     r"\s+(?=[\u0E01-\u0E2E\u0E30-\u0E33\u0E40-\u0E45])"
 )
 _THAI_SARA_AM_BEFORE_TONE_RE = re.compile(r"\u0E33([\u0E48-\u0E4B])")
+# Two more breaks that no Thai word contains: a space before SARA A/AA/AM ("ก า ร") and a space after a
+# leading vowel ("เ รื่อง").  Deliberately NOT RagDoc's blanket removal of every Thai-to-Thai space: that
+# exists for search indexing and would also glue real words ("ฉัน กิน ข้าว") and Thai digits ("จำนวน ๑๘๐ คน").
+_THAI_SPACE_BEFORE_SARA_RE = re.compile(
+    r"(?<=[\u0E01-\u0E2E\u0E31\u0E34-\u0E3A\u0E47-\u0E4E])[ \t]+(?=[\u0E30\u0E32\u0E33])"
+)
+_THAI_SPACE_AFTER_LEADING_VOWEL_RE = re.compile(r"(?<=[\u0E40-\u0E44])[ \t]+(?=[\u0E01-\u0E2E])")
 
 
 def repair_thai_orthographic_order(text: str) -> str:
-    """Deterministic Thai mark-order repair without lexical guessing."""
+    """Agent Lite's deterministic Thai mark-order repair, copied verbatim in policy."""
     return _THAI_SARA_AM_BEFORE_TONE_RE.sub(lambda match: match.group(1) + "ำ", text)
 
 
@@ -68,6 +85,8 @@ def repair_thai_combining_mark_spacing(text: str) -> str:
     while True:
         cleaned = _THAI_BASE_OR_MARK_BEFORE_SPACE_RE.sub("", text)
         cleaned = _THAI_MARK_BEFORE_BASE_AFTER_SPACE_RE.sub("", cleaned)
+        cleaned = _THAI_SPACE_BEFORE_SARA_RE.sub("", cleaned)
+        cleaned = _THAI_SPACE_AFTER_LEADING_VOWEL_RE.sub("", cleaned)
         if cleaned == text:
             return cleaned
         text = cleaned
@@ -77,24 +96,28 @@ def _connect() -> sqlite3.Connection:
     db_path = Path(config.PDF_TO_TEXT_DB)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=30)
-    conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS pdf_text_jobs ("
-        "job_id TEXT PRIMARY KEY, source_name TEXT NOT NULL, source_sha256 TEXT NOT NULL, "
-        "total_pages INTEGER NOT NULL, rewrite_thai INTEGER NOT NULL, status TEXT NOT NULL, "
-        "output_path TEXT, warning TEXT, created_at REAL NOT NULL, completed_at REAL)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS pdf_text_pages ("
-        "job_id TEXT NOT NULL, page_number INTEGER NOT NULL, source_kind TEXT NOT NULL, "
-        "raw_text TEXT NOT NULL, final_text TEXT NOT NULL, rewrite_status TEXT NOT NULL, "
-        "PRIMARY KEY(job_id, page_number))"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS pdf_text_pages_job_idx "
-        "ON pdf_text_pages(job_id, page_number)"
-    )
-    conn.commit()
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pdf_text_jobs ("
+            "job_id TEXT PRIMARY KEY, source_name TEXT NOT NULL, source_sha256 TEXT NOT NULL, "
+            "total_pages INTEGER NOT NULL, rewrite_thai INTEGER NOT NULL, status TEXT NOT NULL, "
+            "output_path TEXT, warning TEXT, created_at REAL NOT NULL, completed_at REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pdf_text_pages ("
+            "job_id TEXT NOT NULL, page_number INTEGER NOT NULL, source_kind TEXT NOT NULL, "
+            "raw_text TEXT NOT NULL, final_text TEXT NOT NULL, rewrite_status TEXT NOT NULL, "
+            "PRIMARY KEY(job_id, page_number))"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS pdf_text_pages_job_idx "
+            "ON pdf_text_pages(job_id, page_number)"
+        )
+        conn.commit()
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -143,7 +166,7 @@ def _clean_text(text: str) -> str:
 
 
 def _column_intervals(boxes: list[dict], min_gap: float = 0.025) -> list[tuple[float, float]]:
-    """Conservative OCR table column projection."""
+    """OCR table column projection."""
     spans = sorted(
         ((box["x"], box["x"] + box["w"]) for box in boxes if box["w"] <= 0.4),
         key=lambda span: span[0],
@@ -176,7 +199,7 @@ def _assign_column(box: dict, columns: list[tuple[float, float]]) -> int:
 
 
 def reconstruct_ocr_table(boxes: list[dict]) -> str | None:
-    """Conservative OCR grid reconstruction shared with the PDF workflow."""
+    """Conservative OCR grid reconstruction (shared policy with the read_image sensor)."""
     if len(boxes) < 4:
         return None
 
@@ -279,7 +302,10 @@ def _ocr_page(page, page_number: int) -> tuple[str, str]:
 
     cleaned_boxes = []
     for item in boxes or ():
-        text = repair_thai_orthographic_order(str(item.get("text") or "").strip())
+        # per fragment, so table cells get the same spacing repair as prose ("น้ ำ" -> "น้ำ")
+        text = repair_thai_combining_mark_spacing(
+            repair_thai_orthographic_order(str(item.get("text") or "").strip())
+        )
         if not text:
             continue
         clone = dict(item)
@@ -296,113 +322,121 @@ def _ocr_page(page, page_number: int) -> tuple[str, str]:
     return "ocr", _clean_text("\n".join(item["text"] for item in cleaned_boxes))
 
 
-def _rewrite_batches(rows: Iterable[tuple[int, str]]) -> list[list[tuple[int, str]]]:
-    batches: list[list[tuple[int, str]]] = []
-    current: list[tuple[int, str]] = []
-    current_chars = 0
-    for page_number, text in rows:
-        size = len(text)
-        if current and (
-            len(current) >= config.PDF_TO_TEXT_LLM_BATCH_PAGES
-            or current_chars + size > config.PDF_TO_TEXT_LLM_BATCH_CHARS
-        ):
-            batches.append(current)
-            current = []
-            current_chars = 0
-        # A single unusually dense OCR page may exceed the batch character
-        # preference; keep it alone rather than split a physical page.
-        current.append((page_number, text))
-        current_chars += size
-    if current:
-        batches.append(current)
-    return batches
-
-
-def _rewrite_prompt(batch: list[tuple[int, str]]) -> str:
-    payload = [{"page": page, "text": text} for page, text in batch]
+def _rewrite_prompt(text: str) -> str:
     return (
-        "แก้ข้อความ OCR ภาษาไทยแบบอนุรักษ์นิยมเท่านั้น ห้ามสรุป ห้ามแปล "
-        "ห้ามเพิ่มข้อมูล ห้ามเปลี่ยนตัวเลข/หน่วย/ชื่อเฉพาะ แก้เฉพาะอักขระ OCR "
-        "หรือการเว้นวรรคที่ผิดอย่างชัดเจน รักษาบรรทัดและลำดับเนื้อหาให้ใกล้ต้นฉบับที่สุด "
-        "ตอบเป็น JSON object รูป {\"pages\":[{\"page\":1,\"text\":\"...\"}]} "
-        "และต้องคืนทุก page id ที่ได้รับมาครบหนึ่งครั้งเท่านั้น\n\n"
-        + json.dumps({"pages": payload}, ensure_ascii=False)
+        "ภาพคือหน้า PDF หนึ่งหน้า ข้อความด้านล่างคือข้อความที่สกัดจากหน้านี้ด้วย OCR หรือ text layer "
+        "ซึ่งอาจมีตัวอักษรผิดหรือเว้นวรรคผิด ให้เขียนเนื้อหาของหน้านี้เป็น Markdown ที่อ่านง่าย "
+        "โดยอ่านจากภาพเป็นหลักและใช้ข้อความเป็นตัวช่วย: "
+        "ใช้ # หัวข้อเมื่อเป็นหัวเรื่องชัดเจน, - สำหรับรายการ, ตาราง | เมื่อเป็นตาราง, "
+        "เว้นบรรทัดว่างระหว่างย่อหน้า, **ตัวหนา** เฉพาะส่วนที่เน้นชัดเจน "
+        "แก้ตัวอักษรที่ OCR อ่านผิดโดยเทียบกับภาพ ห้ามสรุป ห้ามแปล ห้ามเพิ่มเนื้อหาที่ไม่มีในหน้า ห้ามตัดเนื้อหา "
+        "ห้ามเดาตัวอักษรหรือตัวเลขที่อ่านไม่ออก (ถ้าอ่านจากภาพไม่ออกให้ใช้ตามข้อความที่สกัดมา) "
+        "ลายมือที่อ่านออกชัดเจนให้ใส่ไว้ในตำแหน่งที่ปรากฏ ลายเซ็นและตราประทับให้ข้าม "
+        "หากในหน้ามีภาพ แผนที่ กราฟ แผนภูมิ ไดอะแกรม หรือรูปถ่าย ให้ถอดข้อความที่อยู่ในภาพตามจริง "
+        "แล้วเพิ่มคำบรรยายสั้นๆ ตรงตำแหน่งภาพว่าภาพนี้แสดงอะไรและสื่อความหมายอะไร "
+        "(กราฟ: แกน แนวโน้ม ค่าสำคัญ; แผนที่: พื้นที่และสัญลักษณ์; รูปถ่าย: สิ่งที่เห็น) "
+        "ในรูปแบบ > **[ภาพ]** คำบรรยาย โดยเขียนเฉพาะสิ่งที่เห็นจริงในภาพ ห้ามเดา "
+        "หน้าที่ไม่มีเนื้อหาเลยให้ตอบว่างเปล่า "
+        "รักษาลำดับเนื้อหาตามหน้า เลขไทย ๐-๙ ต้องคงเป็นเลขไทย ห้ามแปลงเป็นเลขอารบิก "
+        "ข้อที่ขึ้นต้นด้วยเลขไทย (เช่น ๑. ๒.๑) ให้เขียนเป็นบรรทัดข้อความธรรมดาคั่นด้วยบรรทัดว่าง ไม่ใช้ลิสต์ Markdown "
+        "ตอบเป็น Markdown ของหน้านี้อย่างเดียว ไม่มีคำอธิบาย ไม่ใส่ code fence\n\n"
+        "ข้อความที่สกัดได้:\n" + (text.strip() or "(ไม่มี — หน้านี้อาจเป็นภาพล้วน)")
     )
 
 
-def _validate_rewrite(source: str, rewritten: str) -> bool:
-    if not rewritten.strip():
-        return False
-    ratio = len(rewritten) / max(1, len(source))
-    if ratio < 0.55 or ratio > 1.45:
-        return False
-    # This stage is an OCR corrector, not a paraphraser. A large semantic
-    # rewrite can preserve length and numbers yet still invent content, so
-    # require substantial character-level similarity before accepting it.
-    if difflib.SequenceMatcher(None, source, rewritten, autojunk=False).ratio() < 0.72:
-        return False
-    # Numeric facts are cheap to protect deterministically.  Any number that
-    # disappears makes this page fall back to the OCR original. Python's \d is
-    # Unicode-aware, so this protects Thai digits as well as ASCII digits.
-    numbers = re.findall(r"\d+(?:[.,:/-]\d+)*", source)
-    return all(number in rewritten for number in numbers)
+def _strip_page_fence(text: str) -> str:
+    """Drop a ``` fence the model wrapped around a whole page."""
+    match = re.fullmatch(r"\s*```[A-Za-z]*\n(.*?)\n?```\s*", text, flags=re.DOTALL)
+    return match.group(1) if match else text
 
 
-def _llm_rewrite_batch(batch: list[tuple[int, str]]) -> dict[int, str]:
-    """One local no-think request for several OCR pages."""
-    url = config.get_mlx_base_url().rstrip("/") + "/chat/completions"
-    payload = {
-        "model": config.get_model(),
+def _page_image_data_url(page, page_number: int) -> str:
+    """Render one physical PDF page to a PNG data URL whose longest side is VISION_MAX_SIDE pixels."""
+    rect = page.rect
+    longest = max(float(rect.width), float(rect.height))
+    if longest <= 0:
+        raise RuntimeError(f"PDF page {page_number} has invalid dimensions")
+    import fitz
+
+    scale = config.PDF_TO_TEXT_VISION_MAX_SIDE / longest
+    png = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False).tobytes("png")
+    return "data:image/png;base64," + base64.b64encode(png).decode()
+
+
+class _ReplyTruncated(Exception):
+    """The model hit max_tokens mid-page: its Markdown would silently lose the end of the page."""
+
+
+def _page_payload(model: str, text: str, image_url: str | None) -> dict:
+    """The request body; ``image_url`` None = a model that cannot see images gets the extracted text only."""
+    prompt = _rewrite_prompt(text)
+    if image_url:
+        user_content: object = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": image_url}},
+        ]
+    else:
+        user_content = prompt + "\n\n(ไม่มีภาพของหน้านี้ — โมเดลที่เลือกอ่านภาพไม่ได้ ให้ใช้เฉพาะข้อความที่สกัดมาข้างต้น)"
+    return {
+        "model": model,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "You are a conservative OCR text corrector. "
-                    "Return JSON only. Never summarize or invent content."
+                    "You are a careful PDF-to-Markdown transcriber. You get one page image (when the model can see "
+                    "images) and the text extracted from it. Output the page as Markdown only. "
+                    "Never summarize, translate or invent content."
                 ),
             },
-            {"role": "user", "content": _rewrite_prompt(batch)},
+            {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
-        "max_tokens": 4096,
+        # Markdown is a little longer than the plain text it came from.
+        "max_tokens": max(4096, min(12000, int(len(text) * 1.6))),
         "enable_thinking": False,
         "thinking_budget": 0,
         "repetition_penalty": config.REPETITION_PENALTY,
     }
+
+
+def _post_page(url: str, payload: dict) -> dict:
     headers = {
         "Authorization": f"Bearer {config.API_KEY}",
         "Content-Type": "application/json",
+        "X-APC-Tenant": config.APC_BACKGROUND_TENANT,
     }
     with httpx.Client(timeout=config.PDF_TO_TEXT_LLM_TIMEOUT_SECONDS) as client:
         response = client.post(url, json=payload, headers=headers)
         response.raise_for_status()
-        body = response.json()
-    content = str(body["choices"][0]["message"]["content"])
-    content = _THINK_RE.sub("", content).strip()
-    if content.startswith("```"):
-        content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
-        content = re.sub(r"\s*```$", "", content)
-    parsed = json.loads(content)
-    pages = parsed.get("pages") if isinstance(parsed, dict) else None
-    if not isinstance(pages, list):
-        raise ValueError("LLM rewrite JSON has no pages list")
+        return response.json()
 
-    expected = {page for page, _ in batch}
-    result: dict[int, str] = {}
-    for item in pages:
-        if not isinstance(item, dict):
-            raise ValueError("LLM rewrite page is not an object")
-        try:
-            page = int(item.get("page"))
-        except (TypeError, ValueError) as exc:
-            raise ValueError("LLM rewrite page id is invalid") from exc
-        text = str(item.get("text") or "")
-        if page in result:
-            raise ValueError("LLM rewrite duplicated a page")
-        result[page] = text
-    if set(result) != expected:
-        raise ValueError("LLM rewrite changed the page set")
-    return result
+
+def _llm_rewrite_page(page_number: int, text: str, image_url: str) -> str:
+    """One local no-think request: the page image plus its extracted text -> Markdown.
+
+    The image is sent only to a model that can see it: a model already known to be text-only gets the extracted text alone,
+    and if the server refuses the image the model is remembered as text-only and the page is retried once without it."""
+    from tools._vision_capability import TEXT_ONLY, get_capability, is_unsupported_image_error, mark_text_only
+
+    base, model = config.get_mlx_base_url(), config.get_model()
+    url = base.rstrip("/") + "/chat/completions"
+    with_image = get_capability(base, model) != TEXT_ONLY
+    try:
+        body = _post_page(url, _page_payload(model, text, image_url if with_image else None))
+    except Exception as error:
+        if not (with_image and is_unsupported_image_error(error)):
+            raise
+        mark_text_only(base, model)
+        body = _post_page(url, _page_payload(model, text, None))
+    choice = body["choices"][0]
+    if choice.get("finish_reason") == "length":
+        raise _ReplyTruncated(f"page {page_number} reply was cut off at max_tokens")
+    content = str(choice["message"]["content"])
+    return _strip_page_fence(_THINK_RE.sub("", content).strip())
+
+
+_MAX_CONSECUTIVE_LLM_FAILURES = 3
+_MAX_REWRITE_WARNINGS = 10
 
 
 def _apply_thai_rewrite(
@@ -410,69 +444,97 @@ def _apply_thai_rewrite(
     job_id: str,
     total_pages: int,
     progress: Progress | None,
+    pdf_path: Path,
 ) -> tuple[int, int, list[str]]:
+    """Ticked "rewrite": every page goes through the model, one page at a
+    time, with its image and its extracted text.  Returns (rewritten, fallback, warnings)."""
+    # Ticked means everything: every page, whatever its source or language.  A page with no extracted text
+    # (a photo, a map, a blank scan) is sent too: the model transcribes and describes what the image shows.
     rows = [
-        (int(page), str(text))
+        (int(page), str(text or ""))
         for page, text in conn.execute(
             "SELECT page_number, raw_text FROM pdf_text_pages "
-            "WHERE job_id=? AND source_kind='ocr' ORDER BY page_number",
+            "WHERE job_id=? ORDER BY page_number",
             (job_id,),
         )
-        if text and _THAI_RE.search(str(text))
     ]
     if not rows:
         return 0, 0, []
 
+    def mark_fallback(page: int) -> None:
+        conn.execute(
+            "UPDATE pdf_text_pages SET rewrite_status='fallback' WHERE job_id=? AND page_number=?",
+            (job_id, page),
+        )
+        conn.commit()
+
     rewritten_count = 0
     fallback_count = 0
     warnings: list[str] = []
-    batches = _rewrite_batches(rows)
-    for batch_index, batch in enumerate(batches, 1):
-        if progress:
-            progress(
-                "rewrite",
-                batch[0][0],
-                total_pages,
-                {
-                    "batch": batch_index,
-                    "batches": len(batches),
-                    "pages": len(batch),
-                    "rewritten": rewritten_count,
-                },
-            )
-        try:
-            rewritten = _llm_rewrite_batch(batch)
-        except Exception as exc:
-            fallback_count += len(batch)
-            warnings.append(
-                f"LLM cleanup batch {batch_index}/{len(batches)} ใช้ไม่ได้: "
-                f"{type(exc).__name__}; ใช้ OCR เดิม"
-            )
-            conn.executemany(
-                "UPDATE pdf_text_pages SET rewrite_status='fallback' "
+    try:
+        import fitz
+
+        pdf = fitz.open(pdf_path)
+    except Exception as exc:
+        for page, _ in rows:
+            mark_fallback(page)
+        return 0, len(rows), [f"Could not open the PDF to send page images to the model: {type(exc).__name__}; using the original text"]
+
+    consecutive_failures = 0
+    try:
+        for index, (page, source) in enumerate(rows, 1):
+            if progress:
+                progress(
+                    "rewrite", page, total_pages,
+                    {"index": index, "pages": len(rows), "rewritten": rewritten_count},
+                )
+            if consecutive_failures >= _MAX_CONSECUTIVE_LLM_FAILURES:
+                # The model server is not answering; do not wait out a timeout per remaining page.
+                mark_fallback(page)
+                fallback_count += 1
+                continue
+            try:
+                # Sub-steps, so the panel can say what the wait is for: drawing the page, then the model's reply.
+                step_info = {"index": index, "pages": len(rows), "rewritten": rewritten_count}
+                if progress:
+                    progress("render", page, total_pages, step_info)
+                image_url = _page_image_data_url(pdf[page - 1], page)
+                if progress:
+                    progress("model", page, total_pages, step_info)
+                answer = _llm_rewrite_page(page, source, image_url)
+                consecutive_failures = 0
+            except _ReplyTruncated:
+                fallback_count += 1
+                mark_fallback(page)
+                if len(warnings) < _MAX_REWRITE_WARNINGS:
+                    warnings.append(f"The model's reply for page {page} was cut off (max_tokens); using the original text")
+                continue
+            except Exception as exc:
+                consecutive_failures += 1
+                fallback_count += 1
+                mark_fallback(page)
+                if len(warnings) < _MAX_REWRITE_WARNINGS:
+                    warnings.append(f"The model request for page {page} failed: {type(exc).__name__}; using the original text")
+                if consecutive_failures == _MAX_CONSECUTIVE_LLM_FAILURES:
+                    warnings.append("The model did not answer 3 pages in a row — the remaining pages use the original text")
+                continue
+            # The model's page is written as it is: Markdown from the image and the text can never be
+            # checked to 100%, so there is no comparison against the extraction -- only the spacing repair.
+            candidate = _clean_text(answer)
+            if not candidate:
+                if source.strip():
+                    mark_fallback(page)       # an empty answer for a page that has text: keep the text
+                    fallback_count += 1
+                continue                      # an empty page the model also found empty: nothing to write
+            conn.execute(
+                "UPDATE pdf_text_pages SET final_text=?, rewrite_status='rewritten' "
                 "WHERE job_id=? AND page_number=?",
-                ((job_id, page) for page, _ in batch),
+                (candidate, job_id, page),
             )
             conn.commit()
-            continue
-
-        for page, source in batch:
-            candidate = _clean_text(rewritten.get(page, ""))
-            if _validate_rewrite(source, candidate):
-                conn.execute(
-                    "UPDATE pdf_text_pages SET final_text=?, rewrite_status='rewritten' "
-                    "WHERE job_id=? AND page_number=?",
-                    (candidate, job_id, page),
-                )
-                rewritten_count += 1
-            else:
-                conn.execute(
-                    "UPDATE pdf_text_pages SET rewrite_status='fallback' "
-                    "WHERE job_id=? AND page_number=?",
-                    (job_id, page),
-                )
-                fallback_count += 1
-        conn.commit()
+            rewritten_count += 1
+    finally:
+        pdf.close()
     return rewritten_count, fallback_count, warnings
 
 
@@ -481,30 +543,36 @@ def _safe_output_path(source_name: str) -> Path:
     stem = re.sub(r"[\\/:*?\"<>|\x00-\x1f]+", "_", stem).strip(" .") or "document"
     output_dir = Path(config.PDF_TO_TEXT_OUTPUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
-    base = output_dir / f"{stem}_pdf_to_text.txt"
+    base = output_dir / f"{stem}_pdf_to_md.md"
     if not base.exists():
         return base
     for index in range(2, 10000):
-        candidate = output_dir / f"{stem}_pdf_to_text_{index}.txt"
+        candidate = output_dir / f"{stem}_pdf_to_md_{index}.md"
         if not candidate.exists():
             return candidate
-    raise RuntimeError("ไม่สามารถสร้างชื่อ output ที่ไม่ชนไฟล์เดิมได้")
+    raise RuntimeError("Could not create an output file name that does not collide with an existing file")
 
 
 def _write_output(conn: sqlite3.Connection, job_id: str, total_pages: int, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x", encoding="utf-8", newline="\n") as handle:
-        for page_number, text in conn.execute(
-            "SELECT page_number, final_text FROM pdf_text_pages "
+        for page_number, text, source_kind, status in conn.execute(
+            "SELECT page_number, final_text, source_kind, rewrite_status FROM pdf_text_pages "
             "WHERE job_id=? ORDER BY page_number",
             (job_id,),
         ):
-            handle.write(f"===== PDF PAGE {page_number}/{total_pages} =====\n")
+            # The model's pages are Markdown already; a reconstructed OCR table is already a pipe table.
+            if text and status != "rewritten" and source_kind != "ocr_table":
+                text = _text_to_markdown(str(text))
+            # Page number and page break are written by code, never by the model: a hidden marker for tools,
+            # a visible bold "หน้า N/T" line (not a heading, so it cannot clash with the model's headings),
+            # and "---" between pages.
+            handle.write(f"<!-- PDF page {page_number}/{total_pages} -->\n**หน้า {page_number}/{total_pages}**\n\n")
             if text:
                 handle.write(str(text).rstrip())
             handle.write("\n")
             if page_number != total_pages:
-                handle.write("\n")
+                handle.write("\n---\n\n")
 
 
 def convert_pdf(
@@ -517,20 +585,20 @@ def convert_pdf(
     """Convert a PDF into page-delimited text and return a compact job summary."""
     path = Path(source).expanduser().resolve()
     if not path.is_file() or path.suffix.casefold() != ".pdf":
-        raise ValueError("ต้องเป็นไฟล์ PDF ที่มีอยู่จริง")
+        raise ValueError("The source must be an existing PDF file")
     size = path.stat().st_size
     if size <= 0:
-        raise ValueError("PDF ว่าง")
+        raise ValueError("The PDF is empty")
     if size > config.PDF_TO_TEXT_MAX_BYTES:
         raise ValueError(
-            f"PDF ใหญ่เกิน {config.PDF_TO_TEXT_MAX_BYTES // (1024 * 1024)}MB"
+            f"The PDF is larger than {config.PDF_TO_TEXT_MAX_BYTES // (1024 * 1024)}MB"
         )
 
     try:
         import fitz
         pdf = fitz.open(path)
     except Exception as exc:
-        raise ValueError(f"เปิด PDF ไม่สำเร็จ: {exc}") from exc
+        raise ValueError(f"Could not open the PDF: {exc}") from exc
 
     name = Path(source_name or path.name).name
     job_id = uuid.uuid4().hex
@@ -542,12 +610,16 @@ def convert_pdf(
         "rewrite_fallback": 0,
     }
     warnings: list[str] = []
-    conn = _connect()
+    try:
+        conn = _connect()
+    except BaseException:
+        pdf.close()
+        raise
     try:
         _cleanup_cache(conn)
         total_pages = len(pdf)
         if total_pages <= 0:
-            raise ValueError("PDF ไม่มีหน้า")
+            raise ValueError("The PDF has no pages")
         conn.execute(
             "INSERT INTO pdf_text_jobs("
             "job_id, source_name, source_sha256, total_pages, rewrite_thai, status, created_at"
@@ -569,6 +641,8 @@ def convert_pdf(
                 # over a scanned body. Treat sparse native text as a hint, not
                 # proof that the page is born-digital: OCR once and keep the
                 # richer result only when it materially adds content.
+                if progress:
+                    progress("ocr", page_number, total_pages, dict(stats))
                 ocr_kind, ocr_text = _ocr_page(page, page_number)
                 if native and len(ocr_text.strip()) <= len(native.strip()) + 24:
                     source_kind, text = "native", native
@@ -586,13 +660,16 @@ def convert_pdf(
                 (job_id, page_number, source_kind, text, text),
             )
             conn.commit()
+    except BaseException:
+        conn.close()
+        raise
     finally:
         pdf.close()
 
     try:
         if rewrite_thai:
             rewritten, fallback, rewrite_warnings = _apply_thai_rewrite(
-                conn, job_id, total_pages, progress
+                conn, job_id, total_pages, progress, path
             )
             stats["rewritten"] = rewritten
             stats["rewrite_fallback"] = fallback

@@ -19,6 +19,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   translatePause: (jobId) => ipcRenderer.invoke('translate-pause', String(jobId || '')),
   translateResume: (jobId) => ipcRenderer.invoke('translate-resume', String(jobId || '')),
   translateCancel: (jobId) => ipcRenderer.invoke('translate-cancel', String(jobId || '')),
+  ttsVoices: () => ipcRenderer.invoke('tts-voices'),
+  ttsStart: (voice, speed) => ipcRenderer.invoke('tts-start', String(voice || ''), Number(speed || 1)),
+  ttsStatus: (jobId) => ipcRenderer.invoke('tts-status', String(jobId || '')),
+  ttsPause: (jobId) => ipcRenderer.invoke('tts-pause', String(jobId || '')),
+  ttsResume: (jobId) => ipcRenderer.invoke('tts-resume', String(jobId || '')),
+  ttsCancel: (jobId) => ipcRenderer.invoke('tts-cancel', String(jobId || '')),
   setCompact: (compact) => ipcRenderer.send('set-compact', compact),
   platform: process.platform,
 })

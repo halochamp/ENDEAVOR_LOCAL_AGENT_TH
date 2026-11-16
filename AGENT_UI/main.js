@@ -430,6 +430,45 @@ async function _translateControl(route, jobId) {
   })
 }
 
+ipcMain.handle('tts-voices', async () => _agentJsonRequest({ route: '/tts/voices' }))
+
+ipcMain.handle('tts-start', async (_e, voice, speed) => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+    title: 'เลือกไฟล์ข้อความเพื่อให้อ่านออกเสียง',
+    properties: ['openFile'],
+    filters: [{ name: 'Text / Markdown', extensions: ['txt', 'md', 'markdown'] }],
+  })
+  if (canceled || !filePaths.length) return { ok: false, cancelled: true }
+  const filePath = filePaths[0]
+  try {
+    const info = await fs.promises.stat(filePath)
+    if (!info.isFile() || info.size <= 0) return { ok: false, error: 'ไฟล์ว่างหรืออ่านไม่ได้' }
+    if (info.size > 8 * 1024 * 1024) return { ok: false, error: 'ไฟล์ใหญ่เกิน 8MB' }
+    const ext = path.extname(filePath).toLowerCase()
+    return await _agentJsonRequest({
+      method: 'POST',
+      route: '/tts/start',
+      filePath,
+      timeoutMs: 120_000,
+      timeoutMessage: 'Text to Speech upload timed out',
+      headers: {
+        'Content-Type': ext === '.txt' ? 'text/plain' : 'text/markdown',
+        'Content-Length': String(info.size),
+        'X-File-Name': encodeURIComponent(path.basename(filePath)),
+        'X-Voice': String(voice || ''),
+        'X-Speed': String(Number(speed) || 1),
+      },
+    })
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) }
+  }
+})
+
+ipcMain.handle('tts-status', async (_e, jobId) => _agentJsonRequest({ route: `/tts/status?job_id=${encodeURIComponent(String(jobId || ''))}` }))
+ipcMain.handle('tts-pause', async (_e, jobId) => _translateControl('/tts/pause', jobId))
+ipcMain.handle('tts-resume', async (_e, jobId) => _translateControl('/tts/resume', jobId))
+ipcMain.handle('tts-cancel', async (_e, jobId) => _translateControl('/tts/cancel', jobId))
+
 ipcMain.handle('translate-pause', async (_e, jobId) => _translateControl('/translate/pause', jobId))
 ipcMain.handle('translate-resume', async (_e, jobId) => _translateControl('/translate/resume', jobId))
 ipcMain.handle('translate-cancel', async (_e, jobId) => _translateControl('/translate/cancel', jobId))

@@ -20,6 +20,7 @@ if sys.version_info[:2] != (3, 11):
 from langchain_core.callbacks import BaseCallbackHandler
 
 import config
+import user_settings
 import graph as _graph
 import planner as _planner
 from graph import build_graph, force_compact, rewarm_after_compact, summarize_history
@@ -504,9 +505,9 @@ def _run_cli_pdf_text(args: list[str]) -> dict[str, object]:
 def _dispatch_cli_pdf_text(args: list[str]) -> None:
     """Run the CLI PDF command and turn operational errors into a friendly message."""
     try:
-        with Spinner("📄  กำลังแปลง PDF → Text…"):
+        with Spinner("📄  กำลังแปลง PDF → MD…"):
             result = _run_cli_pdf_text(args)
-        print(" PDF → Text เสร็จแล้ว")
+        print(" PDF → MD เสร็จแล้ว")
         print(f"   Pages: {result.get('total_pages', 0)}")
         print(f"   Output: {result.get('output_path', '')}")
         stats = result.get("stats") or {}
@@ -520,7 +521,7 @@ def _dispatch_cli_pdf_text(args: list[str]) -> None:
         for warning in result.get("warnings") or []:
             print(f"   ⚠ {warning}")
     except Exception as exc:
-        print(f" {C_WARN}⚠ PDF → Text ไม่สำเร็จ: {exc}{R}\n")
+        print(f" {C_WARN}⚠ PDF → MD ไม่สำเร็จ: {exc}{R}\n")
 
 
 def _invalidate_runtime_llms() -> None:
@@ -662,10 +663,11 @@ def main() -> None:
         print(f"    active: {shown}")
         return
 
-    online = _internet_up()
+    # The owner's Settings choice (shared with the desktop app), not a probe: one failed ping must not hide web_search.
+    online = user_settings.internet_online()
     active_tools = _get_active_tools(online)
     if not online:
-        print(f" ⚠️  ไม่มีอินเทอร์เน็ต — ปิด web tools ({len(ALL_TOOLS) - len(active_tools)} tools)\n")
+        print(f" ⚠️  โหมด Offline (ตั้งไว้ใน Settings) — ปิด web tools ({len(ALL_TOOLS) - len(active_tools)} tools)\n")
 
     _db_conn, saver = _open_memory_store(_MEMORY_DB)
     atexit.register(lambda: vacuum_db(_db_conn))

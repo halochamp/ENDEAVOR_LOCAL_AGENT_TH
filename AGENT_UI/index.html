@@ -310,6 +310,19 @@ body {
   padding:2px 1px 10px; border-bottom:1px solid var(--border);
 }
 .settings-runtime-label { font-size:10px; color:var(--text-dim); align-self:center; }
+.settings-segmented {
+  display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); min-width:0; width:100%;
+}
+.settings-segment {
+  min-width:0; width:100%; padding:4px 5px; border:1px solid var(--border);
+  background:var(--bg2); color:var(--text-dim); font:10px var(--mono); cursor:pointer;
+}
+.settings-segment:first-child { border-radius:5px 0 0 5px; }
+.settings-segment:last-child { border-radius:0 5px 5px 0; border-left:0; }
+.settings-segment.is-selected { background:var(--accent); color:var(--bg, #000); border-color:var(--accent); }
+.settings-segment:disabled { opacity:.5; cursor:default; }
+.settings-row-status { grid-column:1 / -1; font-size:10px; color:var(--text-dim); min-height:12px; }
+.settings-row-status.err { color:var(--red, #e5534b); white-space:normal; }
 .settings-select {
   min-width:0; width:100%; box-sizing:border-box; background:var(--bg2); color:var(--text);
   border:1px solid var(--border); border-radius:5px; padding:5px 7px;
@@ -363,7 +376,7 @@ body {
 }
 .files-open-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-/* ── PDF to Text panel ─────────────────────────────────── */
+/* ── PDF to MD panel ─────────────────────────────────── */
 .pdf-body {
   flex: 1; overflow-y: auto; padding: 12px 10px;
   display: flex; flex-direction: column; gap: 10px;
@@ -747,13 +760,17 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       <span class="icon-btn-icon">🕐</span>
       <span class="icon-btn-label">History</span>
     </button>
-    <button class="icon-btn" id="btn-pdf" title="PDF to Text">
+    <button class="icon-btn" id="btn-pdf" title="PDF to MD">
       <span class="icon-btn-icon">📄</span>
-      <span class="icon-btn-label">PDF Text</span>
+      <span class="icon-btn-label">PDF MD</span>
     </button>
     <button class="icon-btn" id="btn-translate" title="Translate to Thai">
       <span class="icon-btn-icon">🌐</span>
       <span class="icon-btn-label">Translate</span>
+    </button>
+    <button class="icon-btn" id="btn-tts" title="Text to Speech">
+      <span class="icon-btn-icon">🔊</span>
+      <span class="icon-btn-label">TTS</span>
     </button>
     <button class="icon-btn" id="btn-settings" title="Settings">
       <span class="icon-btn-icon">⚙️</span>
@@ -804,9 +821,9 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       <div id="history-list"></div>
     </div>
 
-    <!-- PDF to Text view -->
+    <!-- PDF to MD view -->
     <div id="left-pdf" class="left-view">
-      <div class="panel-hdr">📄 PDF to Text</div>
+      <div class="panel-hdr">📄 PDF to MD</div>
       <div class="pdf-body">
         <div class="pdf-note">
           PDF แท้ใช้ text layer โดยตรง; หน้า scan ใช้ OCR และ reconstruct ตารางเมื่อ layout มั่นใจ
@@ -814,8 +831,9 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
         </div>
         <label class="pdf-toggle" for="pdf-rewrite-thai">
           <input id="pdf-rewrite-thai" type="checkbox">
-          <span>ใช้ local LLM ช่วย rewrite ภาษาไทยจาก OCR แบบ <strong>no-think</strong>
-            (ไม่สรุป/ไม่แปล/ไม่เปลี่ยนตัวเลข; validation ไม่ผ่านจะใช้ OCR เดิม)</span>
+          <span>ให้ local LLM แบบ <strong>no-think</strong> ดู<strong>ภาพ + ข้อความ ทีละหน้า</strong> แล้วเขียนเป็น Markdown (.md)
+            พร้อมบรรยายภาพ/แผนที่/กราฟ (ไม่ติ๊ก = ไม่เรียก LLM เลย; ผลจาก LLM เขียนลงไฟล์ตามนั้น
+            หน้าที่ LLM ใช้ไม่ได้จะใช้ข้อความเดิม; ถ้าโมเดลที่เลือกอ่านภาพไม่ได้ จะส่งเฉพาะข้อความ)</span>
         </label>
         <div class="pdf-actions">
           <button class="btn btn-primary" id="pdf-start-btn">เลือก PDF และแปลง</button>
@@ -826,7 +844,7 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
           <div class="pdf-result-path" id="pdf-result-path"></div>
           <div class="pdf-warning" id="pdf-result-warning"></div>
           <div class="pdf-actions">
-            <button class="btn btn-ghost" id="pdf-open-output-btn">เปิด Text</button>
+            <button class="btn btn-ghost" id="pdf-open-output-btn">เปิด MD</button>
           </div>
         </div>
       </div>
@@ -862,11 +880,58 @@ body.compact .btn { padding: 5px 10px; font-size: 11px; }
       </div>
     </div>
 
+    <!-- Text to Speech view -->
+    <div id="left-tts" class="left-view">
+      <div class="panel-hdr">🔊 Text to Speech</div>
+      <div class="translate-body">
+        <div class="translate-note">
+          อ่านไฟล์ .txt / .md ออกเสียงในเครื่องด้วย OmniVoice แล้วเขียนเป็นไฟล์ .m4a (ปรับความดังให้เท่ากัน)
+          เสียงของ OmniVoice ใช้ส่วนตัว/ไม่ใช้เชิงพาณิชย์เท่านั้น (CC-BY-NC)
+        </div>
+        <span class="settings-runtime-label">เสียง</span>
+        <select class="settings-select" id="tts-voice" title="เสียงที่ใช้อ่าน"></select>
+        <div class="translate-meta" id="tts-voices-note"></div>
+        <label class="settings-runtime-label" for="tts-speed">ความเร็ว <span id="tts-speed-label">1.00×</span></label>
+        <input type="range" id="tts-speed" min="0.8" max="1.2" step="0.05" value="1">
+        <div class="translate-actions">
+          <button class="btn btn-primary" id="tts-start-btn">เลือกไฟล์และอ่าน</button>
+          <button class="btn btn-ghost" id="tts-refresh-btn" title="อ่านรายชื่อเสียงใหม่">รีเฟรชเสียง</button>
+        </div>
+        <div class="translate-actions">
+          <button class="btn btn-ghost" id="tts-pause-btn" disabled>พัก</button>
+          <button class="btn btn-ghost" id="tts-resume-btn" disabled>ทำต่อ</button>
+          <button class="btn btn-ghost" id="tts-cancel-btn" disabled>ยกเลิก</button>
+        </div>
+        <div class="translate-status" id="tts-status">พร้อม</div>
+        <div class="translate-progress" id="tts-progress"></div>
+        <div class="translate-result" id="tts-result">
+          <div class="translate-result-stats" id="tts-result-stats"></div>
+          <div class="translate-result-path" id="tts-result-path"></div>
+          <div class="translate-warning" id="tts-result-warning"></div>
+          <div class="translate-actions">
+            <button class="btn btn-ghost" id="tts-open-output-btn">เปิดไฟล์เสียง</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Settings view -->
     <div id="left-settings" class="left-view">
       <div class="panel-hdr">⚙️ Settings</div>
       <div class="settings-body">
         <div class="settings-runtime">
+          <span class="settings-runtime-label">Internet</span>
+          <div class="settings-segmented" id="internet-switch" role="radiogroup" aria-label="Internet">
+            <button class="settings-segment is-selected" type="button" role="radio" aria-checked="true" data-internet="online" title="เปิดเครื่องมืออินเทอร์เน็ต (web_search, browse_url, browser_use, recall_web)">Online</button>
+            <button class="settings-segment" type="button" role="radio" aria-checked="false" data-internet="offline" title="ซ่อนเครื่องมืออินเทอร์เน็ตจาก agent">Offline</button>
+          </div>
+          <div class="settings-row-status" id="internet-status"></div>
+          <span class="settings-runtime-label">OCR</span>
+          <div class="settings-segmented" id="ocr-switch" role="radiogroup" aria-label="OCR">
+            <button class="settings-segment is-selected" type="button" role="radio" aria-checked="true" data-ocr="apple" title="Apple Vision (ค่าเริ่มต้น)">Apple Vision</button>
+            <button class="settings-segment" type="button" role="radio" aria-checked="false" data-ocr="openthai" title="OpenThai 2.0">OpenThai</button>
+          </div>
+          <div class="settings-row-status" id="ocr-status"></div>
           <span class="settings-runtime-label">Server Mode</span>
           <select class="settings-select" id="runtime-server-mode" title="Server mode"></select>
           <span class="settings-runtime-label">Model</span>

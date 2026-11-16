@@ -14,6 +14,7 @@ optional high-quality model: unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit
 from __future__ import annotations
 import json
 import os
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -462,9 +463,11 @@ def _pdf_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
         value = default
     return max(minimum, min(maximum, value))
 
+# Settings -> OCR: the optional OpenThai engine's model files (scripts/install_openthai_ocr.py puts them here).
+OPENTHAI_OCR_DIR = os.getenv("V2_OPENTHAI_OCR_DIR", os.path.expanduser("~/Models/OpenThai2.0-OCR-Text"))
 PDF_TO_TEXT_PRIVATE_DIR = os.path.join(WORKSPACE, ".pdf_to_text")
 PDF_TO_TEXT_DB = os.path.join(PDF_TO_TEXT_PRIVATE_DIR, "pdf_to_text.sqlite3")
-PDF_TO_TEXT_OUTPUT_DIR = os.path.join(WORKSPACE, "pdf_to_text")
+PDF_TO_TEXT_OUTPUT_DIR = os.path.join(WORKSPACE, "pdf_to_md")
 PDF_TO_TEXT_MAX_BYTES = 250 * 1024 * 1024
 PDF_TO_TEXT_OCR_DPI = _pdf_env_int("V2_PDF_OCR_DPI", 180, 120, 300)
 PDF_TO_TEXT_OCR_MAX_PIXELS = 20_000_000
@@ -482,10 +485,28 @@ TRANSLATE_LLM_MAX_TOKENS = _pdf_env_int("V2_TRANSLATE_MAX_TOKENS", 8192, 512, 16
 TRANSLATE_LLM_TIMEOUT_SECONDS = _pdf_env_int("V2_TRANSLATE_LLM_TIMEOUT", 180, 10, 600)
 TRANSLATE_CACHE_MAX_AGE_SECONDS = _pdf_env_int("V2_TRANSLATE_CACHE_MAX_AGE", 7 * 86400, 3600, 30 * 86400)
 os.makedirs(TRANSLATE_PRIVATE_DIR, exist_ok=True)
-PDF_TO_TEXT_LLM_BATCH_PAGES = _pdf_env_int("V2_PDF_LLM_BATCH_PAGES", 4, 1, 8)
-PDF_TO_TEXT_LLM_BATCH_CHARS = _pdf_env_int("V2_PDF_LLM_BATCH_CHARS", 6000, 1000, 16000)
-PDF_TO_TEXT_LLM_TIMEOUT_SECONDS = _pdf_env_int("V2_PDF_LLM_TIMEOUT", 90, 10, 300)
+# PDF to MD sends one page at a time with its image (longest side below) and extracted text.
+PDF_TO_TEXT_VISION_MAX_SIDE = _pdf_env_int("V2_PDF_VISION_MAX_SIDE", 1536, 768, 2048)
+PDF_TO_TEXT_LLM_TIMEOUT_SECONDS = _pdf_env_int("V2_PDF_LLM_TIMEOUT", 240, 10, 300)
 PDF_TO_TEXT_CACHE_MAX_AGE_SECONDS = _pdf_env_int("V2_PDF_CACHE_MAX_AGE", 86400, 3600, 604800)
+
+# ── Text to Speech panel ──────────────────────────────────────────────────
+# A .txt/.md file is read aloud by OmniVoice (k2-fsa, CC-BY-NC: personal / non-commercial use only) in its own conda env and
+# worker process.  Nothing is downloaded: install the env and the weights yourself (README, "Text to Speech").  Staging lives
+# in the ignored workspace; finished audio lives in workspace/text_to_speech; voices are folders under
+# workspace/text_to_speech/voices/<id>/ with ref_voice.wav (mono, 2-8 s) + ref_voice.txt (its exact words) [+ voice.json].
+def _conda_env_python(name: str) -> str:
+    envs_dir = os.path.dirname(os.path.abspath(sys.prefix))
+    return os.path.join(envs_dir, name, "bin", "python")
+
+TTS_PRIVATE_DIR = os.path.join(WORKSPACE, ".text_to_speech")
+TTS_OUTPUT_DIR = os.path.join(WORKSPACE, "text_to_speech")
+TTS_VOICES_DIR = os.path.join(TTS_OUTPUT_DIR, "voices")
+TTS_MAX_BYTES = _pdf_env_int("V2_TTS_MAX_BYTES", 8 * 1024 * 1024, 1024, 64 * 1024 * 1024)
+TTS_CACHE_MAX_AGE_SECONDS = _pdf_env_int("V2_TTS_CACHE_MAX_AGE", 7 * 86400, 3600, 30 * 86400)
+TTS_OMNIVOICE_PYTHON = os.getenv("V2_TTS_OMNIVOICE_PYTHON", _conda_env_python("omnivoice"))
+TTS_OMNIVOICE_DIR = os.getenv("V2_TTS_OMNIVOICE_DIR", os.path.expanduser("~/Models/OmniVoice"))
+os.makedirs(TTS_PRIVATE_DIR, exist_ok=True)
 
 # ── MCP client ─────────────────────────────────────────────────────────────
 # Developer-provisioned servers are optional and empty by default in this public

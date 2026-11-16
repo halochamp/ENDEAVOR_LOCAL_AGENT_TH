@@ -216,6 +216,12 @@ function handleEvent(ev) {
     case 'status':
       applyStatus(ev)
       break
+    case 'internet_state':
+      applyInternetState(ev)
+      break
+    case 'ocr_engine_state':
+      applyOcrState(ev)
+      break
     case 'system_telemetry':
       applySystemTelemetry(ev)
       break
@@ -412,11 +418,335 @@ function handleEvent(ev) {
   }
 }
 
+// ── Text to Speech ─────────────────────────────────────────────────────────────
+// A .txt/.md file is read aloud locally (OmniVoice, own conda env); the job lives in the agent server, this panel
+// starts it, polls it, and offers pause / resume / cancel.  Voices are folders the owner fills (see the README).
+
+let ttsState = { jobId: '', status: 'idle', busy: false, outputPath: '', voices: [], engineReady: false, modelConfirmed: false }
+
+const TTS_MODEL_PROMPT = 'Text to Speech จะโหลดโมเดลเสียง OmniVoice เข้า RAM (ประมาณ 4 GB) ตอนเริ่มอ่าน และปล่อยออกเมื่ออ่านเสร็จ\n\n'
+  + 'โมเดลหลักของ agent ยังเปิดอยู่ตามเดิม — ถ้า RAM ของเครื่องน้อย ควรปิดงานอื่นก่อน\n\n'
+  + 'ต้องการใช้ Text to Speech และโหลดโมเดลเสียงเมื่อเริ่มอ่านหรือไม่?'
+
+// Asked once per session when the TTS tab is opened.  Declining keeps the tab closed and loads nothing; the voice model is
+// loaded only when a reading starts and leaves RAM when it ends.
+function ttsPanelMayOpen() {
+  if (ttsState.modelConfirmed) return true
+  ttsState.modelConfirmed = !!window.confirm(TTS_MODEL_PROMPT)
+  return ttsState.modelConfirmed
+}
+
+function _ttsIsActive(status) {
+  return ['uploading', 'queued', 'running', 'pausing', 'cancelling'].includes(String(status || ''))
+}
+
+function _setTtsControls(status = ttsState.status) {
+  const active = _ttsIsActive(status)
+  const paused = status === 'paused'
+  const start = document.getElementById('tts-start-btn')
+  const pause = document.getElementById('tts-pause-btn')
+  const resume = document.getElementById('tts-resume-btn')
+  const cancel = document.getElementById('tts-cancel-btn')
+  if (start) {
+    start.disabled = active || paused || !ttsState.engineReady
+    start.textContent = active || paused ? 'กำลังอ่าน…' : 'เลือกไฟล์และอ่าน'
+  }
+  if (pause) pause.disabled = !(status === 'queued' || status === 'running')
+  if (resume) resume.disabled = !(paused || status === 'pausing')
+  if (cancel) cancel.disabled = !(active || paused)
+  ttsState.busy = active || paused
+}
+
+function renderTtsState(job, error = '') {
+  const statusEl = document.getElementById('tts-status')
+  const progressEl = document.getElementById('tts-progress')
+  const resultEl = document.getElementById('tts-result')
+  const statsEl = document.getElementById('tts-result-stats')
+  const pathEl = document.getElementById('tts-result-path')
+  const warningEl = document.getElementById('tts-result-warning')
+  if (!statusEl || !progressEl || !resultEl || !statsEl || !pathEl || !warningEl) return
+  if (error) {
+    ttsState.status = 'error'
+    statusEl.textContent = error
+    statusEl.classList.add('error')
+    _setTtsControls('error')
+    return
+  }
+  statusEl.classList.remove('error')
+  const value = job || {}
+  const status = String(value.status || ttsState.status || 'idle')
+  ttsState.status = status
+  if (value.job_id) ttsState.jobId = value.job_id
+  if (value.output_path) ttsState.outputPath = value.output_path
+  statusEl.textContent = value.error && status === 'error' ? `${value.message || 'ไม่สำเร็จ'}: ${value.error}` : (value.message || (status === 'idle' ? 'พร้อม' : status))
+  if (status === 'error') statusEl.classList.add('error')
+  const done = Number(value.done || 0)
+  const total = Number(value.total || 0)
+  const eta = Number(value.eta_sec || 0)
+  progressEl.textContent = total
+    ? `${value.source_name || 'ไฟล์'} · ชิ้น ${Math.min(done, total)}/${total}${eta > 0 && _ttsIsActive(status) ? ` · เหลือราว ${Math.max(1, Math.round(eta / 60))} นาที` : ''}`
+    : ''
+  _setTtsControls(status)
+  if (status !== 'done') {
+    resultEl.classList.remove('show')
+    return
+  }
+  const warnings = Array.isArray(value.warnings) ? value.warnings : []
+  const minutes = Number(value.duration_sec || 0) / 60
+  statsEl.textContent = `${Number(value.total || 0)} ชิ้น · ความยาว ${minutes >= 1 ? minutes.toFixed(1) + ' นาที' : Math.round(Number(value.duration_sec || 0)) + ' วินาที'} · เสียง ${value.voice || '-'}`
+  pathEl.textContent = ttsState.outputPath
+  warningEl.textContent = warnings.length ? `⚠ ${warnings.join(' · ')}` : ''
+  resultEl.classList.add('show')
+}
+
+function renderTtsVoices(payload) {
+  const select = document.getElementById('tts-voice')
+  const note = document.getElementById('tts-voices-note')
+  const voices = Array.isArray(payload && payload.voices) ? payload.voices : []
+  const engine = (payload && payload.engine) || {}
+  ttsState.voices = voices
+  ttsState.engineReady = !!engine.ready
+  if (select) {
+    const previous = select.value
+    select.innerHTML = ''
+    for (const voice of voices) {
+      const option = document.createElement('option')
+      option.value = voice.id
+      option.textContent = voice.label || voice.id
+      select.appendChild(option)
+    }
+    if (previous && voices.some(v => v.id === previous)) select.value = previous
+    select.disabled = !voices.length
+  }
+  if (note) {
+    note.textContent = !engine.ready
+      ? `ยังใช้ไม่ได้: ${engine.reason || 'OmniVoice ยังไม่พร้อม'}`
+      : (voices.length
+        ? ''
+        : `ยังไม่มีเสียง: ใส่ ref_voice.wav (โมโน 2–8 วินาที) และ ref_voice.txt (คำพูดในคลิปตรงตัว) ไว้ในโฟลเดอร์ใหม่ใต้ ${payload.voices_dir || 'workspace/text_to_speech/voices'} แล้วกดรีเฟรชเสียง`)
+    note.classList.toggle('error', !engine.ready || !voices.length)
+  }
+  _setTtsControls(ttsState.status)
+}
+
+async function refreshTtsVoices() {
+  if (!window.electronAPI || !window.electronAPI.ttsVoices) return
+  try {
+    const response = await window.electronAPI.ttsVoices()
+    if (response && response.ok) renderTtsVoices(response)
+    else renderTtsState(null, (response && response.error) || 'อ่านรายชื่อเสียงไม่สำเร็จ')
+  } catch (err) {
+    renderTtsState(null, `อ่านรายชื่อเสียงไม่สำเร็จ: ${err && err.message ? err.message : err}`)
+  }
+}
+
+let ttsPollPromise = null
+function _pollTtsJob() {
+  if (!ttsPollPromise) ttsPollPromise = _pollTtsJobLoop().finally(() => { ttsPollPromise = null })
+  return ttsPollPromise
+}
+
+async function _pollTtsJobLoop() {
+  if (!ttsState.jobId || !window.electronAPI || !window.electronAPI.ttsStatus) return
+  while (true) {
+    await new Promise(resolve => setTimeout(resolve, 500))
+    const response = await window.electronAPI.ttsStatus(ttsState.jobId)
+    if (!response || !response.ok) throw new Error((response && response.error) || 'อ่านสถานะ Text to Speech ไม่สำเร็จ')
+    const job = response.job || {}
+    renderTtsState(job)
+    if (['done', 'error', 'cancelled'].includes(job.status)) return job
+  }
+}
+
+async function startTts() {
+  if (ttsState.busy) return
+  if (!ttsState.modelConfirmed) {
+    renderTtsState(null, 'ยังไม่ได้ยืนยันการโหลดโมเดลเสียง — ปิดแล้วเปิดแท็บ TTS ใหม่เพื่อตอบคำถาม')
+    return
+  }
+  if (!window.electronAPI || !window.electronAPI.ttsStart || !window.electronAPI.ttsStatus) {
+    renderTtsState(null, 'Text to Speech ใช้งานไม่ได้ใน runtime นี้')
+    return
+  }
+  const voice = (document.getElementById('tts-voice') || {}).value || ''
+  const speed = Number((document.getElementById('tts-speed') || {}).value || 1)
+  if (!voice) {
+    renderTtsState(null, 'ยังไม่มีเสียงให้เลือก — ดูวิธีเพิ่มเสียงในข้อความใต้ช่องเสียง')
+    return
+  }
+  ttsState.outputPath = ''
+  ttsState.status = 'uploading'
+  const resultEl = document.getElementById('tts-result')
+  if (resultEl) resultEl.classList.remove('show')
+  renderTtsState({ status: 'uploading', message: 'กำลังรับไฟล์…' })
+  try {
+    const started = await window.electronAPI.ttsStart(voice, speed)
+    if (started && started.cancelled) {
+      ttsState.status = 'idle'
+      renderTtsState({ status: 'idle', message: 'พร้อม' })
+      return
+    }
+    if (!started || !started.ok) throw new Error((started && started.error) || 'เริ่ม Text to Speech ไม่สำเร็จ')
+    renderTtsState(started.job || {})
+    if (!ttsState.jobId) throw new Error('ไม่ได้รับ Text to Speech job id')
+    await _pollTtsJob()
+  } catch (err) {
+    renderTtsState(null, `Text to Speech ไม่สำเร็จ: ${err && err.message ? err.message : err}`)
+  }
+}
+
+async function _ttsControl(name) {
+  if (!ttsState.jobId || !window.electronAPI || !window.electronAPI[name]) return
+  try {
+    const response = await window.electronAPI[name](ttsState.jobId)
+    if (response && response.job) renderTtsState(response.job)
+    else if (response && !response.ok) renderTtsState(null, response.error || 'ส่งคำสั่งไม่สำเร็จ')
+    if (ttsState.busy) _pollTtsJob().catch(err => renderTtsState(null, String(err && err.message || err)))
+  } catch (err) {
+    renderTtsState(null, String(err && err.message || err))
+  }
+}
+const pauseTts = () => _ttsControl('ttsPause')
+const resumeTts = () => _ttsControl('ttsResume')
+const cancelTts = () => _ttsControl('ttsCancel')
+
+function openTtsOutput() {
+  if (!ttsState.outputPath) return
+  wsSend({ type: 'open_with_os', path: ttsState.outputPath })
+}
+
+function updateTtsSpeedLabel() {
+  const slider = document.getElementById('tts-speed')
+  const label = document.getElementById('tts-speed-label')
+  if (slider && label) label.textContent = `${Number(slider.value || 1).toFixed(2)}×`
+}
+// ── end Text to Speech ─────────────────────────────────────────────────────────
+
+// ── Internet / Offline (Settings) ──────────────────────────────────────────────
+// The switch shows the owner's saved choice (status.internet_enabled / internet_state.enabled), which is what
+// binds or hides the web tools.  The header dot is separate: status.online, the server's periodic
+// reachability check, display only.
+
+const INTERNET_SAVING_TEXT = 'กำลังบันทึก…'
+const INTERNET_SAVED_TEXT = 'บันทึกแล้ว ✓'
+let internetEnabled = true
+let internetPending = null
+
+function renderInternetSwitch(enabled) {
+  internetEnabled = !!enabled
+  document.querySelectorAll('#internet-switch [data-internet]').forEach(button => {
+    const selected = (button.dataset.internet === 'online') === internetEnabled
+    button.classList.toggle('is-selected', selected)
+    button.setAttribute('aria-checked', selected ? 'true' : 'false')
+  })
+}
+
+function setInternet(online) {
+  const status = document.getElementById('internet-status')
+  if (online === internetEnabled && !internetPending) return
+  internetPending = online
+  if (status) { status.classList.remove('err'); status.textContent = INTERNET_SAVING_TEXT }
+  const fail = text => {
+    internetPending = null
+    if (!status) return
+    status.textContent = text
+    status.classList.add('err')
+  }
+  if (!wsSend({ type: 'set_internet', online })) return fail('ส่งคำสั่งไม่สำเร็จ — ยังไม่ได้เชื่อมต่อกับ agent')
+  setTimeout(() => { if (internetPending === online) fail('ไม่ได้รับคำตอบจาก agent — ลองใหม่อีกครั้ง') }, 8000)
+}
+
+function applyInternetState(ev) {
+  const status = document.getElementById('internet-status')
+  internetPending = null
+  renderInternetSwitch(ev.enabled)
+  if (!status) return
+  const error = String(ev.error || '')
+  if (error) {
+    status.textContent = error === 'agent is busy' ? 'agent กำลังทำงาน — รอให้เสร็จก่อนแล้วลองใหม่' : error
+    status.classList.add('err')
+    return
+  }
+  status.classList.remove('err')
+  status.textContent = INTERNET_SAVED_TEXT
+  setTimeout(() => { if (status.textContent === INTERNET_SAVED_TEXT) status.textContent = '' }, 2500)
+}
+
+// ── OCR engine (Settings) ──────────────────────────────────────────────────────
+// One engine for every OCR the agent does (images, PDFs, PDF -> Markdown, screen reading).  The switch shows the
+// saved choice (status.ocr_engine / ocr_engine_state.engine); a button is disabled while its engine cannot run
+// (status.ocr_engines[name].available) and says why in its tooltip.  If the saved engine is not the one really in
+// use (ocr_effective), the status line says so instead of letting the switch claim it.
+
+const OCR_TITLES = {
+  apple: 'Apple Vision (ค่าเริ่มต้น) — อ่านได้ทุกแบบ: ภาพถ่าย สกรีนช็อต ลายมือ ภาษาอังกฤษ',
+  openthai: 'OpenThai 2.0 — เร็วกว่า ~5 เท่า ใช้ CPU แม่นกว่ากับเอกสารสแกนไทยแบบตัวพิมพ์ (ลายมือ/ภาพถ่ายอ่อน)',
+}
+const OCR_LABELS = { apple: 'Apple Vision', openthai: 'OpenThai' }
+let ocrEngine = 'apple'
+let ocrPending = null
+let ocrNotice = ''   // the "saved engine is not the one in use" line this section wrote itself; nothing else may be overwritten
+
+function renderOcrSwitch(engine, engines, effective) {
+  ocrEngine = engine === 'openthai' ? 'openthai' : 'apple'
+  document.querySelectorAll('#ocr-switch [data-ocr]').forEach(button => {
+    const name = button.dataset.ocr
+    const selected = name === ocrEngine
+    const info = engines && engines[name]
+    const usable = !info || info.available
+    button.classList.toggle('is-selected', selected)
+    button.setAttribute('aria-checked', selected ? 'true' : 'false')
+    button.disabled = !usable && !selected
+    button.title = usable ? OCR_TITLES[name] : `${OCR_TITLES[name]} — ยังไม่พร้อม: ${info.detail || 'ใช้ไม่ได้'}`
+  })
+  // Runs on every /status frame: it may only replace an empty line or its own notice, never a refusal or "saved".
+  const status = document.getElementById('ocr-status')
+  if (status && !ocrPending && (!status.textContent || status.textContent === ocrNotice)) {
+    const mismatch = effective && effective !== ocrEngine
+    ocrNotice = mismatch ? `${OCR_LABELS[ocrEngine]} ใช้ไม่ได้ตอนนี้ — กำลังใช้ ${OCR_LABELS[effective]} แทน` : ''
+    status.textContent = ocrNotice
+    status.classList.toggle('err', !!mismatch)
+  }
+}
+
+function setOcrEngine(engine) {
+  const status = document.getElementById('ocr-status')
+  if (engine === ocrEngine && !ocrPending) return
+  ocrPending = engine
+  if (status) { status.classList.remove('err'); status.textContent = INTERNET_SAVING_TEXT }
+  const fail = text => {
+    ocrPending = null
+    if (!status) return
+    status.textContent = text
+    status.classList.add('err')
+  }
+  if (!wsSend({ type: 'set_ocr_engine', engine })) return fail('ส่งคำสั่งไม่สำเร็จ — ยังไม่ได้เชื่อมต่อกับ agent')
+  setTimeout(() => { if (ocrPending === engine) fail('ไม่ได้รับคำตอบจาก agent — ลองใหม่อีกครั้ง') }, 8000)
+}
+
+function applyOcrState(ev) {
+  const status = document.getElementById('ocr-status')
+  ocrPending = null
+  const error = String(ev.error || '')
+  renderOcrSwitch(ev.engine, ev.engines, ev.effective)
+  if (!status) return
+  if (error) {
+    status.textContent = error === 'agent is busy' ? 'agent กำลังทำงาน — รอให้เสร็จก่อนแล้วลองใหม่' : error
+    status.classList.add('err')
+    return
+  }
+  status.classList.remove('err')
+  status.textContent = INTERNET_SAVED_TEXT
+  setTimeout(() => { if (status.textContent === INTERNET_SAVED_TEXT) status.textContent = '' }, 2500)
+}
+
 // ── Status ─────────────────────────────────────────────────────────────────────
 
 function applyStatus(s) {
   setDot('dot-mlx', 'lbl-mlx', s.server_up, mlxLabel(s.mlx_url))
   setDot('dot-net', 'lbl-net', s.online, 'Internet')
+  if (typeof s.internet_enabled === 'boolean' && !internetPending) renderInternetSwitch(s.internet_enabled)
+  if (!ocrPending && typeof s.ocr_engine === 'string') renderOcrSwitch(s.ocr_engine, s.ocr_engines, s.ocr_effective)
   setModelLabel(s.model)
   // Restore handoff label first (takes precedence); else fall back to skill.
   currentHandoffLabel = s.handoff_label || ''
@@ -1400,8 +1730,8 @@ function renderPdfTextState(job, error = '') {
   }
   statusEl.classList.remove('error')
   statusEl.textContent = (job && job.message) || (pdfTextState.rewriteThai
-    ? 'พร้อม · LLM rewrite no-think เปิดอยู่'
-    : 'พร้อม · LLM rewrite ปิดอยู่')
+    ? 'พร้อม · LLM เขียน Markdown ทีละหน้า (ภาพ + ข้อความ) เปิดอยู่'
+    : 'พร้อม · LLM ปิดอยู่ (ไม่เรียกโมเดล)')
 
   if (!job || job.status !== 'done') return
   const stats = job.stats || {}
@@ -1416,7 +1746,7 @@ function renderPdfTextState(job, error = '') {
 async function startPdfToText() {
   if (pdfTextState.busy) return
   if (!window.electronAPI || !window.electronAPI.pdfToTextStart || !window.electronAPI.pdfToTextStatus) {
-    renderPdfTextState(null, 'PDF to Text ใช้งานไม่ได้ใน runtime นี้')
+    renderPdfTextState(null, 'PDF to MD ใช้งานไม่ได้ใน runtime นี้')
     return
   }
   const rewrite = document.getElementById('pdf-rewrite-thai')
@@ -1431,21 +1761,21 @@ async function startPdfToText() {
     const started = await window.electronAPI.pdfToTextStart(pdfTextState.rewriteThai)
     if (started && started.cancelled) {
       renderPdfTextState({ message: pdfTextState.rewriteThai
-        ? 'พร้อม · LLM rewrite no-think เปิดอยู่'
-        : 'พร้อม · LLM rewrite ปิดอยู่' })
+        ? 'พร้อม · LLM เขียน Markdown ทีละหน้า (ภาพ + ข้อความ) เปิดอยู่'
+        : 'พร้อม · LLM ปิดอยู่ (ไม่เรียกโมเดล)' })
       return
     }
-    if (!started || !started.ok) throw new Error((started && started.error) || 'เริ่ม PDF to Text ไม่สำเร็จ')
+    if (!started || !started.ok) throw new Error((started && started.error) || 'เริ่ม PDF to MD ไม่สำเร็จ')
     const first = started.job || {}
     pdfTextState.jobId = first.job_id || ''
     pdfTextState.sourceName = first.source_name || ''
-    if (!pdfTextState.jobId) throw new Error('ไม่ได้รับ PDF to Text job id')
+    if (!pdfTextState.jobId) throw new Error('ไม่ได้รับ PDF to MD job id')
     renderPdfTextState(first)
 
     while (true) {
       await new Promise(resolve => setTimeout(resolve, 400))
       const response = await window.electronAPI.pdfToTextStatus(pdfTextState.jobId)
-      if (!response || !response.ok) throw new Error((response && response.error) || 'อ่านสถานะ PDF to Text ไม่สำเร็จ')
+      if (!response || !response.ok) throw new Error((response && response.error) || 'อ่านสถานะ PDF to MD ไม่สำเร็จ')
       const job = response.job || {}
       renderPdfTextState(job)
       if (job.status === 'done') {
@@ -1453,10 +1783,10 @@ async function startPdfToText() {
         wsSend({ type: 'get_workspace_mentions' })
         break
       }
-      if (job.status === 'error') throw new Error(job.error || 'PDF to Text ไม่สำเร็จ')
+      if (job.status === 'error') throw new Error(job.error || 'PDF to MD ไม่สำเร็จ')
     }
   } catch (err) {
-    renderPdfTextState(null, `PDF to Text ไม่สำเร็จ: ${err && err.message ? err.message : err}`)
+    renderPdfTextState(null, `PDF to MD ไม่สำเร็จ: ${err && err.message ? err.message : err}`)
   } finally {
     _setPdfBusy(false)
   }
@@ -1661,6 +1991,7 @@ function openWorkspace() {
 }
 
 function togglePanel(name) {
+  if (name === 'tts' && activePanel !== 'tts' && !ttsPanelMayOpen()) return   // the user said no: nothing opens, nothing loads
   const panel = document.getElementById('left-panel')
   if (modelServerStatusTimer) {
     clearInterval(modelServerStatusTimer)
@@ -1680,6 +2011,7 @@ function togglePanel(name) {
     document.querySelectorAll('.left-view').forEach(v => v.classList.remove('active'))
     const viewEl = document.getElementById('left-' + name)
     if (viewEl) viewEl.classList.add('active')
+    if (name === 'tts') refreshTtsVoices()
     if (name === 'workspace') {
       wsSend({ type: 'get_files', path: workspaceRoot || '' })
       wsSend({ type: 'get_workspace_mentions' })
@@ -2209,6 +2541,7 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#btn-focus', () => togglePanel('focus'))
   on('#btn-activity', () => togglePanel('activity'))
   on('#btn-translate', () => togglePanel('translate'))
+  on('#btn-tts', () => togglePanel('tts'))
   on('#btn-history', () => togglePanel('history'))
   on('#btn-pdf', () => togglePanel('pdf'))
   on('#btn-settings', () => togglePanel('settings'))
@@ -2216,6 +2549,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const runtimeModel = document.getElementById('runtime-model')
   const runtimeThink = document.getElementById('runtime-think')
   const runtimePort = document.getElementById('runtime-port')
+  const internetSwitch = document.getElementById('internet-switch')
+  if (internetSwitch) internetSwitch.addEventListener('click', e => {
+    const button = e.target.closest('[data-internet]')
+    if (button && !button.disabled) setInternet(button.dataset.internet === 'online')
+  })
+  const ocrSwitch = document.getElementById('ocr-switch')
+  if (ocrSwitch) ocrSwitch.addEventListener('click', e => {
+    const button = e.target.closest('[data-ocr]')
+    if (button && !button.disabled) setOcrEngine(button.dataset.ocr)
+  })
   if (runtimeMode) runtimeMode.addEventListener('change', saveRuntimeSettings)
   if (runtimeModel) runtimeModel.addEventListener('change', saveRuntimeSettings)
   if (runtimeThink) runtimeThink.addEventListener('change', saveRuntimeSettings)
@@ -2227,6 +2570,14 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#translate-resume-btn', resumeTranslate)
   on('#translate-cancel-btn', cancelTranslate)
   on('#translate-open-output-btn', openTranslateOutput)
+  on('#tts-start-btn', startTts)
+  on('#tts-pause-btn', pauseTts)
+  on('#tts-resume-btn', resumeTts)
+  on('#tts-cancel-btn', cancelTts)
+  on('#tts-open-output-btn', openTtsOutput)
+  on('#tts-refresh-btn', refreshTtsVoices)
+  const ttsSpeed = document.getElementById('tts-speed')
+  if (ttsSpeed) ttsSpeed.addEventListener('input', updateTtsSpeedLabel)
   const pdfRewriteThai = document.getElementById('pdf-rewrite-thai')
   if (pdfRewriteThai) pdfRewriteThai.addEventListener('change', () => {
     pdfTextState.rewriteThai = !!pdfRewriteThai.checked

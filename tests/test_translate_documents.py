@@ -124,6 +124,27 @@ class TranslateDocumentTests(unittest.TestCase):
         self.assertFalse(checkpoint.exists())
         self.assertEqual(result["translated_pages"], 2)
 
+    def test_translated_text_cannot_turn_into_markdown_structure_but_a_markdown_source_keeps_its_own(self) -> None:
+        translated = "# หัวข้อที่โมเดลเขียน\n- รายการ\n<script>x</script>\n```\nรหัสที่ไม่ปิด"
+        outputs = {}
+        for name in ("plain.txt", "doc.md"):
+            source = Path(self.tmp.name) / name
+            source.write_text("Some text", encoding="utf-8")
+            with mock.patch.object(translate_documents, "_translate_batch",
+                                   side_effect=lambda batch, **kw: {item["id"]: translated for item in batch}):
+                result = translate_documents.translate_document(
+                    source, output_dir=Path(self.tmp.name) / f"out-{name}", checkpoint_path=Path(self.tmp.name) / f"cp-{name}.json")
+            outputs[name] = Path(result["output_path"]).read_text(encoding="utf-8")
+        plain, md = outputs["plain.txt"], outputs["doc.md"]
+        # a plain-text source: the model's page can never become a heading, a list, raw HTML or a code block
+        self.assertNotIn("\n# หัวข้อที่โมเดลเขียน", plain)
+        self.assertIn("\\# หัวข้อที่โมเดลเขียน", plain)
+        self.assertNotRegex(plain, r"(?<!\\)<script>")   # HTML-looking text is escaped, never live
+        self.assertNotIn("\n```", plain)
+        # a Markdown source keeps the model's formatting, but the open code fence is closed so it cannot swallow the next page
+        self.assertIn("\n# หัวข้อที่โมเดลเขียน", md)
+        self.assertEqual(md.count("```") % 2, 0)
+
     def test_llm_batch_forces_no_think_and_preserves_protected_tokens(self) -> None:
         captured: dict = {}
 
