@@ -1,13 +1,14 @@
-Vendored third-party code: OpenThai2.0-OCR-Text runtime (iApp Technology)
+Vendored third-party code: OpenThai2.1-OCR-Text-20261118 runtime v2.2.0 (the repository formerly named OpenThai2.1-OCR-Text) (iApp Technology)
 
-Source:   https://huggingface.co/iapp/OpenThai2.0-OCR-Text  (runtime/line_engine.py, runtime/thai_norm.py)
+Source:   https://huggingface.co/iapp/OpenThai2.1-OCR-Text  (runtime/line_engine.py, runtime/thai_norm.py)
+           https://huggingface.co/PaddlePaddle/UVDoc_onnx and https://github.com/Remtir/AksonOCR-Lite (dewarp.py)
 Licence:  Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
-Vendored: 2026-11-15, byte-for-byte unmodified; the SHA-256 of both files is pinned in
-          test_suite/_test_ocr_engine_unit.py so any edit fails the test.  Do not edit these
-          files here: re-vendor from upstream and update the pinned hashes.
+Vendored: 2026-11-18, byte-for-byte unmodified; SHA-256 pins for line_engine.py, thai_norm.py and dewarp.py
+          are enforced by tests/test_ocr_engine.py. Do not edit these vendored files here: re-vendor from upstream
+          and update the pinned hashes.
 
 The model weights (det.onnx, rec.onnx, rec_dict.txt, config.json, det.yml) are NOT in this repository.
-scripts/install_openthai_ocr.py downloads them (SHA-256 verified) to ~/Models/OpenThai2.0-OCR-Text.
+scripts/install_openthai_ocr.py downloads them (SHA-256 verified) to ~/Models/OpenThai2.1-OCR-Text.
 
 The upstream model card states:
   This model includes or is derived from the following Apache-2.0 licensed work:

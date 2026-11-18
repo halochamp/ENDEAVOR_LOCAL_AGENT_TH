@@ -2,7 +2,7 @@
 # License: MIT License + Commons Clause — personal/educational use only, no commercial use without permission
 # Website: https://www.poomwat.com | GitHub: https://github.com/halochamp | Email: champoomwat@gmail.com
 
-"""_ocr_openthai.py — OpenThai2.0-OCR-Text (iApp, Apache-2.0) behind the same box contract as _ocr.read_layout.
+"""_ocr_openthai.py — OpenThai2.1-OCR-Text (iApp, Apache-2.0) behind the same box contract as _ocr.read_layout.
 
 The optional second OCR engine of Settings -> OCR (user_settings "ocr_engine").  A DB text-line detector and a
 CTC line recognizer on ONNX Runtime, CPU only, about 0.25 s per A4 page and ~0.5 GB resident once loaded.  The
@@ -43,7 +43,7 @@ def model_dir() -> str:
         import config
         return str(config.OPENTHAI_OCR_DIR)
     except Exception:
-        return os.getenv("V2_OPENTHAI_OCR_DIR", os.path.expanduser("~/Models/OpenThai2.0-OCR-Text"))
+        return os.getenv("V2_OPENTHAI_OCR_DIR", os.path.expanduser("~/Models/OpenThai2.1-OCR-Text"))
 
 
 def availability() -> tuple[bool, str]:

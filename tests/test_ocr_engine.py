@@ -29,14 +29,16 @@ FONT = Path("/System/Library/Fonts/Supplemental/Ayuthaya.ttf")
 REAL = _ocr_openthai.availability()[0]
 
 PINNED_RUNTIME = {
-    "line_engine.py": "5d5d672658d2a82ca6b32e230bb551eefe5d1e4efa46ff21908bfcfd75e5495c",
+    "line_engine.py": "6afceb5572aae32cb6192358f82ec94a7d0626c893659aa518dbf4a2b473858a",
     "thai_norm.py": "53a03ac139fb0de3e7aec0f5b8ab69b0b519fb5e636f7c1de09cb357b023344a",
+    "dewarp.py": "6c278ce935c54ff66302153babe6892e9e2c9af42bc531120fe1e1d9206c98af",
 }
 AUDITED_WEIGHTS = {
     "det.onnx": "193bab7a04fca699a6c82e6abb5b81bdb28177f0abd4062552b04908dafb19f8",
     "rec.onnx": "82ec89533346faadcb30df96703dad2dd7521de65709e60d83fd9745b8968124",
     "rec_dict.txt": "259ef2636cec0eeae225ae9fd9a63fa9305285650c22d7ec34fe8a82b24c2f1a",
-    "config.json": "11599c0dae206381cb8ea11c1b7ce130b2e7971c19219f409785ee8c02ab5d94",
+    "config.json": "f22dcf63fe64d88a8f8f066b1168e0e373ec008ea9d67568c29f0b8221fa1d31",
+    "rec2.onnx": "6ec0f96f5ade665fc7eb33a9800ed055bc220870cbf963cf97c4750e64cd27ce",
     "det.yml": "3ac018be6f97499a08faa3bbdeb33640968d9307f6736d152902747a9f259593",
 }
 

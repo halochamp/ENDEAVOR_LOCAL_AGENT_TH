@@ -18,6 +18,7 @@ Model directory layout:
   rec.onnx, rec.yml     recognizer + inference.yml (character_dict), or
   rec.onnx, rec_dict.txt  our trained recognizer + its charset, one per line
   config.json           optional overrides, e.g. {"det": {"limit": 1600}}
+  rec2.onnx             optional second recognizer (same charset), see "rec2" below
 """
 from __future__ import annotations
 
@@ -37,9 +38,23 @@ import pyclipper
 
 from .thai_norm import canonical
 
+_DIGITS = set("0123456789\u0e50\u0e51\u0e52\u0e53\u0e54\u0e55\u0e56\u0e57\u0e58\u0e59")
+_LATIN = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+_DECIMAL_COMMA = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})*),(\d{2})(?![\d.,])")
+
 DEFAULTS: dict[str, dict[str, Any]] = {
     "det": {"limit": 1280, "thresh": 0.3, "box_thresh": 0.6, "unclip": 1.5, "min_size": 3,
             "max_candidates": 3000, "v_pad": 0.0,
+            # short_pad: DB's unclip offset is area * unclip / perimeter, so a short box (one word in a table cell) gets
+            # much less margin above and below than a long line (about 0.375 against 0.75 of its height at unclip
+            # 1.5), and its top or bottom gets cut ("บาท" read as "บาV", public feedback 17 Nov 2026). With short_pad
+            # k > 0 every horizontal box is grown, across the line only, to at least k * (1 + unclip) times its core
+            # height: the height a long line gets. 0 = off.
+            "short_pad": 0.0,
+            # rescan_below (2.1.4): a page shrunk to `limit` whose lines are under this many detector pixels tall
+            # (a Retina screenshot's 11-14 pt UI text) is detected again at a size that makes them about
+            # rescan_target px, up to rescan_max on the long side. 0 = off.
+            "rescan_below": 0.0, "rescan_target": 20.0, "rescan_max": 3200,
             # split_gap: a detected line is cut where it has a blank stretch at
             # least this many line heights wide — two columns' lines or two
             # table cells the detector merged across a narrow gutter. Word
@@ -49,7 +64,16 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     # stamps, seals, signatures and handwritten marks the source text never has.
     # Tune per model on the court dev pages (train/lineocr/sweep_dev.py): for
     # rec-tiny-v0 the optimum was 0.92 / 3, halving whole-document CER.
-    "rec": {"height": 48, "max_w": 3200, "batch": 16, "drop_below": 0.0, "min_chars": 1,
+    # min_chars_digits: a line made only of digits (Arabic or Thai) may be this short instead; None = min_chars.
+    # 2.1.x ships min_chars 2, which dropped single-digit table cells (a quantity "2" on a receipt; public feedback,
+    # 17 Nov 2026). min_chars_digits_height: the digit exception needs the box to be at least this share of the page's
+    # line height; real table digits measure 0.65-1.0 of it, while floating marks and ornaments that old letterpress
+    # books read as "9" or "๘" measure 0.20-0.61 (90th percentile), dev pages, 18 Nov 2026. 0 = no height condition.
+    "rec": {"height": 48, "max_w": 3200, "batch": 16, "drop_below": 0.0, "min_chars": 1, "min_chars_digits": None,
+            "min_chars_digits_height": 0.0,
+            # min_chars_latin (2.1.4): the same height-gated exception for one Latin letter (timetable day codes
+            # M T W H F S U, a unit "g"). Thai letters are not included: marks and ornaments read as Thai letters.
+            "min_chars_latin": False,
             # junk_below / junk_invalid: also drop a line under this confidence
             # whose Thai spelling is broken beyond this share (see invalid_share).
             "junk_below": 0.0, "junk_invalid": 1.0,
@@ -79,11 +103,36 @@ DEFAULTS: dict[str, dict[str, Any]] = {
             # straightened and detected again; cutting each line out at an
             # angle loses thin marks (แต่ -> ต่ at 15-30 degrees).
             "deskew_above": 2.5},
-    "join": {"thai_no_space": False},
+    # marks: floating tone marks and vowels (old letterpress books) that the
+    # detector boxes apart from their line are put back into it and the line
+    # read again; see LineOCR._attach_marks. Distances are in line heights.
+    "marks": {"enabled": True, "max_gap": 0.35, "max_ext": 0.9, "max_height": 0.9, "margin": 0.0,
+              "page_share": 0.25, "page_min": 3, "keep_base": True},
+    # cols: the list guard in the column logic (_list_pair); 0 = off. list_rep 0.6 (2.1.1): on the column-order dev
+    # pages (bench/cols_order_dev.py) every value from 0.4 to 0.7 fixed the name grids (96.0 -> 99.7) and left every
+    # prose kind unchanged; 0.6 is nearest the middle of the gap between prose (at most 0.35) and lists (0.81 up).
+    "cols": {"list_rep": 0.6, "list_facing": 0.0, "list_max_w": 10.0, "list_enum": 0.0},
+    # rec2 (2.1.2): a second recognizer trained with loopless Thai fonts as well (rec-tiny-v9). Loopless faces (Kanit,
+    # Prompt, Sukhumvit Set) make the first one read Thai letters as Latin look-alikes (บ/ป -> U, ร -> S, ท -> n)
+    # inside Thai words. A line whose reading has Latin letters in a word that also has Thai letters is read again
+    # with rec2, and rec2's reading is kept only if it has fewer such letters. Other lines never reach rec2, so
+    # court scans keep the first recognizer's reading (rec2 alone loses on them). "" = off.
+    "rec2": {"file": "", "min_mixed": 1},
+    # pre.dewarp (2.2, optional, off): phone photos are dewarped before detection (dewarp.py: PaddlePaddle UVDoc by
+    # default, or the MonkeyOCRv2 preprocessor; ONNX Runtime); flat pages (scans, born-digital) are left alone. Boxes
+    # then refer to the dewarped image. dewarp_dir: the folder with dewarp_mask.onnx and inference.onnx (uvdoc; or
+    # dewarp_grid.onnx for monkey), relative to the model folder unless absolute. The files are downloaded separately.
+    "pre": {"dewarp": False, "dewarp_dir": "dewarp", "dewarp_backend": "uvdoc"},
+    # decimal_comma (2.1.4): an amount whose last comma has exactly two digits after it ("88,226,21", "280,00") gets a
+    # decimal point. paragraphs (2.1.4, opt-in): a blank line between rows more than paragraph_gap line heights apart,
+    # or where reading moves back up the page (the next column).
+    "join": {"thai_no_space": False, "decimal_comma": False, "paragraphs": False, "paragraph_gap": 1.0},
     # OpenVINO bf16 uses AMX on Sapphire Rapids+ and falls back to f32 on CPUs
     # without it. Measured on a Xeon 8468 core (16 lines x 48 x 1024):
     # PP-OCRv6 tiny rec 541 ms on ORT fp32 vs 162 ms on OpenVINO bf16.
-    "runtime": {"backend": "openvino", "precision": "bf16"},
+    # ort_low_memory (2.1.4): ONNX Runtime without its memory arena and memory patterns. Every page size is a new input
+    # shape, and the cached patterns grew to about 3 GB on macOS. The output is identical. OpenVINO is unaffected.
+    "runtime": {"backend": "openvino", "precision": "bf16", "ort_low_memory": False},
 }
 DET_MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 DET_STD = np.array([0.229, 0.224, 0.225], np.float32)
@@ -128,7 +177,7 @@ def _yaml_postprocess(path: Path) -> dict:
 class _Model:
     """One network on OpenVINO (default) or ONNX Runtime; run(x) -> first output."""
 
-    def __init__(self, path: Path, threads: int, backend: str, precision: str):
+    def __init__(self, path: Path, threads: int, backend: str, precision: str, low_memory: bool = False):
         self.backend = backend
         if backend == "openvino":
             import openvino as ov
@@ -163,6 +212,9 @@ class _Model:
         # Idle threads must not spin: on a shared box (and for core-seconds per
         # page) busy-waiting shows up as work that was never done.
         so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        if low_memory:
+            so.enable_cpu_mem_arena = False
+            so.enable_mem_pattern = False
         self.sess = ort.InferenceSession(str(path), so, providers=["CPUExecutionProvider"])
         self.input = self.sess.get_inputs()[0].name
 
@@ -432,7 +484,7 @@ def page_skew(boxes: list[np.ndarray]) -> float:
 
 
 def reading_order(boxes: list[np.ndarray], angle: float | None = None, columns: bool = True,
-                  texts: list[str] | None = None) -> list[list[int]]:
+                  texts: list[str] | None = None, rules: dict | None = None) -> list[list[int]]:
     """Rows top to bottom, each left to right, in DESKEWED coordinates, block by
     block: text columns are read one after the other (see _blocks).
 
@@ -449,7 +501,17 @@ def reading_order(boxes: list[np.ndarray], angle: float | None = None, columns: 
     ext = [(float(p[:, 0].min()), float(p[:, 0].max()), float(p[:, 1].min()), float(p[:, 1].max())) for p in pts]
     hmed = line_height(boxes)
     idx = list(range(len(boxes)))
-    blocks = _blocks(idx, ext, hmed, texts) if columns else [idx]
+    blocks = _blocks(idx, ext, hmed, texts, rules=rules) if columns else [idx]
+    if columns and a:
+        # The skew is the median angle of the line boxes' top edges, which can be
+        # 1-2 degrees off on a straight page; rotated by it, a gutter about one em
+        # wide is covered by the column's line ends, and the page is read across.
+        # The unrotated frame is used for the blocks when it finds more of them
+        # (same tests); rows are still grouped in the rotated frame.
+        flat = [(float(b[:, 0].min()), float(b[:, 0].max()), float(b[:, 1].min()), float(b[:, 1].max())) for b in boxes]
+        alt = _blocks(idx, flat, hmed, texts, rules=rules)
+        if len(alt) > len(blocks):
+            blocks = alt
     cy = [(e[2] + e[3]) / 2 for e in ext]
     rx = [(e[0] + e[1]) / 2 for e in ext]
     hs = [float(max(np.linalg.norm(b[0] - b[3]), 1.0)) for b in boxes]
@@ -493,7 +555,7 @@ def _gaps(iv: list[tuple[float, float]], min_gap: float) -> list[tuple[float, fl
 
 
 def _blocks(idx: list[int], ext: list[tuple], hmed: float, texts: list[str] | None = None,
-            depth: int = 0) -> list[list[int]]:
+            depth: int = 0, rules: dict | None = None) -> list[list[int]]:
     """Recursive XY-cut into reading-order blocks.
 
     A vertical cut (a gutter no line crosses) is taken first, but only between
@@ -516,18 +578,90 @@ def _blocks(idx: list[int], ext: list[tuple], hmed: float, texts: list[str] | No
         right = [i for i in idx if ext[i][0] >= g1]
         lcol, rcol = _next_to(left, ext, hmed, True), _next_to(right, ext, hmed, False)
         if (_prose(lcol, ext, hmed, texts) and _prose(rcol, ext, hmed, texts)
-                and not _numbered_across(lcol, rcol, ext, hmed, texts)):
+                and not _numbered_across(lcol, rcol, ext, hmed, texts)
+                and not _list_pair(lcol, rcol, ext, hmed, texts, rules)):
             cuts.append((g1 - g0, left, right))
     if cuts:
         _, left, right = max(cuts, key=lambda c: c[0])
-        return _blocks(left, ext, hmed, texts, depth + 1) + _blocks(right, ext, hmed, texts, depth + 1)
+        return _blocks(left, ext, hmed, texts, depth + 1, rules) + _blocks(right, ext, hmed, texts, depth + 1, rules)
     hg = _gaps([(ext[i][2], ext[i][3]) for i in idx], 0.8 * hmed)
     if not hg:
-        return [idx]
+        return _banded_columns(idx, ext, hmed, texts, depth, rules) or [idx]
     g0, g1 = max(hg, key=lambda g: g[1] - g[0])
     top = [i for i in idx if ext[i][3] <= g0]
     bottom = [i for i in idx if ext[i][2] >= g1]
-    return _blocks(top, ext, hmed, texts, depth + 1) + _blocks(bottom, ext, hmed, texts, depth + 1)
+    return _blocks(top, ext, hmed, texts, depth + 1, rules) + _blocks(bottom, ext, hmed, texts, depth + 1, rules)
+
+
+def _banded_columns(idx: list[int], ext: list[tuple], hmed: float, texts: list[str] | None,
+                    depth: int, rules: dict | None = None) -> list[list[int]] | None:
+    """Prose columns that a few full-width lines cross: a title or a heading
+    over both columns, a footer, a caption between two column sections. The
+    plain cut finds no gutter (those lines cross it) and often no horizontal
+    gap either (a title set close to the text), so the page was read straight
+    across both columns. Tried only where no horizontal gap splits the block
+    (the horizontal cut comes first, as before). Lines at least 0.55 of the
+    block's width, at most 15 % of its lines, are set aside. In the rest a gutter is an x band in the middle
+    70 % of the block, at least 0.4 line heights wide, that at most 3 % of the
+    lines cross (a narrow CSS column gap, or a line the detector ran across it).
+    If it lies between two prose columns (the same test as the plain cut), the
+    wide lines and the lines crossing the whole gutter cut the page into bands,
+    and each band is read left of the gutter, then right of it, before the
+    crossing line under it (a line that only touches the gutter goes to the
+    side of its centre).
+    Single-column pages (mostly wide lines, no gutter) and tables (no prose
+    column) are not touched."""
+    x0, x1 = min(ext[i][0] for i in idx), max(ext[i][1] for i in idx)
+    wide = [i for i in idx if ext[i][1] - ext[i][0] >= 0.55 * (x1 - x0)]
+    if len(wide) > 0.15 * len(idx):
+        return None
+    rest = [i for i in idx if i not in set(wide)]
+    if len(rest) < 24:
+        return None
+    lo, n = int(x0 + 0.15 * (x1 - x0)), int(0.7 * (x1 - x0)) + 1
+    cover = np.zeros(n, np.int32)
+    for i in rest:
+        a, b = max(0, int(ext[i][0]) - lo), min(n, int(math.ceil(ext[i][1])) - lo)
+        if b > a:
+            cover[a:b] += 1
+    free = cover <= max(1, int(0.03 * len(rest)))
+    runs, s = [], None
+    for x, f in enumerate(list(free) + [False]):
+        if f and s is None:
+            s = x
+        elif not f and s is not None:
+            if x - s >= 0.4 * hmed:
+                runs.append((lo + s, lo + x))
+            s = None
+    best = None
+    for k, (g0, g1) in enumerate(runs):
+        left = [i for i in rest if ext[i][1] <= g0]
+        right = [i for i in rest if ext[i][0] >= g1]
+        # the column on each side ends at the neighbouring gutter (three columns: two gutters)
+        lcol = [i for i in left if k == 0 or ext[i][0] >= runs[k - 1][1]]
+        rcol = [i for i in right if k == len(runs) - 1 or ext[i][1] <= runs[k + 1][0]]
+        if (_prose(lcol, ext, hmed, texts) and _prose(rcol, ext, hmed, texts)
+                and not _numbered_across(lcol, rcol, ext, hmed, texts) and not _list_pair(lcol, rcol, ext, hmed, texts, rules)
+                and (best is None or g1 - g0 > best[0])):
+            best = (g1 - g0, g0, g1)
+    if best is None:
+        return None
+    _, g0, g1 = best
+    mid = [i for i in rest if ext[i][0] < g0 and ext[i][1] > g1]  # narrower lines that still cross the whole gutter
+    seps = sorted(wide + mid, key=lambda i: (ext[i][2] + ext[i][3]) / 2)
+    cy = {i: (ext[i][2] + ext[i][3]) / 2 for i in idx}
+    cx = {i: (ext[i][0] + ext[i][1]) / 2 for i in idx}  # a line that only touches the gutter goes by its centre
+    out: list[list[int]] = []
+    for b in range(len(seps) + 1):
+        lo = cy[seps[b - 1]] if b else -math.inf
+        hi = cy[seps[b]] if b < len(seps) else math.inf
+        band = [i for i in rest if i not in set(mid) and lo < cy[i] <= hi]
+        for side in ([i for i in band if cx[i] < (g0 + g1) / 2], [i for i in band if cx[i] >= (g0 + g1) / 2]):
+            if side:
+                out += _blocks(side, ext, hmed, texts, depth + 1, rules)
+        if b < len(seps):
+            out.append([seps[b]])
+    return out
 
 
 def _next_to(side: list[int], ext: list[tuple], hmed: float, gutter_on_right: bool) -> list[int]:
@@ -578,18 +712,87 @@ def _numbered_across(lcol: list[int], rcol: list[int], ext: list[tuple], hmed: f
     return pairs >= 0.5 * min(len(lcol), len(rcol))
 
 
+_DIGIT_RUN = re.compile(r"[0-9\u0E50-\u0E59]+")
+
+
+def _start_rep(lines: list[str]) -> float:
+    """Share of lines whose first 3 characters (a digit run counted as one) are one of the 2 most common starts."""
+    st = [_DIGIT_RUN.sub("D", x.strip())[:3] for x in lines if x.strip()]
+    if not st:
+        return 0.0
+    counts: dict[str, int] = {}
+    for x in st:
+        counts[x] = counts.get(x, 0) + 1
+    return sum(sorted(counts.values(), reverse=True)[:2]) / len(st)
+
+
+def _list_pair(lcol: list[int], rcol: list[int], ext: list[tuple], hmed: float, texts: list[str] | None,
+               rules: dict | None) -> bool:
+    """Two sides of a gap that are the columns of a list, read row by row: a name and a position, a label and its
+    value, two names a row. 2.1 read a Royal Gazette committee list ("๑. นาย… | กรรมการและ…") as two text columns,
+    every name before every position. A list pairs its lines one to one across the gap (`list_facing`: the share
+    of the shorter side's lines with a line of the other side on the same row) and both sides are narrow
+    (median line width under `list_max_w` line heights); prose columns of a two-column page are twice as wide.
+    `list_enum`: a left side that much numbered ("๑.", "2.") facing at least 0.6 is a list at any width."""
+    if not rules or not (rules.get("list_rep") or rules.get("list_facing") or rules.get("list_enum")) or not lcol or not rcol:
+        return False
+    if rules.get("list_rep") and texts is not None:
+        # The columns of a list start their lines alike ("นาย…/นาง…", "กรรมการ…", ": …", "๑./๒./…"); prose
+        # columns start them on any word. Share of a side's lines whose first 3 characters (digits as one class)
+        # are one of its 2 most common starts: name grids 0.84-1.0, the 2.1 Gazette list 1.0 / 0.81, a budget
+        # list 0.93 / 0.93; prose columns of the dev pages at most 0.35.
+        if float(np.mean([_start_rep([texts[i] for i in col]) for col in (lcol, rcol)])) >= rules["list_rep"]:
+            return True
+    small, other = (lcol, rcol) if len(lcol) <= len(rcol) else (rcol, lcol)
+    cy = [(ext[j][2] + ext[j][3]) / 2 for j in other]
+    face = float(np.mean([any(abs((ext[i][2] + ext[i][3]) / 2 - c) <= 0.5 * hmed for c in cy) for i in small]))
+    wide = max(float(np.median([ext[i][1] - ext[i][0] for i in col])) for col in (lcol, rcol)) / hmed
+    if rules.get("list_facing") and face >= rules["list_facing"] and wide < rules.get("list_max_w", 10.0):
+        return True
+    if rules.get("list_enum") and texts is not None and face >= 0.6:
+        return float(np.mean([_enum(texts[i]) is not None for i in lcol])) >= rules["list_enum"]
+    return False
+
+
 def _prose(col: list[int], ext: list[tuple], hmed: float, texts: list[str] | None = None) -> bool:
     if len(col) < 12:
         return False
     widths = [ext[i][1] - ext[i][0] for i in col]
     span = max(ext[i][1] for i in col) - min(ext[i][0] for i in col)
-    if float(np.median(widths)) < 7 * hmed or float(np.mean([w >= 0.75 * span for w in widths])) < 0.5:
+    if float(np.median(widths)) < 7 * hmed or float(np.mean([w >= 0.75 * span for w in widths])) < 0.35:
         return False
     if texts is not None:
         chars = [c for i in col for c in texts[i] if not c.isspace()]
         if chars and sum(c in _DIGITS for c in chars) > 0.3 * len(chars):
             return False
+        # prose never repeats a line; a list's value column does ("เป็นตุลาการ…" on every row)
+        if len({texts[i].strip() for i in col}) < 0.8 * len(col):
+            return False
     return True
+
+
+_MARK_RE = re.compile(r"[ัิ-ฺ็-๎\s]")
+
+
+def _mixed(text: str) -> int:
+    """Latin letters inside words that also hold Thai letters: "lละพลNSะทU" -> 4. A loopless Thai face read as Latin
+    look-alikes; a Thai word next to an English one (separated by a space) does not count."""
+    n = 0
+    for tok in text.split():
+        if any("\u0e01" <= ch <= "\u0e4e" for ch in tok):
+            n += sum(1 for ch in tok if ("a" <= ch <= "z") or ("A" <= ch <= "Z"))
+    return n
+
+
+def _digits(text: str) -> str:
+    """The Arabic and Thai digits of a reading, in order."""
+    return "".join(ch for ch in text if ch.isdigit())
+
+
+def _base(text: str) -> str:
+    """A reading without its above/below marks (sara am as its aa) and spaces:
+    what a floating-mark re-read must leave unchanged."""
+    return _MARK_RE.sub("", text.replace("ำ", "า"))
 
 
 def _is_thai(ch: str) -> bool:
@@ -653,11 +856,35 @@ class LineOCR:
             except ImportError:
                 backend = "onnxruntime"
         self.backend = backend
-        self.det = _Model(d / "det.onnx", threads, backend, rt["precision"])
-        self.rec = _Model(d / "rec.onnx", threads, backend, rt["precision"])
+        lm = bool(rt.get("ort_low_memory", False))
+        self.det = _Model(d / "det.onnx", threads, backend, rt["precision"], low_memory=lm)
+        self.rec = _Model(d / "rec.onnx", threads, backend, rt["precision"], low_memory=lm)
+        f2 = self.cfg["rec2"]["file"]
+        self.rec2 = _Model(d / f2, threads, backend, rt["precision"], low_memory=lm) if f2 and (d / f2).exists() else None
+        self.dewarper = None
+        if self.cfg.get("pre", {}).get("dewarp"):
+            from .dewarp import Dewarper
+
+            dd = Path(self.cfg["pre"]["dewarp_dir"])
+            self.dewarper = Dewarper(dd if dd.is_absolute() else d / dd, backend=self.cfg["pre"]["dewarp_backend"],
+                                     threads=max(1, threads))
 
     # -- detection -----------------------------------------------------------
     def detect(self, img: np.ndarray) -> list[np.ndarray]:
+        c = self.cfg["det"]
+        boxes = self._detect_at(img, c["limit"])
+        if c.get("rescan_below") and c["limit"] and boxes:
+            H0, W0 = img.shape[:2]
+            pad = max(8, int(0.05 * min(H0, W0)))
+            s = min(c["limit"] / max(H0 + 2 * pad, W0 + 2 * pad), 4.0)
+            hdet = line_height(boxes) * s  # the page's line height at the detector's working size
+            if s < 1.0 and hdet < c["rescan_below"]:
+                limit = min(float(c["rescan_max"]), c["limit"] * c["rescan_target"] / max(hdet, 1.0))
+                if limit > c["limit"] * 1.15:
+                    boxes = self._detect_at(img, limit)
+        return boxes
+
+    def _detect_at(self, img: np.ndarray, limit: float) -> list[np.ndarray]:
         c = self.cfg["det"]
         H0, W0 = img.shape[:2]
         # A white border so text touching the edge still gets a closed region,
@@ -667,7 +894,7 @@ class LineOCR:
         pad = max(8, int(0.05 * min(H0, W0)))
         img = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=(255, 255, 255))
         h, w = img.shape[:2]
-        s = min(c["limit"] / max(h, w), 4.0) if c["limit"] else 1.0
+        s = min(limit / max(h, w), 4.0) if limit else 1.0
         rh, rw = max(32, int(round(h * s / 32)) * 32), max(32, int(round(w * s / 32)) * 32)
         x = cv2.resize(img, (rw, rh)).astype(np.float32) / 255.0
         x = ((x - DET_MEAN) / DET_STD).transpose(2, 0, 1)[None]
@@ -680,14 +907,25 @@ class LineOCR:
             box, side = _mini_box(cnt)
             if side < c["min_size"] or _box_score(prob, box) < c["box_thresh"]:
                 continue
+            core = side
             big = _unclip(box, c["unclip"])
             if big is None:
                 continue
             box, side = _mini_box(big.reshape(-1, 1, 2))
             if side < c["min_size"] + 2:
                 continue
+            grow = 0.0
+            if c["short_pad"] and np.linalg.norm(box[0] - box[1]) >= np.linalg.norm(box[0] - box[3]):
+                grow = max(0.0, c["short_pad"] * (1 + c["unclip"]) * core - side) / 2  # per side, detector pixels
             box[:, 0] = np.clip(box[:, 0] * sx - pad, 0, W0 - 1)
             box[:, 1] = np.clip(box[:, 1] * sy - pad, 0, H0 - 1)
+            if grow > 0:  # across the line: along the left edge's direction (top-left -> bottom-left)
+                v = box[3] - box[0]
+                v = v / max(float(np.linalg.norm(v)), 1e-6) * grow * sy
+                box[[0, 1]] -= v
+                box[[2, 3]] += v
+                box[:, 0] = np.clip(box[:, 0], 0, W0 - 1)
+                box[:, 1] = np.clip(box[:, 1], 0, H0 - 1)
             if c["v_pad"]:  # Thai marks above/below the core band: grow height only
                 hh = max(np.linalg.norm(box[0] - box[3]), 1.0) * c["v_pad"] / 2
                 box[[0, 1], 1] = np.clip(box[[0, 1], 1] - hh, 0, H0 - 1)
@@ -720,7 +958,7 @@ class LineOCR:
     def recognize(self, crops: list[np.ndarray]) -> list[tuple[str, float]]:
         return [(t, c) for t, c, _ in self.recognize_detail(crops)]
 
-    def recognize_detail(self, crops: list[np.ndarray]) -> list[tuple[str, float, list]]:
+    def recognize_detail(self, crops: list[np.ndarray], model: "_Model | None" = None) -> list[tuple[str, float, list]]:
         """(text, confidence, chars) per crop; chars are (char, x0, x1, prob)
         with x0..x1 the share of the crop's width the character was read from
         (the CTC frames of its run). Word boxes are cut from these."""
@@ -744,7 +982,7 @@ class LineOCR:
                 widths.append(rw)
                 im = cv2.resize(crops[i], (rw, H)).astype(np.float32) / 255.0
                 batch[n, :, :, :rw] = ((im - 0.5) / 0.5).transpose(2, 0, 1)
-            probs = self._run(self.rec, batch)
+            probs = self._run(model or self.rec, batch)
             for n, i in enumerate(idx):
                 out[i] = self._ctc_detail(probs[n], W / probs[n].shape[0], widths[n])
         return out
@@ -778,6 +1016,9 @@ class LineOCR:
     # -- page ----------------------------------------------------------------
     def read(self, image: Any) -> dict:
         img = self._load(image)
+        dewarp_info = None
+        if self.dewarper is not None:
+            img, dewarp_info = self.dewarper(img)
         shape = img.shape[:2]
         t0 = time.perf_counter()
         boxes = self.detect(img)
@@ -806,34 +1047,29 @@ class LineOCR:
             img = np.ascontiguousarray(img[::-1, ::-1])
             boxes, rotation = self.detect(img), 180
             page = self._page(img, boxes)
+        frag = _fragments(page["boxes"], page["rec"])
+        if self.cfg["marks"]["enabled"]:
+            frag |= self._attach_marks(img, page, frag)
         boxes = page["boxes"]
         back = np.linalg.inv(tf)
         t2 = time.perf_counter()
-        rc = self.cfg["rec"]
-        drop, min_chars, junk_below, junk_invalid = rc["drop_below"], rc["min_chars"], rc["junk_below"], rc["junk_invalid"]
-        lines, row_texts = [], []
-        frag = _fragments(boxes, page["rec"])
+        lines, row_texts, row_geom = [], [], []
         # What the filter threw away, and why: a hybrid caller decides from this
         # whether the page is one this model reads badly (handwriting, scene
         # text, stylised display type) rather than one with a stamp or a
         # signature on it. Fragments of marks are not counted.
         dropped = []
+        hmed = line_height(boxes) if boxes else 1.0
         for ri, r in enumerate(page["rows"]):
             parts = []
             for i in r:
                 text, conf = page["rec"][i]
                 text = fix_scripts(canonical(text))
-                reason = None
+                if self.cfg["join"].get("decimal_comma"):
+                    text = _DECIMAL_COMMA.sub(r"\1.\2", text)
                 if i in frag:
                     continue
-                if not text:
-                    reason = "empty"
-                elif conf < drop:
-                    reason = "low_confidence"
-                elif len(text.replace(" ", "")) < min_chars:
-                    reason = "too_short"
-                elif conf < junk_below and invalid_share(text) > junk_invalid:
-                    reason = "invalid_thai"
+                reason = self._drop_reason(text, conf, float(np.linalg.norm(boxes[i][0] - boxes[i][3])) / hmed)
                 box = _apply(back, boxes[i])
                 entry = {"text": text, "confidence": round(conf, 4), "row": ri,
                          "box": [[round(float(x), 1), round(float(y), 1)] for x, y in box]}
@@ -846,10 +1082,12 @@ class LineOCR:
                 lines.append(entry)
             if parts:
                 row_texts.append(" ".join(parts))
+                ys = [float(y) for j in r if j not in frag for y in np.asarray(boxes[j])[:, 1]]
+                row_geom.append((min(ys), max(ys)) if ys else None)
         straightened = skew if abs(skew) >= oc["deskew_above"] else 0.0
-        return {"text": self._join(row_texts), "lines": lines, "dropped": dropped,
+        return {"text": self._join(row_texts, row_geom, hmed), "lines": lines, "dropped": dropped,
                 "text_angle": round(page["angle"] + straightened, 2),
-                "rotation": rotation,
+                "rotation": rotation, "dewarp": dewarp_info,
                 "timing": {"det_ms": round((t1 - t0) * 1000, 1), "rec_ms": round((t2 - t1) * 1000, 1),
                            "n_lines": len(page["rec"])}}
 
@@ -885,9 +1123,160 @@ class LineOCR:
             final += g
             out += r
         angle = page_skew(final)
-        rows = reading_order(final, angle, texts=[x[0] for x in out])
+        rows = reading_order(final, angle, texts=[x[0] for x in out], rules=self.cfg["cols"])
         return {"rows": rows, "angle": angle, "rec": {i: (x[0], x[1]) for i, x in enumerate(out)},
                 "chars": {i: x[2] for i, x in enumerate(out)}, "boxes": final}
+
+    def _drop_reason(self, text: str, conf: float, hratio: float | None = None) -> str | None:
+        """Why the line filter drops a (canonical, script-fixed) reading, or None. hratio: the box's height over the
+        page's line height, for the digit exception (min_chars_digits_height)."""
+        rc = self.cfg["rec"]
+        if not text:
+            return "empty"
+        if conf < rc["drop_below"]:
+            return "low_confidence"
+        bare = text.replace(" ", "")
+        short = rc["min_chars"]
+        cls = _DIGITS | (_LATIN if rc.get("min_chars_latin") else set())
+        if rc.get("min_chars_digits") is not None and bare and all(ch in cls for ch in bare) and (
+                rc.get("min_chars_digits_height", 0.0) <= 0 or (hratio is not None and hratio >= rc["min_chars_digits_height"])):
+            short = rc["min_chars_digits"]  # a lone quantity in a table cell ("2") is not junk
+        if len(bare) < short:
+            return "too_short"
+        if conf < rc["junk_below"] and invalid_share(text) > rc["junk_invalid"]:
+            return "invalid_thai"
+        return None
+
+    def _attach_marks(self, img: np.ndarray, page: dict, frag: set[int]) -> set[int]:
+        """Floating Thai marks (old letterpress books, some display fonts): tone
+        marks and upper vowels sit so far above the consonants that the detector
+        boxes the line without them and finds the marks as boxes of their own,
+        which read as junk and are dropped (page 324 of a 1930s book: 128 of 159
+        tone marks lost; black-and-white conversion cannot bring them back).
+
+        Only boxes the line filter would drop anyway are candidates, so a box
+        that contributes text is never absorbed and a page without them is read
+        exactly as before. A candidate within `max_gap` line heights above (or
+        below) a kept line it overlaps along the line, no taller than
+        `max_height` of it, is absorbed into the nearest such line (a tie goes
+        to the line below: upper marks outnumber lower ones). That line's box
+        grows by the marks' reach plus `margin` and the line is read again; the
+        new reading replaces the old one if it still passes the line filter.
+        When at least `page_share` of a page's lines (and `page_min`) had marks
+        attached, the typeface floats its marks, so every other line grows by
+        the median reach too (as far as the room to its neighbour allows): a
+        line whose marks were not detected at all loses them otherwise.
+        A re-read is kept only if it changes no digit and, unless the page
+        floats its marks, no letter either: only marks (keep_base). Returns the
+        absorbed box indices (skipped like fragments) of lines read again."""
+        mc = self.cfg["marks"]
+        boxes, rec = page["boxes"], page["rec"]
+        n = len(boxes)
+        hmed = line_height(boxes) if boxes else 1.0
+        junk = [i in frag or self._drop_reason(fix_scripts(canonical(rec[i][0])), rec[i][1],
+                                               float(np.linalg.norm(boxes[i][0] - boxes[i][3])) / hmed) is not None
+                for i in range(n)]
+        if not any(junk) or all(junk):
+            return set()
+        hmed = line_height([boxes[i] for i in range(n) if not junk[i]])
+        frame = {}  # kept full-height line -> (origin, along, across, width, height)
+        for a in range(n):
+            if junk[a]:
+                continue
+            b = boxes[a].astype(np.float64)
+            wa, ha = float(np.linalg.norm(b[1] - b[0])), float(np.linalg.norm(b[3] - b[0]))
+            if wa >= 1 and ha >= 0.5 * hmed:
+                frame[a] = (b[0], (b[1] - b[0]) / wa, (b[3] - b[0]) / ha, wa, ha)
+        if not frame:
+            return set()
+
+        def proj(a: int, j: int) -> tuple[float, float, float, float]:
+            o, u, v, _, _ = frame[a]
+            p = boxes[j].astype(np.float64) - o
+            s, t = p @ u, p @ v
+            return float(s.min()), float(s.max()), float(t.min()), float(t.max())
+
+        reach = {a: [0.0, 0.0] for a in frame}  # [above, below], in pixels
+        owner = {}  # mark box -> the line it belongs to
+        for j in range(n):
+            if not junk[j]:
+                continue
+            best = None
+            for a, (_, _, _, wa, ha) in frame.items():
+                s0, s1, t0, t1 = proj(a, j)
+                if t1 - t0 > mc["max_height"] * ha or min(s1, wa) - max(s0, 0.0) < 0.5 * (s1 - s0):
+                    continue
+                if t1 <= 0.5 * ha:
+                    gap, side, ext = max(0.0, -t1), 0, -t0
+                elif t0 >= 0.5 * ha:
+                    gap, side, ext = max(0.0, t0 - ha), 1, t1 - ha
+                else:
+                    continue  # across the line's middle: part of the line, not a mark
+                if gap > mc["max_gap"] * ha or ext > mc["max_ext"] * ha:
+                    continue
+                if best is None or (gap, side) < best[0]:
+                    best = ((gap, side), a, side, ext)
+            if best:
+                _, a, side, ext = best
+                owner[j] = a
+                reach[a][side] = max(reach[a][side], ext)
+        if not owner:
+            return set()
+        floating = False  # the page's typeface floats its marks
+        for side in (0, 1):
+            lifted = [a for a in frame if reach[a][side] > 0]
+            if len(lifted) < max(mc["page_min"], mc["page_share"] * len(frame)):
+                continue
+            floating = True
+            typ = float(np.median([reach[a][side] / frame[a][4] for a in lifted]))
+            for a in frame:
+                if reach[a][side] > 0:
+                    continue
+                wa, ha = frame[a][3], frame[a][4]
+                room = typ * ha
+                for b in frame:  # stop short of the neighbouring line's core
+                    if b == a:
+                        continue
+                    s0, s1, t0, t1 = proj(a, b)
+                    if min(s1, wa) - max(s0, 0.0) <= 0:
+                        continue
+                    if side == 0 and t1 <= 0.5 * ha:
+                        room = min(room, max(0.0, -t1 * 0.9))
+                    elif side == 1 and t0 >= 0.5 * ha:
+                        room = min(room, max(0.0, (t0 - ha) * 0.9))
+                reach[a][side] = room
+        grown, new_boxes = [], []
+        H, W = img.shape[:2]
+        for a, (_, _, v, _, ha) in frame.items():
+            up, down = reach[a]
+            if up <= 0 and down <= 0:
+                continue
+            b = boxes[a].astype(np.float64).copy()
+            if up > 0:
+                b[[0, 1]] -= v * (up + mc["margin"] * ha)
+            if down > 0:
+                b[[2, 3]] += v * (down + mc["margin"] * ha)
+            b[:, 0], b[:, 1] = np.clip(b[:, 0], 0, W - 1), np.clip(b[:, 1], 0, H - 1)
+            grown.append(a)
+            new_boxes.append(b.astype(np.float32))
+        done = set()
+        for a, b, r in zip(grown, new_boxes, self._read_boxes(img, new_boxes) if new_boxes else []):
+            new = fix_scripts(canonical(r[0]))
+            if self._drop_reason(new, r[1]) is not None:
+                continue
+            # A speck of noise taken for a mark (a receipt) must not change the
+            # line: a tax ID's "0" became "ฉ". On a page whose typeface floats
+            # its marks, the marks also settle letters the old reading guessed
+            # wrong (กัน read as ก็น without its mai han-akat), so the letters
+            # may change there, but never a digit; anywhere else only marks may.
+            old = fix_scripts(canonical(rec[a][0]))
+            if mc["keep_base"] and (_digits(new) != _digits(old) if floating else _base(new) != _base(old)):
+                continue
+            boxes[a], rec[a], page["chars"][a] = b, (r[0], r[1]), r[2]
+            done.add(a)
+        # Marks count as absorbed only where their line was read again; elsewhere
+        # the page (and its dropped list, which the hybrid engine reads) is as before.
+        return {j for j, a in owner.items() if a in done}
 
     def _read_boxes(self, img: np.ndarray, boxes: list[np.ndarray]) -> list[tuple[str, float, list | None]]:
         """Recognise every box. A box taller than wide is either a vertical run
@@ -902,6 +1291,12 @@ class LineOCR:
             for alt in (res[len(raw) + j], res[len(raw) + len(tall) + j]):
                 if alt[1] > out[n][1]:
                     out[n] = (alt[0], alt[1], None)  # read turned: no word positions along the box
+        if self.rec2 is not None:
+            sus = [n for n, r in enumerate(out) if r[2] is not None and _mixed(r[0]) >= self.cfg["rec2"]["min_mixed"]]
+            if sus:
+                for n, alt in zip(sus, self.recognize_detail([raw[n] for n in sus], model=self.rec2)):
+                    if _mixed(alt[0]) < _mixed(out[n][0]):
+                        out[n] = alt
         return out
 
     def _sideways(self, img: np.ndarray, boxes: list[np.ndarray]) -> int:
@@ -934,8 +1329,17 @@ class LineOCR:
         flipped = self.recognize([np.ascontiguousarray(crop_line(img, boxes[i], turn=0)[::-1, ::-1]) for i in idx])
         return float(np.mean([c for _, c in flipped])) > up + oc["flip_margin"]
 
-    def _join(self, rows: list[str]) -> str:
-        if not self.cfg["join"]["thai_no_space"]:
+    def _join(self, rows: list[str], geom: list | None = None, hline: float = 1.0) -> str:
+        jc = self.cfg["join"]
+        if jc.get("paragraphs") and geom and len(geom) == len(rows) and not jc["thai_no_space"]:
+            out, prev = [], None
+            for r, g in zip(rows, geom):
+                if out and prev and g and (g[0] - prev[1] > jc["paragraph_gap"] * hline or g[1] < prev[0]):
+                    out.append("")
+                out.append(r)
+                prev = g or prev
+            return "\n".join(out)
+        if not jc["thai_no_space"]:
             return "\n".join(rows)
         # A Thai line wrap has no space at the break (word processors wrap
         # Thai between words without one), so Thai-Thai joins get nothing.

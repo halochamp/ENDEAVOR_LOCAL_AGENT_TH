@@ -464,7 +464,7 @@ def _pdf_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 # Settings -> OCR: the optional OpenThai engine's model files (scripts/install_openthai_ocr.py puts them here).
-OPENTHAI_OCR_DIR = os.getenv("V2_OPENTHAI_OCR_DIR", os.path.expanduser("~/Models/OpenThai2.0-OCR-Text"))
+OPENTHAI_OCR_DIR = os.getenv("V2_OPENTHAI_OCR_DIR", os.path.expanduser("~/Models/OpenThai2.1-OCR-Text"))
 PDF_TO_TEXT_PRIVATE_DIR = os.path.join(WORKSPACE, ".pdf_to_text")
 PDF_TO_TEXT_DB = os.path.join(PDF_TO_TEXT_PRIVATE_DIR, "pdf_to_text.sqlite3")
 PDF_TO_TEXT_OUTPUT_DIR = os.path.join(WORKSPACE, "pdf_to_md")

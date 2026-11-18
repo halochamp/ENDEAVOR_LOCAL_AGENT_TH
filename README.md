@@ -456,7 +456,7 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 | Web Cache | `V2_WEB_CACHE_MAX_ENTRIES`, `V2_WEB_CACHE_MAX_BYTES`, `V2_WEB_LIVE_CACHE_TTL_SECONDS` | จัดการ cache เนื้อหาเว็บ (ข้อมูลสด เช่น ราคา ใช้ TTL สั้น) |
 | Summarization | `V2_SUMMARY_MAX_CHARS`, `V2_SUMMARY_SKIP_LLM_BELOW` | ควบคุมการสรุปผลลัพธ์ก่อนเข้า context |
 | Settings ที่บันทึกไว้ | `V2_USER_SETTINGS_PATH` | ไฟล์ `user_settings.json` (Internet/Offline, OCR engine); ค่าเริ่มต้นอยู่ในโฟลเดอร์โปรเจกต์ และไม่ถูก commit |
-| OCR (OpenThai) | `V2_OPENTHAI_OCR_DIR` | โฟลเดอร์ไฟล์โมเดล OpenThai (ค่าเริ่มต้น `~/Models/OpenThai2.0-OCR-Text`) |
+| OCR (OpenThai) | `V2_OPENTHAI_OCR_DIR` | โฟลเดอร์ไฟล์โมเดล OpenThai (ค่าเริ่มต้น `~/Models/OpenThai2.1-OCR-Text`) |
 | PDF to MD | `V2_PDF_VISION_MAX_SIDE`, `V2_PDF_LLM_TIMEOUT`, `V2_PDF_OCR_DPI` | ขนาดภาพหน้าที่ส่งให้โมเดล, เวลารอต่อหน้า, ความละเอียด OCR |
 | Text to Speech | `V2_TTS_OMNIVOICE_PYTHON`, `V2_TTS_OMNIVOICE_DIR`, `V2_TTS_MAX_BYTES` | Python ของ env `omnivoice`, โฟลเดอร์ไฟล์โมเดล OmniVoice, ขนาดไฟล์สูงสุด |
 
@@ -472,7 +472,7 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 
 **OCR แบบ OpenThai 2.0** (Apache-2.0, ONNX, CPU, น้ำหนักรวม ~4 MB):
 ```bash
-python scripts/install_openthai_ocr.py     # ดาวน์โหลดไฟล์โมเดล + ตรวจ SHA-256 ลง ~/Models/OpenThai2.0-OCR-Text
+python scripts/install_openthai_ocr.py     # ดาวน์โหลดไฟล์โมเดล + ตรวจ SHA-256 ลง ~/Models/OpenThai2.1-OCR-Text
 pip install pyclipper                       # แพ็กเกจเสริมที่ runtime ต้องใช้ (numpy / opencv / onnxruntime มีอยู่แล้ว)
 ```
 จากนั้นเลือก OpenThai ที่ Settings → OCR. ไฟล์ runtime ที่ vendor ไว้ใน `tools/_openthai_ocr/` เป็นสำเนา byte-for-byte ของต้นฉบับ (ดู `NOTICE` และ SHA-256 ที่ pin ไว้ในเทสต์). ที่เป็นข้อจำกัดที่วัดไว้: อ่านเอกสารไทยที่สแกนสะอาดได้เร็วและตัวเลขยาว (เลขบัตร/เลขที่) ผิดน้อยกว่า Apple Vision แต่ภาษาอังกฤษ/ลายมือ/ภาพถ่ายยังต้องใช้ Apple Vision เป็นหลัก
