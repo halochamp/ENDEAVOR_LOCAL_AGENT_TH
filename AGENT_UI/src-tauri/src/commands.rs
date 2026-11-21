@@ -12,6 +12,9 @@ use tauri::{AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Sta
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 
+/// Reading speed when the page sends none: the agent's `text_to_speech.DEFAULT_SPEED` (owner 2026-11-21).
+const DEFAULT_TTS_SPEED: f64 = 1.15;
+
 type AgentState<'a> = State<'a, Arc<Agent>>;
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
@@ -140,7 +143,7 @@ fn clean_voice(v: &str) -> String {
 
 #[tauri::command]
 pub async fn tts_start(app: AppHandle, agent: AgentState<'_>, voice: String, speed: f64) -> Result<Value, ()> {
-    let speed = if speed.is_finite() && speed != 0.0 { speed.clamp(0.8, 1.2) } else { 1.0 };
+    let speed = if speed.is_finite() && speed != 0.0 { speed.clamp(0.8, 1.2) } else { DEFAULT_TTS_SPEED };
     let Some(path) = pick_one(&app, "เลือกไฟล์ข้อความเพื่อให้อ่านออกเสียง", ("Text / Markdown", &["txt", "md", "markdown"])).await else {
         return Ok(json!({"ok": false, "cancelled": true}));
     };

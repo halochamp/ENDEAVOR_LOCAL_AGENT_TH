@@ -36,7 +36,7 @@
     translateResume: function (jobId) { return invoke('agent_job', { route: '/translate/resume', jobId: id(jobId), post: true }) },
     translateCancel: function (jobId) { return invoke('agent_job', { route: '/translate/cancel', jobId: id(jobId), post: true }) },
     ttsVoices: function () { return invoke('agent_get', { route: '/tts/voices' }) },
-    ttsStart: function (voice, speed) { return invoke('tts_start', { voice: String(voice || ''), speed: Number(speed || 1) }) },
+    ttsStart: function (voice, speed) { return invoke('tts_start', { voice: String(voice || ''), speed: Number(speed || 1.15) }) },
     ttsStatus: function (jobId) { return invoke('agent_job', { route: '/tts/status', jobId: id(jobId), post: false }) },
     ttsPause: function (jobId) { return invoke('agent_job', { route: '/tts/pause', jobId: id(jobId), post: true }) },
     ttsResume: function (jobId) { return invoke('agent_job', { route: '/tts/resume', jobId: id(jobId), post: true }) },

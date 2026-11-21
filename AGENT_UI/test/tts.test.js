@@ -51,7 +51,8 @@ test('the sidebar has a TTS button and a panel with the controls, voice picker a
     'tts-status', 'tts-result', 'tts-open-output-btn', 'tts-refresh-btn']) {
     assert.ok(html.includes(`id="${id}"`), `index.html must have #${id}`)
   }
-  assert.match(html, /id="tts-speed"[^>]*min="0.8"[^>]*max="1.2"/)
+  assert.match(html, /id="tts-speed"[^>]*min="0.8"[^>]*max="1.2"[^>]*value="1\.15"/)   // owner 2026-11-21: 1.15 is the default
+  assert.match(html, /id="tts-speed-label">1\.15×</)
   assert.match(html, /CC-BY-NC/)
   assert.match(renderer, /on\('#btn-tts', \(\) => togglePanel\('tts'\)\)/)
   assert.match(renderer, /if \(name === 'tts'\) refreshTtsVoices\(\)/)

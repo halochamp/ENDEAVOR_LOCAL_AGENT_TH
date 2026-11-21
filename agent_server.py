@@ -2731,7 +2731,7 @@ async def tts_start(request: Request):
             return JSONResponse({"ok": False, "error": f"ไฟล์ใหญ่เกิน {_config.TTS_MAX_BYTES // (1024 * 1024)}MB"}, status_code=413)
     voice = request.headers.get("x-voice", "").strip()
     try:
-        speed = float(request.headers.get("x-speed", "1.0"))
+        speed = float(request.headers.get("x-speed", text_to_speech.DEFAULT_SPEED))
     except ValueError:
         return JSONResponse({"ok": False, "error": "ความเร็วต้องเป็นตัวเลข 0.8–1.2"}, status_code=400)
     engine = text_to_speech.engine_status()

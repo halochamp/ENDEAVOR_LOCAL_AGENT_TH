@@ -54,6 +54,7 @@ _SILENCE_PEAK = 2000                  # int16 peak below this = the model produc
 _SAMPLE_RATE = 24000
 _PAUSE_POLL_SECONDS = 0.25
 SPEED_RANGE = (0.8, 1.2)
+DEFAULT_SPEED = 1.15   # owner 2026-11-21 (1.1 a little slow, 1.2 a little fast); see OMNIVOICE_TEXT_PREP.md
 
 
 class TtsCancelled(RuntimeError):
@@ -63,10 +64,10 @@ class TtsCancelled(RuntimeError):
 @dataclass(frozen=True)
 class Options:
     voice: str = ""
-    speed: float = 1.0
+    speed: float = DEFAULT_SPEED
 
     def normalised(self) -> "Options":
-        speed = min(SPEED_RANGE[1], max(SPEED_RANGE[0], float(self.speed or 1.0)))
+        speed = min(SPEED_RANGE[1], max(SPEED_RANGE[0], float(self.speed or DEFAULT_SPEED)))
         voice = self.voice if _VOICE_ID_RE.match(str(self.voice or "")) else ""
         return Options(voice=voice, speed=round(speed, 2))
 
@@ -88,8 +89,21 @@ def engine_status() -> dict:
     return {"ready": True, "reason": ""}
 
 
+DEFAULT_VOICE = "default"
+BUILTIN_VOICES_DIR = Path(__file__).resolve().parent / "voices_builtin"   # what the repository ships (tracked)
+
+
 def voices_root() -> Path:
     return Path(config.TTS_VOICES_DIR)
+
+
+def _voice_folder(voice_id: str) -> Path:
+    """The folder of a voice.  The shipped "default" (เสียงมาตรฐาน (VOX)) is used unless the owner put a valid `default/` of their
+    own in the machine-local voices folder, which then takes its place."""
+    own = voices_root() / voice_id
+    if voice_id == DEFAULT_VOICE and not _folder_reference(own):
+        return BUILTIN_VOICES_DIR / voice_id
+    return own
 
 
 def validate_reference(wav_path: str | Path, text: str) -> str | None:
@@ -108,11 +122,7 @@ def validate_reference(wav_path: str | Path, text: str) -> str | None:
     return None
 
 
-def resolve_voice(voice_id: str) -> dict | None:
-    """{"ref_wav", "ref_text"} for a valid voice folder, else None."""
-    if not _VOICE_ID_RE.match(voice_id or ""):
-        return None
-    folder = voices_root() / voice_id
+def _folder_reference(folder: Path) -> dict | None:
     wav_path, txt_path = folder / "ref_voice.wav", folder / "ref_voice.txt"
     try:
         text = txt_path.read_text(encoding="utf-8").strip()
@@ -123,21 +133,36 @@ def resolve_voice(voice_id: str) -> dict | None:
     return {"ref_wav": str(wav_path), "ref_text": text}
 
 
+def resolve_voice(voice_id: str) -> dict | None:
+    """{"ref_wav", "ref_text"} for a valid voice folder, else None."""
+    if not _VOICE_ID_RE.match(voice_id or ""):
+        return None
+    return _folder_reference(_voice_folder(voice_id))
+
+
 def list_voices() -> list[dict]:
-    """Every valid voice folder (folder name = id), with the label from voice.json when it has one."""
+    """The shipped default voice first (unless the owner replaced it), then every valid voice folder (folder name = id), with the
+    label from voice.json when it has one."""
     rows: list[dict] = []
+
+    def add(voice_id: str, folder: Path) -> None:
+        try:
+            meta = json.loads((folder / "voice.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        rows.append({"id": voice_id, "label": str(meta.get("label") or voice_id), "note": str(meta.get("license") or ""),
+                     "builtin": folder.parent == BUILTIN_VOICES_DIR})
+
+    if resolve_voice(DEFAULT_VOICE) is not None:
+        add(DEFAULT_VOICE, _voice_folder(DEFAULT_VOICE))
     try:
         folders = sorted(d for d in voices_root().iterdir() if d.is_dir() and _VOICE_ID_RE.match(d.name))
     except OSError:
         return rows
     for folder in folders:
-        if resolve_voice(folder.name) is None:
+        if folder.name == DEFAULT_VOICE or resolve_voice(folder.name) is None:
             continue
-        try:
-            meta = json.loads((folder / "voice.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            meta = {}
-        rows.append({"id": folder.name, "label": str(meta.get("label") or folder.name), "note": str(meta.get("license") or "")})
+        add(folder.name, folder)
     return rows
 
 

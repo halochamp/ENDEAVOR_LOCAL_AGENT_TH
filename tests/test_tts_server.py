@@ -54,6 +54,7 @@ class TtsRouteTests(unittest.TestCase):
             mock.patch.object(config, "TTS_PRIVATE_DIR", str(self.root / "private")),
             mock.patch.object(config, "TTS_OUTPUT_DIR", str(self.root / "out")),
             mock.patch.object(config, "TTS_VOICES_DIR", str(self.root / "out" / "voices")),
+            mock.patch.object(tts, "BUILTIN_VOICES_DIR", self.root / "no-builtin-voices"),
             mock.patch.object(config, "TTS_OMNIVOICE_DIR", str(model)),
             mock.patch.object(config, "TTS_OMNIVOICE_PYTHON", sys.executable),
             mock.patch.object(tts, "worker_path", lambda: FAKE_WORKER),
@@ -113,6 +114,15 @@ class TtsRouteTests(unittest.TestCase):
         outputs = self.client.get("/tts/voices").json()["outputs"]
         self.assertEqual(outputs[0]["name"], "story.m4a")
         self.assertEqual(list((self.root / "private" / "uploads").glob("th-tts-*")), [])   # the staged upload is removed
+
+    def test_a_start_without_a_speed_header_reads_at_the_default_speed(self) -> None:
+        response = self.client.post("/tts/start", content="ย่อหน้าแรก".encode("utf-8"),
+                                    headers={"x-file-name": "story.txt", "x-voice": "anna", "content-type": "text/plain"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.wait_status({"done", "error"})["status"], "done")
+        synths = [r for r in (json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()) if r.get("cmd") == "synth"]
+        self.assertTrue(synths, "the fake worker saw no synth request")
+        self.assertEqual({r["speed"] for r in synths}, {1.15})
 
     def test_bad_requests_are_refused_with_a_reason(self) -> None:
         self.assertEqual(self.start(name="notes.pdf").status_code, 400)

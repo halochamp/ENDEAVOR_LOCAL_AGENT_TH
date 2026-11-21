@@ -574,7 +574,7 @@ async function startTts() {
     return
   }
   const voice = (document.getElementById('tts-voice') || {}).value || ''
-  const speed = Number((document.getElementById('tts-speed') || {}).value || 1)
+  const speed = Number((document.getElementById('tts-speed') || {}).value || 1.15)
   if (!voice) {
     renderTtsState(null, 'ยังไม่มีเสียงให้เลือก — ดูวิธีเพิ่มเสียงในข้อความใต้ช่องเสียง')
     return
@@ -623,7 +623,7 @@ function openTtsOutput() {
 function updateTtsSpeedLabel() {
   const slider = document.getElementById('tts-speed')
   const label = document.getElementById('tts-speed-label')
-  if (slider && label) label.textContent = `${Number(slider.value || 1).toFixed(2)}×`
+  if (slider && label) label.textContent = `${Number(slider.value || 1.15).toFixed(2)}×`
 }
 // ── end Text to Speech ─────────────────────────────────────────────────────────
 

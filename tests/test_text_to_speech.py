@@ -48,6 +48,7 @@ class TtsBase(unittest.TestCase):
             mock.patch.object(config, "TTS_PRIVATE_DIR", str(self.root / "private")),
             mock.patch.object(config, "TTS_OUTPUT_DIR", str(self.root / "out")),
             mock.patch.object(config, "TTS_VOICES_DIR", str(self.root / "out" / "voices")),
+            mock.patch.object(tts, "BUILTIN_VOICES_DIR", self.root / "no-builtin-voices"),   # the shipped default is tested on its own below
             mock.patch.object(config, "TTS_OMNIVOICE_DIR", str(model)),
             mock.patch.object(config, "TTS_OMNIVOICE_PYTHON", sys.executable),
             mock.patch.object(tts, "worker_path", lambda: FAKE_WORKER),
@@ -78,6 +79,9 @@ class TtsBase(unittest.TestCase):
 
 class PureHelperTests(unittest.TestCase):
     def test_options_are_clamped_and_voice_ids_validated(self) -> None:
+        self.assertEqual((tts.DEFAULT_SPEED, tts.Options().speed), (1.15, 1.15))      # owner 2026-11-21: 1.1 a little slow, 1.2 a little fast
+        self.assertEqual(tts.Options(voice="anna", speed=0).normalised().speed, 1.15)  # a missing/zero speed means the default
+        self.assertEqual(tts.Options(voice="anna", speed=1.0).normalised().speed, 1.0)  # a chosen 1.0 is kept
         self.assertEqual(tts.Options(voice="anna", speed=9).normalised(), tts.Options(voice="anna", speed=1.2))
         self.assertEqual(tts.Options(voice="../etc", speed=0.1).normalised(), tts.Options(voice="", speed=0.8))
 
@@ -106,6 +110,43 @@ class PureHelperTests(unittest.TestCase):
             handle.write("สวัสดี".encode("cp874"))
         self.addCleanup(os.unlink, handle.name)
         self.assertEqual(tts.read_source_text(Path(handle.name)), "สวัสดี")
+
+
+class ShippedDefaultVoiceTests(TtsBase):
+    """เสียงมาตรฐาน (VOX): the reference clip the repository ships in voices_builtin/default (owner 2026-11-21)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        shipped = Path(tts.__file__).resolve().parent / "voices_builtin"
+        patcher = mock.patch.object(tts, "BUILTIN_VOICES_DIR", shipped)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_shipped_clip_is_a_valid_reference_with_its_exact_words(self) -> None:
+        voice = tts.resolve_voice("default")
+        self.assertIsNotNone(voice)
+        self.assertEqual(voice["ref_text"], "วันนี้เป็นวันอังคาร แมวสีน้ำตาลและหมาสีขาวน่ารักมาก")
+        self.assertIsNone(tts.validate_reference(voice["ref_wav"], voice["ref_text"]))
+        self.assertTrue(Path(voice["ref_wav"]).is_relative_to(tts.BUILTIN_VOICES_DIR))
+
+    def test_the_default_voice_is_listed_first_with_its_label_before_the_owners_voices(self) -> None:
+        rows = tts.list_voices()
+        self.assertEqual([row["id"] for row in rows], ["default", "anna"])   # TtsBase installs "anna"
+        self.assertEqual(rows[0]["label"], "เสียงมาตรฐาน (VOX)")
+        self.assertTrue(rows[0]["builtin"])
+        self.assertFalse(rows[1]["builtin"])
+        self.install_voice("bob")
+        self.assertEqual([row["id"] for row in tts.list_voices()], ["default", "anna", "bob"])
+
+    def test_a_default_folder_of_the_owner_takes_the_place_of_the_shipped_one(self) -> None:
+        self.install_voice("default", label="My own")
+        rows = tts.list_voices()
+        self.assertEqual([(row["id"], row["label"], row["builtin"]) for row in rows], [("default", "My own", False), ("anna", "anna", False)])
+        self.assertTrue(tts.resolve_voice("default")["ref_wav"].startswith(str(self.root / "out" / "voices")))
+
+    def test_a_broken_default_folder_of_the_owner_falls_back_to_the_shipped_one(self) -> None:
+        self.install_voice("default", text="")
+        self.assertTrue(Path(tts.resolve_voice("default")["ref_wav"]).is_relative_to(tts.BUILTIN_VOICES_DIR))
 
 
 class VoiceTests(TtsBase):
@@ -165,7 +206,7 @@ class JobTests(TtsBase):
         self.assertNotIn("1,420", synths[0]["text"])
         self.assertEqual(synths[1]["language"], "English")
         self.assertIn("1,420", synths[1]["text"])
-        self.assertEqual((synths[0]["nfe"], synths[0]["cfg"], synths[0]["speed"]), (32, 2.0, 1.0))
+        self.assertEqual((synths[0]["nfe"], synths[0]["cfg"], synths[0]["speed"]), (32, 2.0, 1.15))
 
     def test_markdown_is_cleaned_and_code_and_links_are_reported(self) -> None:
         text = "# หัวเรื่อง\n\nอ่านต่อที่ [ลิงก์](https://example.com) นะ\n\n```\nprint(1)\n```\n"
