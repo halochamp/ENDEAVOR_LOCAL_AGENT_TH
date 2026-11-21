@@ -2,8 +2,9 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { rust, bridge, rustFn } = require('./shell_sources')
 
-const { PIN_MAX, mergePinned, withoutPinned } = require('../lib/pinned_files')
+const { PIN_MAX, mergePinned, withoutPinned } = require('../ui/lib/pinned_files')
 
 test('Pin accepts 1-10 files, rejects 11th, and Pin wins over attachment', () => {
   const ten = Array.from({ length: PIN_MAX }, (_, i) => `/workspace/pin-${i + 1}.txt`)
@@ -13,13 +14,13 @@ test('Pin accepts 1-10 files, rejects 11th, and Pin wins over attachment', () =>
   assert.deepEqual(withoutPinned(['/workspace/pin-1.txt', '/workspace/other.txt'], ten), ['/workspace/other.txt'])
 })
 
-test('Electron wiring keeps Pin persistent on normal queries and telemetry below composer', () => {
-  const root = path.join(__dirname, '..')
+test('Desktop wiring keeps Pin persistent on normal queries and telemetry below composer', () => {
+  const root = path.join(__dirname, '..', 'ui')
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8')
   const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')
   const format = fs.readFileSync(path.join(root, 'lib', 'format.js'), 'utf8')
-  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
-  const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
+  
+  
 
   assert.ok(html.indexOf('lib/pinned_files.js') < html.indexOf('renderer.js'))
   assert.match(html, /id="btn-pin"/)
@@ -29,12 +30,12 @@ test('Electron wiring keeps Pin persistent on normal queries and telemetry below
   assert.match(renderer, /user_query: currentQuestion/)
   assert.match(renderer, /function sendClear\(\)[\s\S]*cmd: '\/clear'/)
   assert.doesNotMatch(renderer.match(/function sendClear\(\)[\s\S]*?\n\}/)?.[0] || '', /pinnedFiles\s*=/)
-  assert.match(main, /ipcMain\.handle\('show-pin-dialog'/)
-  const pinHandler = main.match(/ipcMain\.handle\('show-pin-dialog'[\s\S]*?\n\}\)/)?.[0] || ''
-  assert.match(pinHandler, /title: 'เลือกไฟล์เพื่อ Pin'/)
-  assert.match(pinHandler, /realpathSync\(selected\)/)
-  assert.doesNotMatch(pinHandler, /isInsideWorkspace|WORKSPACE_DIR|defaultPath/,
+  const pinHandler = rustFn('show_pin_dialog')
+  assert.match(pinHandler, /set_title\("เลือกไฟล์เพื่อ Pin"\)/)
+  assert.match(pinHandler, /canonical\(/)
+  assert.match(rustFn('canonical'), /std::fs::canonicalize/)
+  assert.doesNotMatch(pinHandler, /workspace_dir|agent_dir|set_directory/,
     'Pin picker must follow backend read_file policy instead of a Workspace-only boundary')
-  assert.match(preload, /showPinDialog: \(\) => ipcRenderer\.invoke\('show-pin-dialog'\)/)
+  assert.match(bridge, /showPinDialog: function \(\) \{ return invoke\('show_pin_dialog'\) \}/)
   assert.doesNotMatch(`${html}\n${renderer}\n${format}`, /Agent Lite|Agent MAX VLM|Server Monitor|Shared MAX/)
 })

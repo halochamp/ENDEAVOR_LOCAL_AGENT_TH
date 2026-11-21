@@ -86,8 +86,8 @@ function applyTheme(theme) {
   const hljsLink = document.getElementById('hljs-theme')
   if (hljsLink) {
     hljsLink.href = theme === 'light'
-      ? './node_modules/@highlightjs/cdn-assets/styles/github.min.css'
-      : './node_modules/@highlightjs/cdn-assets/styles/github-dark.min.css'
+      ? './vendor/github.min.css'
+      : './vendor/github-dark.min.css'
   }
   const btn = document.getElementById('btn-theme')
   if (btn) {
@@ -97,7 +97,7 @@ function applyTheme(theme) {
 }
 
 function toggleTheme() {
-  const current = document.documentElement.getAttribute('data-theme') || 'dark'
+  const current = document.documentElement.getAttribute('data-theme') || 'light'
   applyTheme(current === 'light' ? 'dark' : 'light')
 }
 
@@ -430,10 +430,15 @@ const TTS_MODEL_PROMPT = 'Text to Speech จะโหลดโมเดลเส
 
 // Asked once per session when the TTS tab is opened.  Declining keeps the tab closed and loads nothing; the voice model is
 // loaded only when a reading starts and leaves RAM when it ends.
+// Not asked yet: ask now and open the panel only if the answer is yes. The caller does nothing meanwhile (returns false).
 function ttsPanelMayOpen() {
   if (ttsState.modelConfirmed) return true
-  ttsState.modelConfirmed = !!window.confirm(TTS_MODEL_PROMPT)
-  return ttsState.modelConfirmed
+  askConfirm(TTS_MODEL_PROMPT).then(yes => {
+    if (!yes) return
+    ttsState.modelConfirmed = true
+    togglePanel('tts')
+  })
+  return false
 }
 
 function _ttsIsActive(status) {
@@ -1497,6 +1502,22 @@ function openModal(filePath, content) {
   document.getElementById('modal-overlay').classList.add('open')
 }
 
+// A native yes/no question. In the Tauri app window.confirm() is replaced by the dialog plugin with an async function whose
+// Promise is always truthy, so `if (window.confirm(...))` would answer yes without ever asking: ask through the Rust shell,
+// and when it cannot be asked treat the answer as no.
+function askConfirm(message) {
+  const api = window.electronAPI
+  if (api && typeof api.confirm === 'function') return Promise.resolve(api.confirm(message)).then(v => v === true, () => false)
+  return Promise.resolve(false)
+}
+
+// In the Tauri app local files load through its asset protocol (file:// is not allowed from the app's page)
+function localFileUrl(filePath) {
+  const tauri = typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core
+  if (tauri && typeof tauri.convertFileSrc === 'function') return tauri.convertFileSrc(filePath)
+  return 'file://' + filePath
+}
+
 function openImageModal(filePath) {
   const name = filePath.split('/').pop()
   _modalRaw = null  // image has no text source to copy
@@ -1506,7 +1527,7 @@ function openImageModal(filePath) {
   body.className = ''  // clear any code/md class left from a previous file view
   body.style.cssText = 'display:flex;align-items:center;justify-content:center;padding:16px;'
   const img = document.createElement('img')
-  img.src = 'file://' + filePath
+  img.src = localFileUrl(filePath)
   img.style.cssText = 'max-width:100%;max-height:60vh;border-radius:4px;object-fit:contain;'
   img.addEventListener('error', () => {
     const err = document.createElement('div')
@@ -1990,8 +2011,35 @@ function openWorkspace() {
   if (window.electronAPI) window.electronAPI.openWorkspace()
 }
 
+// Layout: Settings, Model and the Apps (TTS / PDF / Translate) take the whole window;
+// Workspace, Active Workspace, History and Activity stay beside the chat so file names stay visible while chatting.
+const FULL_PAGE_PANELS = new Set(['settings', 'model', 'tts', 'pdf', 'translate'])
+const APP_PANELS = new Set(['tts', 'pdf', 'translate'])
+let lastAppPanel = 'pdf'   // not TTS: opening it asks the OmniVoice licence question first
+
+function syncLayout() {
+  const main = document.getElementById('main')
+  if (main) {
+    main.classList.toggle('page-full', !!activePanel && FULL_PAGE_PANELS.has(activePanel))
+    main.classList.toggle('page-apps', !!activePanel && APP_PANELS.has(activePanel))
+  }
+  document.querySelectorAll('.app-card').forEach(c => c.classList.toggle('active', c.id === 'btn-' + activePanel))
+  const rail = activePanel ? (APP_PANELS.has(activePanel) ? 'btn-apps' : 'btn-' + activePanel) : 'btn-chat'
+  document.querySelectorAll('#icon-bar .icon-btn').forEach(b => b.classList.toggle('active', b.id === rail))
+}
+
 function togglePanel(name) {
+  // the open app's own card does nothing (only the card: a guard placed after the aliases below made แชต do nothing
+  // while an app page was open)
+  if (APP_PANELS.has(name) && activePanel === name) return
+  // แชต closes whatever is open; แอป opens the last app used (pressing it again on an app closes the page)
+  if (name === 'chat') {
+    if (!activePanel) return
+    name = activePanel
+  }
+  if (name === 'apps') name = activePanel && APP_PANELS.has(activePanel) ? activePanel : lastAppPanel
   if (name === 'tts' && activePanel !== 'tts' && !ttsPanelMayOpen()) return   // the user said no: nothing opens, nothing loads
+  if (APP_PANELS.has(name)) lastAppPanel = name
   const panel = document.getElementById('left-panel')
   if (modelServerStatusTimer) {
     clearInterval(modelServerStatusTimer)
@@ -2031,6 +2079,9 @@ function togglePanel(name) {
     if (name === 'translate') {
       restoreTranslateJob()
     }
+    if (name === 'model' && window.ThModels) {
+      window.ThModels.open()
+    }
     if (name === 'settings') {
       wsSend({ type: 'get_runtime_settings' })
       wsSend({ type: 'get_model_server_status' })
@@ -2041,6 +2092,8 @@ function togglePanel(name) {
       )
     }
   }
+  if (activePanel !== 'model' && window.ThModels) window.ThModels.close()
+  syncLayout()
 }
 
 function applyApprovedEditFolders(ev) {
@@ -2244,17 +2297,18 @@ function applyRuntimeSettings(ev) {
     const ramText = ev.ram_gb ? ` (RAM ประมาณ ${ev.ram_gb}GB)` : ''
     const modelLabel = String(ev.model_label || 'โมเดลนี้')
     const floorText = ev.warning_gib ? `ต่ำกว่า ${ev.warning_gib}GB` : 'ต่ำเกินไป'
-    const confirmed = window.confirm(
+    askConfirm(
       `เครื่องนี้มี RAM ${floorText}${ramText}\n\n`
       + `${modelLabel} เป็นโมเดลขนาดใหญ่ การดาวน์โหลด/โหลดโมเดลอาจใช้พื้นที่และ swap สูงมาก\n\n`
       + `ต้องการดาวน์โหลด/ใช้ ${modelLabel} ต่อหรือไม่?`
-    )
-    if (confirmed) {
-      void dispatchRuntimeSettings({ ...previousPending, confirmed_low_ram: true })
-    } else {
-      pendingRuntimeRequest = null
-      wsSend({ type: 'get_runtime_settings' })
-    }
+    ).then(confirmed => {
+      if (confirmed) {
+        void dispatchRuntimeSettings({ ...previousPending, confirmed_low_ram: true })
+      } else {
+        pendingRuntimeRequest = null
+        wsSend({ type: 'get_runtime_settings' })
+      }
+    })
     return
   }
   // Only an explicit backend terminal state completes a sent transaction.
@@ -2284,8 +2338,12 @@ function applyRuntimeSettings(ev) {
   if (model && runtimeSettings.model_options.length) {
     const currentValue = model.value
     const focused = document.activeElement === model
-    const optionValues = runtimeSettings.model_options.map(opt => String(opt.value || ''))
-    model.replaceChildren(...runtimeSettings.model_options.map(opt => {
+    const downloaded = window.ThModels && window.ThModels.downloadedIds()
+    const shownModels = downloaded
+      ? runtimeSettings.model_options.filter(opt => downloaded.has(String(opt.value || '')) || String(opt.value || '') === String(runtimeSettings.model || ''))
+      : runtimeSettings.model_options
+    const optionValues = shownModels.map(opt => String(opt.value || ''))
+    model.replaceChildren(...shownModels.map(opt => {
       const item = document.createElement('option')
       item.value = String(opt.value || '')
       item.textContent = String(opt.label || opt.value || '')
@@ -2495,7 +2553,7 @@ function autoResize(el) {
 // ── Init ───────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
-  applyTheme(document.documentElement.getAttribute('data-theme') || 'dark')
+  applyTheme(document.documentElement.getAttribute('data-theme') || 'light')
 
   const inp = document.getElementById('input')
 
@@ -2545,6 +2603,11 @@ document.addEventListener('DOMContentLoaded', () => {
   on('#btn-history', () => togglePanel('history'))
   on('#btn-pdf', () => togglePanel('pdf'))
   on('#btn-settings', () => togglePanel('settings'))
+  on('#btn-chat', () => togglePanel('chat'))
+  on('#btn-apps', () => togglePanel('apps'))
+  on('#btn-model', () => togglePanel('model'))
+  on('#settings-open-model', () => togglePanel('model'))
+  syncLayout()
   const runtimeMode = document.getElementById('runtime-server-mode')
   const runtimeModel = document.getElementById('runtime-model')
   const runtimeThink = document.getElementById('runtime-think')

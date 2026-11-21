@@ -3,7 +3,7 @@ const assert = require('node:assert')
 const {
   mlxLabel, shortModelName, actTimestamp, selectValueAfterRefresh,
   runtimeStatusText, modelServerStatusText, byteRateText, systemTelemetryText,
-} = require('../lib/format')
+} = require('../ui/lib/format')
 
 test('mlxLabel extracts port from URL', () => {
   assert.strictEqual(mlxLabel('http://localhost:8085/v1'), 'MLX :8085')

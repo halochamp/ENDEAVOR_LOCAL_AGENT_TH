@@ -8,7 +8,7 @@ const {
   buildMentionCandidates,
   extractMentionPaths,
   insertMention,
-} = require('../lib/workspace_mentions')
+} = require('../ui/lib/workspace_mentions')
 
 const files = [
   { name: 'world.doc', relative_path: 'world.doc' },
@@ -59,11 +59,11 @@ test('query extraction resolves only unambiguous visible mention tokens', () => 
   assert.deepEqual(extractMentionPaths('@{My File.docx} สรุป', files), ['notes/My File.docx'])
 })
 
-test('Electron sidebar calls the tab Workspace and loads the mention helper before renderer', () => {
-  const root = path.join(__dirname, '..')
+test('the left rail calls the tab Workspace and loads the mention helper before renderer', () => {
+  const root = path.join(__dirname, '..', 'ui')
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8')
   const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')
-  assert.match(html, /id="btn-workspace"[\s\S]*icon-btn-label">Agent<br>Workspace</)
+  assert.match(html, /id="btn-workspace"[\s\S]*icon-btn-label">Workspace</)
   assert.ok(html.indexOf('lib/workspace_mentions.js') < html.indexOf('renderer.js'))
   assert.match(renderer, /type: 'get_workspace_mentions'/)
   assert.match(renderer, /workspace_mentions: workspaceMentions/)

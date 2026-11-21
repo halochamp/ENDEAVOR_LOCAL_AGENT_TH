@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const { createActivityModel, describeText, toolStatusLabel } = require('../lib/activity_log')
+const { createActivityModel, describeText, toolStatusLabel } = require('../ui/lib/activity_log')
 
 const call = (id, name = 'bash', extra = {}) => ({ callId: id, name, detail: '', args: '', ts: '10:00:00', ...extra })
 

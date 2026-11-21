@@ -71,7 +71,7 @@ shortcuts. If only the optional Chromium download fails, re-run
 
 You normally **do not start `mlx_vlm.server` by hand anymore**. Agent TH owns its
 standalone model-server lifecycle through `model_runtime.py`; the default owner port is
-`:8085`, Settings can move it, and the same owner state is shared by CLI and Electron.
+`:8085`, Settings can move it, and the same owner state is shared by CLI and the desktop app.
 Start/Stop/Reset and the crash watchdog all act only on a TH-owned launcher.
 
 There is one deliberate special case for development with Agent MAX VLM: if the selected
@@ -97,16 +97,24 @@ On first run it should print the banner with `N tools  ● online`. In Standalon
 TH reconciles its own model server first. In Shared MAX mode the MAX test server must
 already be online on the selected shared port; TH will not start or repair MAX's server.
 
-Electron Desktop (the other supported front end):
+Desktop app (the other supported front end, Tauri 2 / Rust, built on this Mac):
 
 ```bash
-cd <project_root>/AGENT_UI
-npm install   # first run only
-npm start
+cd <project_root>
+bash agent_start.command          # first run: installs OCR + voice models (asks before the ~3 GB voice),
+                                  # builds the app (needs Node.js, Rust, Xcode Command Line Tools), then opens it
+# or by hand:
+cd AGENT_UI && npm install && npm run build
+open "src-tauri/target/release/bundle/macos/Agent TH.app"
 ```
 
-Electron starts the authenticated `agent_server.py` backend for itself; Python
-`model_runtime.py` owns the MLX lifecycle, not Electron. CLI and Electron share the same
+Optional models, downloaded by the installer (safe to re-run, skips what exists): OpenThai OCR (~4 MB, SHA-256 checked) and the
+OmniVoice voice for Text to Speech (own conda env `omnivoice` from `install_library/requirements_voice.txt` + ~3 GB of
+CC-BY-NC weights: personal use only, so it asks first; `AGENT_TH_ASSUME_YES=1` answers yes, `AGENT_TH_SKIP_VOICE=1` /
+`AGENT_TH_SKIP_OCR=1` skip a part): `bash install_library/install_models.sh`. The agent does not need either to run.
+
+The app starts the authenticated `agent_server.py` backend for itself (port 8765); Python
+`model_runtime.py` owns the MLX lifecycle, not the app. CLI and the app share the same
 Model / Think Budget / Server Mode / Port state in `workspace/runtime_settings.json`
 (or the path supplied by `V2_RUNTIME_SETTINGS_PATH`). The text bar above the composer is
 standalone host telemetry (`CPU · GPU · RAM · TOK · NET`) collected by Agent TH itself; it does
@@ -116,7 +124,7 @@ is capability-detected from local platform tools when available and otherwise di
 it is model-agnostic and does not estimate from characters. Before the two-second window fills,
 the meter divides by the interval actually observed so short or newly-started generations are not
 systematically understated. After a generation ends, recent callbacks remain visible until they age
-out of the two-second window, then the meter returns to `0.0 t/s`. Telemetry events are scoped to the Electron WebSocket (`transport=desktop`)
+out of the two-second window, then the meter returns to `0.0 t/s`. Telemetry events are scoped to the desktop app WebSocket (`transport=desktop`)
 so generic custom clients are not forced to consume desktop-only status frames. There is no bundled browser HTML UI.
 
 ## 5. Common issues
@@ -152,7 +160,7 @@ up). Key things to know:
 | Command | What it does |
 |---|---|
 | `menu` | open the mode menu |
-| `/pdf_text <path>` | convert a PDF to text with the same pipeline as the Electron panel |
+| `/pdf_text <path>` | convert a PDF to text with the same pipeline as the desktop app panel |
 | `/history` | reload previous conversation history (from `logs/history.db`) |
 | `/compact` | compress/trim conversation context |
 | `/clear` | start a fresh session |
@@ -162,17 +170,17 @@ up). Key things to know:
 **Workspace** — the agent reads files from anywhere (except blocked system/credential
 paths) but only **writes/creates files inside `workspace/`**. If the user asks the
 agent to "save this file" or "create a script", point them to `workspace/` — that's
-where outputs land. In Electron, the sidebar calls this area **Workspace** and typing
+where outputs land. In the desktop app, the sidebar calls this area **Workspace** and typing
 `@` in the composer opens Workspace file autocomplete; selecting a file produces a
 validated `@file` reference for the turn. In the composer, `/skill <instruction> @file` runs one turn under that skill with the
-referenced Active Workspace files. Electron also has a direct **PDF to Text**
+referenced Active Workspace files. the desktop app also has a direct **PDF to Text**
 and a resumable **Translate** (document to Thai) tab; deterministic extraction/OCR works without an LLM, while the optional rewrite
 uses the currently configured local model with thinking disabled. See README.md
 "Security" section for the full read/write model.
 
-**Model server + runtime settings** — CLI and Electron share
+**Model server + runtime settings** — CLI and the desktop app share
 `workspace/runtime_settings.json`: Model, Think Budget, Server Mode, and Port. CLI `menu`
-can change Model / Think Budget / Model Server Port directly; Electron reads the same
+can change Model / Think Budget / Model Server Port directly; the desktop app reads the same
 owner file and therefore sees the CLI-selected port without a separate UI config. In
 **Standalone**, Agent TH owns the verified launcher and may Start/Stop/Reset, watchdog,
 switch model, or move its port itself. In **Shared MAX**, TH is a read-only client of a
@@ -195,7 +203,7 @@ cd <project_root>
 bash agent_stop.command
 ```
 
-Then reopen CLI or Electron. In Standalone the owner runtime will reconcile the server;
+Then reopen CLI or the desktop app. In Standalone the owner runtime will reconcile the server;
 in Shared MAX, start/recover MAX VLM separately because TH intentionally cannot control it.
 
 **Where things are stored**:
@@ -217,12 +225,12 @@ instead of re-reading the whole README:
 
 | User asks | Answer |
 |---|---|
-| "ใช้งานยังไง" / how do I start | Open CLI or Electron; TH manages its Standalone model server automatically. Shared MAX requires MAX VLM's test server to already be running |
+| "ใช้งานยังไง" / how do I start | Open CLI or the desktop app; TH manages its Standalone model server automatically. Shared MAX requires MAX VLM's test server to already be running |
 | "model offline" / agent ขึ้น offline | Check Settings or `python model_runtime.py status`; in Shared MAX, recover MAX VLM separately |
-| "เปลี่ยนโมเดล/port" / change model or port | ใช้ Electron Settings หรือ CLI `menu` → Model / Think Budget / Port; ทั้งคู่เขียน owner config เดียวกัน. Standalone เปลี่ยน model/port ได้เอง, Shared MAX ล็อก model ตาม MAX และ CLI เปลี่ยนได้เฉพาะ shared test-server port หลัง verify MAX server. Qwen3.5-2B เป็น test VLM, Qwen3.5-9B เป็น compact VLM, Qwen3-14B เป็น default, Qwen3.6-35B เป็น high-quality VLM |
+| "เปลี่ยนโมเดล/port" / change model or port | ใช้ the desktop app Settings หรือ CLI `menu` → Model / Think Budget / Port; ทั้งคู่เขียน owner config เดียวกัน. Standalone เปลี่ยน model/port ได้เอง, Shared MAX ล็อก model ตาม MAX และ CLI เปลี่ยนได้เฉพาะ shared test-server port หลัง verify MAX server. Qwen3.5-2B เป็น test VLM, Qwen3.5-9B เป็น compact VLM, Qwen3-14B เป็น default, Qwen3.6-35B เป็น high-quality VLM |
 | "port ถูกใช้อยู่" / port in use | Choose another Standalone port, or stop only the TH-owned server. A foreign/MAX listener is never killed automatically |
 | "เซฟไฟล์ไว้ไหน" / where are my files | `workspace/` — agent can only write there |
-| "ลืม conversation เก่า" / load old chat | `/history` in CLI, or use History in Electron (loads from `logs/history.db`) |
+| "ลืม conversation เก่า" / load old chat | `/history` in CLI, or use History in the desktop app (loads from `logs/history.db`) |
 | "ปลอดภัยไหม" / is my data safe | Yes — model runs 100% locally via MLX, no cloud LLM calls. See README "Security" |
 | "[BLOCKED] ..." error | Expected — path guard blocked read/write outside `workspace/` or to a protected system path. Not a bug |
 | "ทำ tool/skill ใหม่ยังไง" / add a tool | README "ต่อยอดได้ยังไง?" section |

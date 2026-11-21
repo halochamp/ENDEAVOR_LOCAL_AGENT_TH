@@ -34,7 +34,7 @@ workspace/*
 *.db-wal
 logs/
 
-# Node (AGENT_UI Electron desktop client — user runs npm install themselves)
+# Node (AGENT_UI desktop app: build tools; the app is built on each machine)
 node_modules/
 npm-debug.log*
 

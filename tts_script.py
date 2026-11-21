@@ -207,7 +207,7 @@ def _plain_inline(text: str) -> str:
 
 # ── fixed Thai readings for common English terms ────────────────────────────
 # The local LLM transliterates leftovers, but it is not reliable on the common
-# ones (measured: ChatGPT -> "แชลต์จีพีที", an extra ล that F5 then mispronounced).
+# ones (measured: ChatGPT -> "แชลต์จีพีที", an extra ล that the voice then mispronounced).
 # A fixed table is applied first; the LLM only sees what is still Latin.  Users can
 # extend/override it with workspace/text_to_speech/glossary.json ({"Term": "คำอ่าน"}).
 DEFAULT_GLOSSARY: dict[str, str] = {

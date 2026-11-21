@@ -5,8 +5,8 @@ const test = require('node:test')
 const vm = require('node:vm')
 
 // RENDERER_PATH lets a pre-change source be checked as a negative control.
-const source = fs.readFileSync(process.env.RENDERER_PATH || path.join(__dirname, '..', 'renderer.js'), 'utf8')
-const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8')
+const source = fs.readFileSync(process.env.RENDERER_PATH || path.join(__dirname, '..', 'ui', 'renderer.js'), 'utf8')
+const html = fs.readFileSync(path.join(__dirname, '..', 'ui', 'index.html'), 'utf8')
 const SAVING = 'กำลังบันทึก…'
 const SAVED = 'บันทึกแล้ว ✓'
 

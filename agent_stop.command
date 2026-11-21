@@ -1,6 +1,6 @@
 #!/bin/bash
 # ENDEAVOR_LOCAL_AGENT_TH — double-click cleanup: kill everything this repo
-# might have running (mlx_vlm.server, agent_server.py, AGENT_UI's Electron
+# might have running (mlx_vlm.server, agent_server.py, AGENT_UI's desktop
 # window, a stuck CLI) so agent_start.command has a clean slate to start
 # from. Kills processes only — never touches workspace/, memory, or config.
 
@@ -45,9 +45,9 @@ else
 fi
 _kill_port "$AGENT_PORT" "agent_server.py"
 
-# Anything matched below is scoped by cwd == this repo (or AGENT_UI/) —
+# Anything matched below is scoped by cwd == this repo or by this repo's own app path —
 # never a blanket name/pattern kill, which would also hit an unrelated
-# python/Electron process the user has open for something else entirely.
+# python process the user has open for something else entirely.
 _pid_cwd() {
   lsof -a -p "$1" -d cwd -Fn 2>/dev/null | awk '/^n/{print substr($0,2)}'
 }
@@ -65,25 +65,20 @@ for pid in $(pgrep -f "python.*endeavor_agent\.py" 2>/dev/null); do
 done
 [ "$_killed_cli" -eq 0 ] && echo "[skip] endeavor_agent.py CLI — ไม่มีอะไรรันอยู่"
 
-# AGENT_UI's Electron window — matched by both the resolved binary path
-# (this app's own node_modules/electron, not some other Electron app like
-# Slack/VS Code) AND cwd, same double-scoping main.js's own
-# killOtherAppInstances() uses, so this never kills an unrelated app.
-_agent_ui_dir="$SCRIPT_DIR/AGENT_UI"
-_electron_bin="$_agent_ui_dir/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
-if [ -x "$_electron_bin" ]; then
-  _resolved_bin="$(cd "$(dirname "$_electron_bin")" && pwd)/$(basename "$_electron_bin")"
-  _killed_ui=0
-  for pid in $(pgrep -f "$_resolved_bin" 2>/dev/null); do
-    if [ "$(_pid_cwd "$pid")" = "$_agent_ui_dir" ]; then
-      echo "[kill] AGENT_UI window — pid $pid"
-      kill -9 "$pid" 2>/dev/null
-      _killed_ui=1
-    fi
-  done
-  [ "$_killed_ui" -eq 0 ] && echo "[skip] AGENT_UI window — ไม่มีอะไรรันอยู่"
+# AGENT_UI's desktop window (the Tauri app) — matched by its own full binary path inside this checkout, so this never
+# touches another app. SIGTERM first: the app then stops its agent server's whole process group; SIGKILL only if it hangs.
+_ui_bin="$SCRIPT_DIR/AGENT_UI/src-tauri/target/release/bundle/macos/Agent TH.app/Contents/MacOS/agent-th-ui"
+_killed_ui=0
+for pid in $(pgrep -f "$_ui_bin" 2>/dev/null); do
+  echo "[kill] AGENT_UI window — pid $pid"
+  kill "$pid" 2>/dev/null
+  _killed_ui=1
+done
+if [ "$_killed_ui" -eq 1 ]; then
+  sleep 3
+  for pid in $(pgrep -f "$_ui_bin" 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
 else
-  echo "[skip] AGENT_UI window — ยังไม่เคย npm install"
+  echo "[skip] AGENT_UI window — ไม่มีอะไรรันอยู่"
 fi
 
 echo

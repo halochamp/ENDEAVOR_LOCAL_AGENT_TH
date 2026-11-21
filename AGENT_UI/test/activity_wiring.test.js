@@ -3,7 +3,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 
-const ROOT = path.join(__dirname, '..')
+const ROOT = path.join(__dirname, '..', 'ui')
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
 const renderer = fs.readFileSync(path.join(ROOT, 'renderer.js'), 'utf8')
 

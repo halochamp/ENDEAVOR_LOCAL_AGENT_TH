@@ -1,19 +1,20 @@
 {
-  "name": "endeavor-agent-ui-th",
+  "name": "agent-th-ui",
   "version": "1.0.0",
-  "description": "ENDEAVOR_LOCAL_AGENT_TH Desktop UI",
-  "main": "main.js",
+  "private": true,
+  "description": "Agent TH desktop UI (Tauri 2: Rust core + the proven Agent TH renderer, light theme)",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --inspect",
+    "vendor": "node scripts/copy-vendor.js",
+    "dev": "npm run vendor && tauri dev",
+    "build": "npm run vendor && tauri build --bundles app",
     "test": "node --test"
-  },
-  "devDependencies": {
-    "electron": "^33.0.0"
   },
   "dependencies": {
     "@highlightjs/cdn-assets": "^11.11.1",
     "dompurify": "^3.4.10",
     "marked": "^18.0.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
   }
 }

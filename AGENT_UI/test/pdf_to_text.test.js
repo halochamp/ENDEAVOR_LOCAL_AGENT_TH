@@ -2,12 +2,11 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { rust, bridge, rustFn } = require('./shell_sources')
 
-const ROOT = path.join(__dirname, '..')
+const ROOT = path.join(__dirname, '..', 'ui')
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
 const renderer = fs.readFileSync(path.join(ROOT, 'renderer.js'), 'utf8')
-const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
-const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
 
 test('Electron exposes a dedicated PDF to MD tab with opt-in no-think page-by-page Markdown', () => {
   assert.match(html, /id="btn-pdf"/)
@@ -29,12 +28,12 @@ test('renderer wires the PDF tab without routing through chat', () => {
   assert.doesNotMatch(pdfStart, /wsSend\(\{\s*type:\s*'query'/)
 })
 
-test('preload keeps PDF IPC narrow and Electron main streams authenticated bytes', () => {
-  assert.match(preload, /pdfToTextStart: \(rewriteThai\) => ipcRenderer\.invoke\('pdf-to-text-start'/)
-  assert.match(preload, /pdfToTextStatus: \(jobId\) => ipcRenderer\.invoke\('pdf-to-text-status'/)
-  assert.match(main, /ipcMain\.handle\('pdf-to-text-start'/)
-  assert.match(main, /filters: \[\{ name: 'PDF', extensions: \['pdf'\] \}\]/)
-  assert.match(main, /fs\.createReadStream\(filePath\)/)
-  assert.match(main, /'X-Auth-Token': AGENT_TOKEN/)
-  assert.match(main, /'X-Rewrite-Thai': rewriteThai \? '1' : '0'/)
+test('the bridge keeps PDF IPC narrow and the Rust shell streams authenticated bytes', () => {
+  assert.match(bridge, /pdfToTextStart: function \(rewriteThai\) \{ return invoke\('pdf_to_text_start'/)
+  assert.match(bridge, /pdfToTextStatus: function \(jobId\) \{ return invoke\('agent_job', \{ route: '\/pdf-to-text\/status'/)
+  const start = rustFn('pdf_to_text_start')
+  assert.match(start, /pick_one\(&app, [^)]*\("PDF", &\["pdf"\]\)/)
+  assert.match(rust, /reqwest::Body::from\(file\)/)
+  assert.match(rust, /\.header\("X-Auth-Token", token\)/)
+  assert.match(start, /"X-Rewrite-Thai", if rewrite_thai \{ "1" \} else \{ "0" \}/)
 })

@@ -53,7 +53,7 @@ Local AI เปรียบเหมือนปืนพกส่วนตั�
 
 ## เริ่มใช้งานเร็ว (Quick Start)
 
-**ทางลัด — ไม่อยากยุ่งกับ terminal เลย:** ดับเบิลคลิก `agent_start.command` ที่ root ของโปรเจกต์ — เปิดครั้งแรกจะติดตั้งให้อัตโนมัติทั้งหมด (conda env + AGENT_UI dependencies) แล้วเปิด desktop app ให้เลย โดยไม่ต้องเปิด MLX server เองแยกต่างหาก. `agent_server.py` + `model_runtime.py` ดูแล model server, port และ watchdog ของ Agent TH เอง; Electron เป็น UI host ไม่ใช่ process owner
+**ทางลัด — ไม่อยากยุ่งกับ terminal เลย:** ดับเบิลคลิก `agent_start.command` ที่ root ของโปรเจกต์ — เปิดครั้งแรกจะติดตั้งให้อัตโนมัติทั้งหมด (conda env, โมเดลเสริม OCR + เสียง [ถามก่อนโหลดเสียง ~3 GB], แล้ว build desktop app ในเครื่อง — ต้องมี Node.js, Rust และ Xcode Command Line Tools ตัวสคริปต์จะบอกและเสนอติดตั้ง Rust ให้) แล้วเปิด desktop app ให้เลย โดยไม่ต้องเปิด MLX server เองแยกต่างหาก. `agent_server.py` + `model_runtime.py` ดูแล model server, port และ watchdog ของ Agent TH เอง; desktop app เป็น UI host ไม่ใช่ process owner
 
 มีปัญหา/อยากเริ่มใหม่สะอาดๆ → ดับเบิลคลิก `agent_stop.command` — จะหยุดเฉพาะ model server ที่ตรวจยืนยันว่า Agent TH เป็นเจ้าของและหยุด Agent/UI backend. ถ้ากำลังใช้ **Shared MAX test server** สคริปต์จะปล่อย server ของ MAX VLM ไว้ไม่แตะต้อง
 
@@ -71,8 +71,9 @@ conda activate mlx && python endeavor_agent.py
 # แบบ CLI: run.sh (ไม่ต้อง activate — สคริปต์จัดการให้)
 bash run.sh
 
-# แบบ Electron Desktop: AGENT_UI เปิด agent_server; Python backend ดูแล MLX lifecycle
-cd AGENT_UI && npm install && npm start
+# แบบ Desktop app (Tauri 2): build ครั้งแรก แล้วเปิดแอป — แอปเปิด agent_server; Python backend ดูแล MLX lifecycle
+cd AGENT_UI && npm install && npm run build
+open "src-tauri/target/release/bundle/macos/Agent TH.app"   # หรือใช้ agent_start.command ที่ build + เปิดให้ครบ
 ```
 
 ค่าเริ่มต้นคือ **Standalone** ที่ port `8085`. ถ้า `:8085` ถูก Agent MAX VLM ครอบครองด้วย patched launcher ที่ตรวจยืนยันได้ Agent TH จะเข้า **Shared MAX test server** แบบ read-only อัตโนมัติ: ใช้ model ที่ MAX โหลดอยู่ได้ แต่ไม่ Start/Stop/Reset/Watchdog หรือเปลี่ยน model ของ MAX. Listener อื่นที่ไม่ใช่ MAX จะไม่ถูก adopt หรือ kill
@@ -115,43 +116,47 @@ agent: [วางแผน → ค้นหาหลายมุม → อ่�
 
 ## UI ที่มีให้ (2 แบบ)
 
-โปรเจกต์รองรับ **CLI + Electron Desktop** โดยทั้งสองฝั่งใช้ runtime config กลางเดียวกันสำหรับ Model, Think Budget, **Server Mode** และ **Model Server Port** (`workspace/runtime_settings.json`, override ได้ด้วย `V2_RUNTIME_SETTINGS_PATH`) จึงไม่ต้องตั้งค่าซ้ำคนละ UI. ค่าเริ่มต้นคือ `Standalone :8085`
+โปรเจกต์รองรับ **CLI + Desktop app** โดยทั้งสองฝั่งใช้ runtime config กลางเดียวกันสำหรับ Model, Think Budget, **Server Mode** และ **Model Server Port** (`workspace/runtime_settings.json`, override ได้ด้วย `V2_RUNTIME_SETTINGS_PATH`) จึงไม่ต้องตั้งค่าซ้ำคนละ UI. ค่าเริ่มต้นคือ `Standalone :8085`
 
 ### 1. CLI (`endeavor_agent.py`)
 
 - รันใน terminal — เบา เร็ว เหมาะกับงานที่ต้องทำซ้ำ ๆ หรือเปิดทิ้งไว้นาน ๆ
 - ระหว่าง agent ทำงาน จะเห็น **spinner 2 บรรทัด** ตลอดเวลา พร้อม context status bar แบบ real-time
-- พิมพ์ `menu` → **Model / Think Budget / Port** เพื่อเลือก model, ระดับ Low 256 / Medium 512 / High 1024 (ค่าเริ่มต้น) / xhigh 2048 / Max 4096 และ Model Server Port จาก config กลางเดียวกับ Electron
-- CLI ใช้ owner state เดียวกับ Electron; ใน `Standalone` Agent TH จะ start/reconcile/restart model server ของตัวเองได้โดยตรงและเคารพ intentional Stop
+- พิมพ์ `menu` → **Model / Think Budget / Port** เพื่อเลือก model, ระดับ Low 256 / Medium 512 / High 1024 (ค่าเริ่มต้น) / xhigh 2048 / Max 4096 และ Model Server Port จาก config กลางเดียวกับ Desktop app
+- CLI ใช้ owner state เดียวกับ Desktop app; ใน `Standalone` Agent TH จะ start/reconcile/restart model server ของตัวเองได้โดยตรงและเคารพ intentional Stop
 - ถ้า runtime อยู่ใน `Shared MAX` Model จะถูกล็อกตาม model ที่ MAX VLM โหลดอยู่; Think Budget ของ TH ยังเปลี่ยนได้ แต่ CLI จะไม่เปลี่ยนหรือหยุด process ของ MAX
 
-### 2. AGENT_UI — Electron Desktop App
+### 2. AGENT_UI — Desktop App (Tauri 2)
 
-- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง พร้อม **Workspace**, activity, history, streaming chat, file attachment, persistent **Pin File**, **PDF to MD**, **Translate** และ Settings
+- โฟลเดอร์ `AGENT_UI/` — desktop app แยกหน้าต่างจริง (Rust + Tauri 2, ธีมสว่าง, แถบเมนูซ้าย) พร้อม **Workspace**, **Active Workspace**, **ประวัติ**, **Activity**, streaming chat, file attachment, persistent **Pin File**, **แอป** (Text to Speech / PDF → Markdown / แปลเป็นไทย), **Model** และ **ตั้งค่า**
+- **เลย์เอาต์**: Workspace / Active / ประวัติ / Activity แบ่งจอกับแชตเพื่อให้เห็นชื่อไฟล์ระหว่างคุย ส่วน ตั้งค่า, Model และหน้าแอปเต็มจอ; ปุ่ม **แชต** ปิดหน้าเต็มจอกลับมาที่แชต, ปุ่ม **แอป** เปิดแอปที่ใช้ล่าสุด
+- หน้า **Model** แสดงโมเดลที่ทดสอบแล้ว 5 ตัว (ขนาดไฟล์ + RAM ที่ใช้เทียบกับ RAM เครื่องนี้ + สถานะ) และดาวน์โหลดทีละตัวได้ (ปิดแอปแล้วโหลดต่อจากเดิม, pin commit ของ Hugging Face); โมเดลที่ดาวน์โหลดแล้วเท่านั้นที่ขึ้นในรายการเลือกโมเดลของหน้าตั้งค่า. TH เป็น native AR ไม่มีตัวเร่ง (DFlash/MTP). ตัวเลข RAM เป็นค่าที่วัดจริง; โมเดลที่ยังไม่ได้วัดจะแสดง "ยังไม่ได้วัด RAM" แทนการเดา. หน้านี้ตรวจรายการ/ขนาดไฟล์เฉพาะตอนเปิดหน้าหรือกด "รีเฟรช" (ไม่มี timer ถามเครือข่าย)
 - พิมพ์ `@` ในช่องข้อความเพื่อ tag ไฟล์จาก Workspace ได้โดยตรง เช่น `@world.doc สรุปไฟล์ให้หน่อย`; autocomplete รองรับไฟล์ในโฟลเดอร์ย่อยและชื่อซ้ำจะใช้ relative path เพื่อไม่เดาผิด. Backend ตรวจ canonical path ซ้ำก่อนส่ง grounding ให้ Agent จึงกัน `../`/symlink escape ได้
 - `/skill <คำสั่ง>` รันหนึ่ง turn ภายใต้ skill นั้นโดยไม่เปลี่ยนโหมดถาวร และใช้ร่วมกับ `@ไฟล์` ใน Active Workspace ได้ในข้อความเดียว เช่น `/research สรุป @report.pdf`; เมื่อมี `@` อยู่ใต้ caret ระบบเสนอไฟล์ก่อน และการเลือกคำสั่งจะแทนที่เฉพาะ token `/…` ต้นข้อความ ส่วนที่เหลือไม่หาย. `/skill` เปล่า ๆ ยังเป็นการเปิด/ปิดโหมดเหมือนเดิม และ skill ที่มีเครื่องมือเฉพาะต้องเปิดเป็นโหมด
 - แผง **Activity** แสดง log ของการทำงานเรียงจาก **ล่าสุดไปเก่าสุด** เป็นการ์ดต่อ turn: ทุก tool call แสดง arguments, สถานะ (กำลังทำงาน/เสร็จแล้ว/ไม่สำเร็จ) และตัวอย่างผลลัพธ์ ข้อความยาวย่อไว้พร้อมปุ่ม "มีต่อ"; ระหว่างเรียก tool แชตแสดงสถานะเป็นข้อความ (`กำลังใช้ bash`) ไม่ใช่แอนิเมชัน. arguments/ผลลัพธ์ผ่านการ redact ความลับ (token, password, private key, URL ที่มี credential, base64) ก่อนเสมอ
-- ปุ่ม **📌 Pin File** สร้าง working set ต่อเนื่องได้สูงสุด 10 ไฟล์จากที่ใดก็ได้บนเครื่องต่อ Electron session ตราบเท่าที่ path นั้นผ่าน permission เดียวกับ `read_file` (protected system/credential paths ยังคงถูกบล็อก). Pin อยู่ต่อหลัง Send และ `/clear` แต่ไม่ persist ข้ามการปิด/เปิด Electron ใหม่. ทุก normal query backend จะเรียก shared read-path guard เดิม, canonicalize/dedupe path และตรวจ existence/readability ใหม่ แล้ว graph จะ **อ่าน Pin ทุกไฟล์ก่อน reasoning**: เอกสารใช้ `read_file` แบบ question-aware และ batch สูงสุด 4 ไฟล์ต่อ call (10 ไฟล์ = 4+4+2), รูปใช้ progressive `read_image(..., detail="overview")` สูงสุด 10 ภาพ; OCR/zoom เป็น follow-up เมื่อจำเป็น. Source เดียวกันเลือกหลายทางจะใช้ลำดับ **Pin > Attach > @mention** และอ่านเพียงครั้งเดียวต่อ turn; ไฟล์ Pin ที่หาย/ย้าย/ถูก guard ปฏิเสธ/อ่านไม่ได้จะรายงาน `อ่านสำเร็จ X/Y` แทนการแกล้งทำว่าอ่านครบ
+- ปุ่ม **📌 Pin File** สร้าง working set ต่อเนื่องได้สูงสุด 10 ไฟล์จากที่ใดก็ได้บนเครื่องต่อรอบการเปิดแอปตราบเท่าที่ path นั้นผ่าน permission เดียวกับ `read_file` (protected system/credential paths ยังคงถูกบล็อก). Pin อยู่ต่อหลัง Send และ `/clear` แต่ไม่ persist ข้ามการปิด/เปิดแอปใหม่. ทุก normal query backend จะเรียก shared read-path guard เดิม, canonicalize/dedupe path และตรวจ existence/readability ใหม่ แล้ว graph จะ **อ่าน Pin ทุกไฟล์ก่อน reasoning**: เอกสารใช้ `read_file` แบบ question-aware และ batch สูงสุด 4 ไฟล์ต่อ call (10 ไฟล์ = 4+4+2), รูปใช้ progressive `read_image(..., detail="overview")` สูงสุด 10 ภาพ; OCR/zoom เป็น follow-up เมื่อจำเป็น. Source เดียวกันเลือกหลายทางจะใช้ลำดับ **Pin > Attach > @mention** และอ่านเพียงครั้งเดียวต่อ turn; ไฟล์ Pin ที่หาย/ย้าย/ถูก guard ปฏิเสธ/อ่านไม่ได้จะรายงาน `อ่านสำเร็จ X/Y` แทนการแกล้งทำว่าอ่านครบ
 - tab **PDF to MD** แปลง PDF เป็น Markdown (`.md`) โดยตรงนอก chat graph: PDF ที่มี text layer ใช้ข้อความเดิม, หน้า scan ใช้ OCR (Apple Vision หรือ OpenThai ตามที่เลือกใน Settings) + deterministic Thai formatting cleanup; หัวข้อหน้า/เลขหน้า/เส้นแบ่งหน้าเขียนด้วยโค้ดเสมอ. ตัวเลือก LLM แบบ **no-think** จะส่ง **ภาพของหน้าพร้อมข้อความที่สกัดทีละหน้า** ให้โมเดลเขียนเป็น Markdown (หัวข้อ รายการ ตาราง) และบรรยายภาพ/แผนที่/กราฟในหน้านั้น; หน้าที่ request ล้มเหลว/ว่าง/ถูกตัดจะใช้ข้อความเดิมของหน้านั้น และถ้า model ที่เลือกอ่านภาพไม่ได้ (text-only) จะส่งเฉพาะข้อความ. ไม่ติ๊ก = ไม่เรียกโมเดลเลย (ข้อความที่อาจกลายเป็นไวยากรณ์ Markdown ถูก escape ให้แสดงตามต้นฉบับ). ผลลัพธ์อยู่ที่ `workspace/pdf_to_md/`
 - tab **Translate** แปลเอกสาร (PDF ที่มี text layer, PDF scan ด้วย OCR, ไฟล์ข้อความ, Word/Excel) เป็นภาษาไทยโดยตรงนอก chat graph ด้วย model ปัจจุบันแบบ **no-think** แล้วเขียนผลเป็น Markdown พร้อมหัวข้อหน้าและเส้นแบ่งหน้าใน `workspace/translate/`. งานแปลมี checkpoint: **พัก / ทำต่อ / ยกเลิก** ได้ และกู้งานที่ค้างหลัง agent server เริ่มใหม่ได้ (token, URL, ตัวเลข และโค้ดในเอกสารถูกคงไว้ ไม่แปล)
 - tab **TTS (Text to Speech)** อ่านไฟล์ `.txt` / `.md` ออกเสียงในเครื่องด้วย **OmniVoice** (k2-fsa) แล้วเขียนเป็น `.m4a` ปรับความดังให้เท่ากัน (-16 LUFS) ที่ `workspace/text_to_speech/`. ข้อความไทยถูกแปลงตัวเลขเป็นคำอ่านไทย ส่วนข้อความอังกฤษคงเดิมและส่งธงภาษาอังกฤษให้โมเดล; Markdown/ลิงก์/code block ถูกตัดก่อนอ่าน; มี **พัก / ทำต่อ / ยกเลิก**. เมื่อกดเข้าแท็บนี้ **จะถามก่อนทุก session ว่าจะใช้และโหลดโมเดลเสียงหรือไม่** (ตอบไม่ = แท็บไม่เปิดและไม่โหลดอะไร; โมเดลถูกโหลดเมื่อเริ่มอ่านและปล่อยเมื่อจบงาน). ต้องติดตั้ง OmniVoice เองและเตรียมเสียงอ้างอิง ดูหัวข้อ [Text to Speech, OCR และ Internet/Offline](#text-to-speech-ocr-และ-internetoffline-ตัวเลือกเสริม)
-- **ไม่ได้ bundle Electron ไว้ในรีโป** ต้อง `npm install` เองครั้งแรก:
+- **ไม่ได้ bundle แอปที่ build แล้วไว้ในรีโป** — build ในเครื่องเองครั้งเดียว (`agent_start.command` ทำให้อัตโนมัติ และ build ใหม่เมื่อซอร์สเปลี่ยน):
   ```bash
   cd AGENT_UI
-  npm install     # โหลด Electron + dependencies (~150MB, ครั้งเดียว)
-  npm start
+  npm install       # build tools + ไลบรารีหน้าจอ (ครั้งเดียว)
+  npm run build     # -> src-tauri/target/release/bundle/macos/Agent TH.app (~5 MB; ครั้งแรกใช้เวลา 3-6 นาที)
+  npm test          # เทสต์ฝั่งหน้า + สัญญา shell (ไม่บังคับ)
   ```
-- Electron เปิด authenticated `agent_server.py` เท่านั้น; **Python backend/model_runtime เป็น owner ของ MLX lifecycle** จึงทำงาน standalone ได้แม้ไม่มี Electron process manager อื่น
+  ต้องมี Node.js (LTS), Rust (`rustup`) และ Xcode Command Line Tools (`xcode-select --install`). แอปที่ build ใหม่ทุกครั้งเป็นไบนารีใหม่ที่ไม่ได้ sign: macOS จะถามสิทธิ์เข้าถึงโฟลเดอร์ที่รีโปอยู่อีกครั้ง (กด Allow)
+- แอปเปิด authenticated `agent_server.py` (port 8765, token สุ่มใหม่ทุกครั้งที่เปิด) เท่านั้น; **Python backend/model_runtime เป็น owner ของ MLX lifecycle** จึงทำงาน standalone ได้แม้ไม่มีตัวจัดการ process อื่น. หน้าไม่มีสิทธิ์ plugin ใด ๆ: ทุกการเปิดไฟล์/ลบไฟล์/เลือกโฟลเดอร์เป็นคำสั่งของแอปเองที่ถาม backend ก่อน (`/edit-access/authorize`, `/edit-access/delete`)
 - แถบข้อความ **ใต้กล่องพิมพ์และชิดขอบล่างสุดของ window** แสดง `CPU · GPU · RAM · TOK · NET` แบบ real-time แทนการแสดง phase ซ้ำกับใน chat. Telemetry มาจาก Agent TH เอง ไม่พึ่ง Server Monitor/private repo และไม่ hard-code path/สเปกของเครื่องผู้พัฒนา: CPU/RAM/Network ใช้ `psutil`, GPU ตรวจ capability ของเครื่องที่รันจริง (`ioreg` บน macOS หรือ `nvidia-smi` ถ้ามี) และถ้าอ่านไม่ได้จะแสดง `GPU —` โดยไม่กระทบ Agent. `TOK` คือ token/sec แบบ rolling average 2 วินาทีจาก streaming generation callback จริงของ LLM ที่กำลังทำงาน จึงไม่ fix ชื่อ model และไม่ประมาณจากจำนวนตัวอักษร; ถ้า generation เพิ่งเริ่มและยังไม่ครบ 2 วินาที ระบบจะหารด้วยช่วงเวลาที่สังเกตจริงเพื่อไม่กดค่า token/sec ให้ต่ำผิดจริง และหลัง generation จบ ค่ายังสะท้อน token ที่อยู่ในหน้าต่าง 2 วินาทีล่าสุดก่อนลดเป็น `0.0 t/s` เมื่อ window ว่าง. CPU/GPU/RAM/NET sample ทุก 5 วินาทีตามปกติ แต่ bar publish ทุก 1 วินาทีเพื่อให้ `TOK` ตอบสนองระหว่าง generation โดยไม่เพิ่ม system/GPU polling เป็น 1 Hz. Backend ส่ง event นี้เฉพาะ WebSocket ที่ประกาศ `transport=desktop` เพื่อไม่เพิ่ม unsolicited telemetry ให้ custom client ทั่วไป
 - Settings มี `Server Mode`, Model, Think Budget, Model Server Port, Watchdog และปุ่ม Start / Stop / Reset. Port default คือ `8085` และ standalone port เลือกได้ `1024–65535`
 - Settings มีสวิตช์ **Internet (Online/Offline)** ที่บันทึกลง `user_settings.json` และเป็นแหล่งเดียวที่ตัดสินว่าเครื่องมือเว็บ (`web_search`, `browse_url`, `browser_use`, `recall_web`) ถูกผูกกับโมเดลหรือไม่ — **ไม่ใช่การ ping ตอนเริ่ม** (การ ping ครั้งเดียวที่พลาดเคยซ่อน `web_search` ทั้ง session); จุดสถานะ Internet บนหัวเป็นการตรวจเครือข่ายแยกต่างหาก (แสดงผลเท่านั้น); CLI อ่านไฟล์เดียวกัน. และสวิตช์ **OCR** เลือก Apple Vision (ค่าเริ่มต้น) หรือ OpenThai 2.0 สำหรับทุกจุดที่ใช้ OCR (`read_image`, PDF to MD, `computer`, ...); ถ้า OpenThai เลือกอยู่แต่ใช้ไม่ได้ จะถอยไป Apple Vision ต่อการเรียกและบอกใน Settings
 - `Standalone`: TH ใช้ owner launcher ของตัวเอง, refuse foreign listener, pin `request.model` ให้ตรง owner model และ watchdog จะกู้เฉพาะ server ที่หายขณะที่ desired state=`running`
 - `Shared MAX test server`: ตรวจ process signature ของ Agent MAX VLM + `/health` ก่อน attach; Model ถูกล็อกตาม MAX และ Start/Stop/Reset/Watchdog ถูกปิดทั้งหมด. Generic external listener จะไม่ถูก adopt
 - ถ้าเปิด TH ขณะที่ MAX VLM ครอบครอง port ที่ TH ตั้งไว้ (default `:8085`) และตรวจยืนยันว่าเป็น MAX จริง TH จะ auto-attach read-only; ถ้า MAX ย้าย port ผู้ใช้ตั้ง Shared MAX port ตามได้
-- ปิด Electron = ปิดเฉพาะ `agent_server.py`; model server standalone ยังคงอยู่ตาม durable owner intent. ใช้ Stop ใน Settings หรือ `agent_stop.command` เมื่อต้องการปิด TH model server
+- ปิดแอป = ปิดเฉพาะ `agent_server.py`; model server standalone ยังคงอยู่ตาม durable owner intent. ใช้ Stop ใน Settings หรือ `agent_stop.command` เมื่อต้องการปิด TH model server
 - Qwen3-14B เป็น text-only ใน configuration ที่ทดสอบกับโปรเจกต์นี้: `read_image` ใช้ full OCR fallback อัตโนมัติ ส่วน `Qwen3.5-2B-OptiQ-4bit`, `Qwen3.5-9B-4bit` (default), Qwen3.8-27B และ Qwen3.6-35B เป็นตัวเลือก vision-capable (ตรวจด้วย capability probe) สำหรับ direct image understanding / `computer`; 2B มีไว้สำหรับ testing/diagnostic มากกว่าคุณภาพงาน production
 
-`agent_server.py` ยังคงเป็น authenticated WebSocket/REST **backend ของ Electron และ custom clients** แต่โปรเจกต์ไม่ bundle browser HTML UI แยกอีกต่อไป
+`agent_server.py` ยังคงเป็น authenticated WebSocket/REST **backend ของ desktop app และ custom clients** แต่โปรเจกต์ไม่ bundle browser HTML UI แยกอีกต่อไป
 
 ---
 
@@ -210,7 +215,7 @@ START → react (agent คุมเองทั้งหมด) → END
 | **`llm.py`** | สร้าง `ChatOpenAI` client ชี้ไปที่ `mlx_vlm.server` (OpenAI-compatible API) |
 | **`translate_documents.py`** | pipeline แปลเอกสารเป็นภาษาไทยแบบมี checkpoint (พัก/ทำต่อ/ยกเลิก) สำหรับ tab Translate |
 | **`activity_text.py`** | redact และจำกัดขนาด arguments/ผลลัพธ์ของ tool ก่อนแสดงใน Activity log |
-| **`runtime_common.py`** | infra ร่วมระหว่าง CLI กับ Electron/backend — memory store, liveness check, skill detection (single source of truth ตาม Dual-Path Prohibition) |
+| **`runtime_common.py`** | infra ร่วมระหว่าง CLI กับ Desktop app/backend — memory store, liveness check, skill detection (single source of truth ตาม Dual-Path Prohibition) |
 | **`awake_engine.py`** | daemon thread คอยเช็ค standing trigger ที่ตั้งไว้ผ่าน `awake` tool (file/every/times/once) — fire แล้วส่ง query เข้า agent เองโดยไม่ต้องมีคนพิมพ์ |
 
 ### Context & Memory Management
@@ -247,8 +252,8 @@ Native AR APC ของ Agent TH เป็น **registry-driven** ผ่าน `
 | **Model** | `mlx-community/Qwen3.5-9B-4bit` (default VLM), `mlx-community/Qwen3.5-2B-OptiQ-4bit` (test VLM), `Qwen/Qwen3-14B-MLX-4bit` (text-only), `mlx-community/Qwen3.8-27B-4bit` (VLM), หรือ `unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit` (MoE) | 9B เป็นค่าเริ่มต้นและใช้ได้บนเครื่อง 16GB, 2B สำหรับทดสอบ, 14B text-only, 27B/35B เป็นตัวเลือกคุณภาพสูง |
 | **Agent Framework** | [LangGraph](https://github.com/langchain-ai/langgraph) `create_react_agent` | ReAct loop, state graph, checkpointing |
 | **LLM Client** | LangChain Core + `langchain-openai` | คุยกับ `mlx_vlm.server` ผ่าน OpenAI-compatible API |
-| **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | authenticated WebSocket/REST backend สำหรับ Electron และ custom clients |
-| **Electron Desktop** | Electron + HTML/CSS/JS ใน `AGENT_UI/` | desktop chat UI, workspace/activity/history, runtime Settings |
+| **Backend Server** | [FastAPI](https://fastapi.tiangolo.com/) + `uvicorn` | authenticated WebSocket/REST backend สำหรับ desktop app และ custom clients |
+| **Desktop app** | [Tauri 2](https://tauri.app/) (Rust) + HTML/CSS/JS ใน `AGENT_UI/` | desktop chat UI, workspace/activity/history, Model, runtime Settings |
 | **CLI** | `prompt_toolkit` + `rich` | interactive terminal, autocomplete, markdown rendering, runtime Settings |
 | **Web Search** | `ddgs` (DuckDuckGo) | ค้นหาข้อมูล real-time ไม่ต้องใช้ API key |
 | **Web Scraping** | `trafilatura`, `requests`, Jina Reader | ดึงเนื้อหาเว็บ → clean text |
@@ -370,7 +375,7 @@ PDF to MD, TTS และ Translate ยังคงเป็น UI/runtime capabi
 
 ## Skill Modes
 
-Skill mode คือ system prompt + tool set เฉพาะทาง เปิด/ปิดได้ด้วยคำสั่งใน CLI รุ่นที่เผยแพร่ไม่ติด skill มาให้ — เพิ่มเองได้ตามหัวข้อ "เพิ่ม Skill Mode" ด้านล่าง ส่วนการแปลง PDF เป็น Markdown ใช้ `/pdf_text` (CLI) หรือแผง PDF to MD ใน Electron
+Skill mode คือ system prompt + tool set เฉพาะทาง เปิด/ปิดได้ด้วยคำสั่งใน CLI รุ่นที่เผยแพร่ไม่ติด skill มาให้ — เพิ่มเองได้ตามหัวข้อ "เพิ่ม Skill Mode" ด้านล่าง ส่วนการแปลง PDF เป็น Markdown ใช้ `/pdf_text` (CLI) หรือแผง PDF to MD ใน desktop app
 
 เปิด skill ซ้ำ = toggle ปิด, หรือใช้ `/exit` ออกจาก skill mode ปัจจุบัน
 
@@ -391,11 +396,11 @@ Skill mode คือ system prompt + tool set เฉพาะทาง เปิ
 
 > **หมายเหตุเรื่องโมเดล:** ค่า default ของโปรเจกต์คือ **Qwen3.5-9B-4bit** ซึ่งเป็น VLM ใช้ direct vision/computer ได้ และใช้งานได้บน Mac unified memory **16GB**. มี **Qwen3.5-2B-OptiQ-4bit** สำหรับ testing/diagnostic และเครื่องทรัพยากรจำกัด; ถ้าเลือก 14B text-only `read_image` จะ full OCR fallback และ `computer` จะ fail closed อย่างชัดเจน
 >
-> **Qwen3.6-35B-A3B (MoE)** ยังเลือกใช้ได้เมื่ออยากได้ headroom ด้าน reasoning/planning/tool calling มากขึ้น. ถ้าเครื่องมี RAM ต่ำกว่า 24GB Electron/CLI จะเตือนก่อน download/load เท่านั้น ไม่ได้บล็อก — ผู้ใช้ยืนยันแล้วระบบจะทำต่อ
+> **Qwen3.6-35B-A3B (MoE)** ยังเลือกใช้ได้เมื่ออยากได้ headroom ด้าน reasoning/planning/tool calling มากขึ้น. ถ้าเครื่องมี RAM ต่ำกว่า 24GB Desktop app/CLI จะเตือนก่อน download/load เท่านั้น ไม่ได้บล็อก — ผู้ใช้ยืนยันแล้วระบบจะทำต่อ
 >
 > โมเดลเล็กระดับ 2B ไม่ใช่ target ที่แนะนำสำหรับงานจริงของโปรเจกต์ เพราะมีโอกาส tool-call ผิด, หลุด format หรือ reasoning ไม่พอสำหรับ workflow หลายขั้นมากขึ้น; ตัวเลือก 2B ถูกใส่ไว้โดยตั้งใจเพื่อการทดสอบและ diagnostic
 >
-> CLI `menu` และ Electron Settings ใช้ owner config เดียวกันสำหรับ **Model / Think Budget / Model Server Port**; เปลี่ยน Port จากฝั่งใดอีกฝั่งจะอ่านค่าต่อได้ทันที. Electron Settings ยังมี **Server Mode / Watchdog / Start / Stop / Reset** เพิ่มเติม. `Standalone` เป็นค่า default, ส่วน `Shared MAX` ใช้ server ทดสอบของ Agent MAX VLM แบบ read-only. env var `V2_MODEL` + `MLX_BASE_URL` ยังเป็น advanced override ที่ล็อก runtime (ดูหัวข้อ [Configuration](#configuration-env))
+> CLI `menu` และ Settings ของ Desktop app ใช้ owner config เดียวกันสำหรับ **Model / Think Budget / Model Server Port**; เปลี่ยน Port จากฝั่งใดอีกฝั่งจะอ่านค่าต่อได้ทันที. Settings ของ Desktop app ยังมี **Server Mode / Watchdog / Start / Stop / Reset** เพิ่มเติม. `Standalone` เป็นค่า default, ส่วน `Shared MAX` ใช้ server ทดสอบของ Agent MAX VLM แบบ read-only. env var `V2_MODEL` + `MLX_BASE_URL` ยังเป็น advanced override ที่ล็อก runtime (ดูหัวข้อ [Configuration](#configuration-env))
 
 ---
 
@@ -421,10 +426,10 @@ python endeavor_agent.py
 # CLI (ไม่ต้อง activate — run.sh จัดการให้)
 bash run.sh
 
-# Electron Desktop (จัดการ agent_server ให้เอง)
+# Desktop app (จัดการ agent_server ให้เอง) — build ครั้งแรก/เมื่อซอร์สเปลี่ยน
 cd AGENT_UI
-npm install   # ครั้งแรกเท่านั้น
-npm start
+npm install && npm run build
+open "src-tauri/target/release/bundle/macos/Agent TH.app"   # หรือ bash agent_start.command
 ```
 
 > ติดตั้งเอง (ไม่ใช้สคริปต์): `pip install -r install_library/requirements.txt && playwright install chromium`
@@ -446,10 +451,10 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 | LLM Backend | `MLX_BASE_URL`, `V2_MODEL`, `MLX_API_KEY` | เปลี่ยน server/โมเดล |
 | Generation | `V2_TEMPERATURE`, `V2_THINKING_BUDGET`, `V2_REPETITION_PENALTY`, `V2_RECURSION_LIMIT` | tuning การตอบ |
 | Model Server Python | `V2_MODEL_SERVER_PYTHON` | absolute path ของ Python ที่ใช้เปิด model server (ค่าเริ่มต้น: Python เดียวกับ agent) — ใช้เมื่อ server ต้องอยู่ใน env ที่มี `mlx-vlm` 0.7.10+ |
-| Runtime UI State | `V2_RUNTIME_SETTINGS_PATH` | optional path override สำหรับ Model/Think Budget/Server Mode/Model Server Port config กลางของ CLI + Electron |
+| Runtime UI State | `V2_RUNTIME_SETTINGS_PATH` | optional path override สำหรับ Model/Think Budget/Server Mode/Model Server Port config กลางของ CLI + Desktop app |
 | MLX Prefix Cache | `APC_ENABLED`, `APC_EXACT_CACHE_ENTRIES`, `APC_EXACT_PREFIX_GUARD_TOKENS` | ลด prefill/TTFT ของ prefix ที่ซ้ำกัน; cache อยู่ใน memory เท่านั้น — launcher ปิด disk tier ของ mlx-vlm (`APC_DISK_ENABLED=0`) และลบ snapshot เก่าใน `~/.cache/mlx-vlm/apc` ทุกครั้งที่เปิด server |
 | Context Window | `V2_CONTEXT_MAX_CHARS` | ขยาย/ลด session length |
-| Agent Server | `AGENT_SERVER_PORT`, `AGENT_SERVER_TOKEN`, `AGENT_AUTH_DISABLED` | ตั้งค่า authenticated backend สำหรับ Electron/custom clients |
+| Agent Server | `AGENT_SERVER_PORT`, `AGENT_SERVER_TOKEN`, `AGENT_AUTH_DISABLED` | ตั้งค่า authenticated backend สำหรับ Desktop app/custom clients |
 | Workspace & Logs | `V2_WORKSPACE`, `V2_LOG_DIR`, `V2_LOG_MAX_ENTRIES` | path สำหรับไฟล์งานและ log |
 | File & Vision Batch | `V2_READ_FILE_BATCH_MAX_FILES`, `V2_READ_FILE_BATCH_MAX_CHARS` | จำกัดจำนวนไฟล์และขนาดผลรวมของ parallel `read_file` batch; `read_image` จำกัด 10 ภาพต่อ batch ตาม vision turn budget |
 | Web Tool Limits | `V2_WEB_SEARCH_MAX_RESULTS`, `V2_BROWSE_URL_MAX_CHARS`, `V2_WEB_EVIDENCE_MAX_CHARS`, `V2_BATCH_BROWSE_EVIDENCE_MAX_CHARS`, ฯลฯ | จำกัดขนาดผลลัพธ์จาก web tools |
@@ -466,19 +471,20 @@ cp .env.example .env   # ทำให้อัตโนมัติโดย ins
 
 ## Text to Speech, OCR และ Internet/Offline (ตัวเลือกเสริม)
 
-ทั้งหมดนี้ **ไม่ถูกดาวน์โหลดให้อัตโนมัติ** และไม่ทำให้ agent หลักพึ่งสิ่งใดเพิ่ม: ถ้าไม่ได้ติดตั้ง แท็บ/สวิตช์จะบอกว่ายังใช้ไม่ได้ และ agent ทำงานตามปกติ
+โมเดลเสริมทั้งสอง (OCR และเสียง) **ถูกดาวน์โหลดโดยตัวช่วยติดตั้ง** (`agent_start.command` เรียก `install_library/install_models.sh` ให้ หรือรันเองได้ทุกเมื่อ: `bash install_library/install_models.sh`) และไม่ทำให้ agent หลักพึ่งสิ่งใดเพิ่ม: ถ้าไม่ได้ติดตั้ง แท็บ/สวิตช์จะบอกว่ายังใช้ไม่ได้ และ agent ทำงานตามปกติ. สคริปต์ข้ามสิ่งที่มีอยู่แล้ว, ข้าม OCR/เสียงได้ด้วย `AGENT_TH_SKIP_OCR=1` / `AGENT_TH_SKIP_VOICE=1`, และ **ถามก่อนโหลดเสียง** (~3 GB, CC-BY-NC)
 
 **Internet / Offline** — ไม่ต้องติดตั้งอะไร: Settings → Internet. ค่าเริ่มต้น Online; เลือก Offline เพื่อซ่อนเครื่องมือเว็บจาก agent (สลับได้เมื่อ agent ว่างเท่านั้น)
 
 **OCR แบบ OpenThai 2.0** (Apache-2.0, ONNX, CPU, น้ำหนักรวม ~4 MB):
 ```bash
+# ตัวช่วยติดตั้งทำสองอย่างนี้ให้แล้ว (รันเองได้):
 python scripts/install_openthai_ocr.py     # ดาวน์โหลดไฟล์โมเดล + ตรวจ SHA-256 ลง ~/Models/OpenThai2.1-OCR-Text
 pip install pyclipper                       # แพ็กเกจเสริมที่ runtime ต้องใช้ (numpy / opencv / onnxruntime มีอยู่แล้ว)
 ```
 จากนั้นเลือก OpenThai ที่ Settings → OCR. ไฟล์ runtime ที่ vendor ไว้ใน `tools/_openthai_ocr/` เป็นสำเนา byte-for-byte ของต้นฉบับ (ดู `NOTICE` และ SHA-256 ที่ pin ไว้ในเทสต์). ที่เป็นข้อจำกัดที่วัดไว้: อ่านเอกสารไทยที่สแกนสะอาดได้เร็วและตัวเลขยาว (เลขบัตร/เลขที่) ผิดน้อยกว่า Apple Vision แต่ภาษาอังกฤษ/ลายมือ/ภาพถ่ายยังต้องใช้ Apple Vision เป็นหลัก
 
 **Text to Speech (OmniVoice)** — น้ำหนักโมเดลเป็น **CC-BY-NC: ใช้ส่วนตัว/ไม่ใช้เชิงพาณิชย์เท่านั้น**
-1. สร้าง conda env ชื่อ `omnivoice` และติดตั้งแพ็กเกจ `omnivoice` (k2-fsa) พร้อมไฟล์โมเดล (`model.safetensors` + `audio_tokenizer/`) ตามเอกสารของโปรเจกต์นั้น แล้วชี้ด้วย `V2_TTS_OMNIVOICE_PYTHON` / `V2_TTS_OMNIVOICE_DIR` ถ้าไม่ได้อยู่ที่ค่าเริ่มต้น (`~/Models/OmniVoice`)
+1. **ตัวช่วยติดตั้งทำให้** (หลังถามยืนยัน): สร้าง conda env `omnivoice` (Python 3.11 + แพ็กเกจที่ pin ไว้ใน `install_library/requirements_voice.txt`) และดาวน์โหลดโมเดล `k2-fsa/OmniVoice` (commit ที่ทดสอบ, `model.safetensors` + `audio_tokenizer/`) ไป `~/Models/OmniVoice`; ถ้าติดตั้งไว้ที่อื่นให้ชี้ด้วย `V2_TTS_OMNIVOICE_PYTHON` / `V2_TTS_OMNIVOICE_DIR`. เสียงอ่านมีเฉพาะ OmniVoice เท่านั้น
 2. เตรียมเสียง: สร้างโฟลเดอร์ `workspace/text_to_speech/voices/<id>/` ที่มี `ref_voice.wav` (โมโน 16-bit ยาว 2–8 วินาที) และ `ref_voice.txt` (คำพูดในคลิปตรงตัว) และ `voice.json` (`{"label": "ชื่อที่แสดง"}` ไม่บังคับ). **ใช้เสียงที่คุณมีสิทธิ์ใช้เท่านั้น** — ไม่มีเสียงมากับรีโป
 3. เปิดแท็บ TTS → เลือกเสียง → เลือกไฟล์ `.txt`/`.md`
 
@@ -486,7 +492,7 @@ pip install pyclipper                       # แพ็กเกจเสริ�
 
 ## ต่อ Custom Client / Telegram (`agent_server.py`)
 
-ปกติ `python endeavor_agent.py` คือ CLI ล้วน — ไม่เปิด port อะไร ส่วน Electron จะเปิด `agent_server.py` ให้เอง
+ปกติ `python endeavor_agent.py` คือ CLI ล้วน — ไม่เปิด port อะไร ส่วน Desktop app จะเปิด `agent_server.py` ให้เอง
 
 ถ้าต้องการต่อ **custom client หรือ Telegram bot ของตัวเอง** สามารถรัน `agent_server.py` เป็น FastAPI backend แยก processได้:
 
@@ -496,9 +502,9 @@ python agent_server.py   # เปิด WebSocket + REST บน http://127.0.0.1
 
 | Endpoint | ใช้ทำอะไร |
 |---|---|
-| `ws://localhost:8765/ws` | real-time chat พร้อม token streaming (Electron/custom client) |
+| `ws://localhost:8765/ws` | real-time chat พร้อม token streaming (Desktop app/custom client) |
 | `POST /chat` | sync request/response (สำหรับ Telegram bot ฯลฯ) |
-| `POST /upload` | อัปโหลดไฟล์เข้า `workspace/uploads/` แล้วคืน hint text สำหรับ Electron/custom client |
+| `POST /upload` | อัปโหลดไฟล์เข้า `workspace/uploads/` แล้วคืน hint text สำหรับ Desktop app/custom client |
 | `GET /status`, `/files`, `/file` | health check / อ่านไฟล์ workspace |
 
 **Auth (สำคัญ):** ทุก request ต้องมี token —
@@ -524,7 +530,7 @@ menu          เปิด mode menu
 /pin add "<path>" [...]  Pin ไฟล์ให้อ่านก่อน reasoning (สูงสุด 10 ไฟล์)
 /pin remove <index|path>  เอาไฟล์ออกจาก Pin
 /pin clear    ล้าง Pin ทั้งหมด
-/pdf_text "<path>" [--rewrite-thai]  แปลง PDF ผ่าน pipeline เดียวกับ Electron
+/pdf_text "<path>" [--rewrite-thai]  แปลง PDF ผ่าน pipeline เดียวกับ Desktop app
 /history      โหลด conversation history เดิม
 /compact      บีบอัด context
 /clear        เริ่ม session ใหม่
@@ -532,7 +538,7 @@ menu          เปิด mode menu
 exit / ออก   ปิดโปรแกรม
 ```
 
-`Attach` ใช้กับ turn ถัดไปครั้งเดียว; `Pin` คงอยู่จนกว่าจะสั่ง `/pin clear` และใช้กฎอ่านไฟล์เดียวกับ backend/Electron. ครอบ path ที่มีช่องว่างด้วย quote. `/pdf_text` ใช้ตัวแปลง PDF เดียวกับ Electron; เปิด LLM rewrite เฉพาะเมื่อใส่ `--rewrite-thai`.
+`Attach` ใช้กับ turn ถัดไปครั้งเดียว; `Pin` คงอยู่จนกว่าจะสั่ง `/pin clear` และใช้กฎอ่านไฟล์เดียวกับ backend/Desktop app. ครอบ path ที่มีช่องว่างด้วย quote. `/pdf_text` ใช้ตัวแปลง PDF เดียวกับ desktop app; เปิด LLM rewrite เฉพาะเมื่อใส่ `--rewrite-thai`.
 
 ---
 
@@ -571,7 +577,7 @@ def my_tool(query: str) -> str:
 
 default runtime model คือ **Qwen3.5-9B-4bit (VLM)**. สามารถเลือก **Qwen3.5-2B-OptiQ-4bit (VLM)** สำหรับ testing/diagnostic, **Qwen3-14B** (text-only), **Qwen3.8-27B (VLM)** และถ้าต้องการคุณภาพ reasoning สูงขึ้นสามารถเลือก **Qwen3.6-35B-A3B (MoE)**; เครื่องที่มี RAM ต่ำกว่า 20GB จะได้รับคำเตือนก่อน download/load เฉพาะ 27B (และต่ำกว่า 24GB เฉพาะ 35B) แต่ยังยืนยันใช้ได้. `read_image` บน 14B ใช้ OCR fallback ส่วน 2B/9B/27B/35B รองรับ direct vision ตาม capability probe
 
-วิธีปกติคือเลือกจาก **Electron Settings** หรือ CLI `menu` โดยใช้ `workspace/runtime_settings.json` ร่วมกัน. ใน `Standalone` Agent TH เป็น owner ของ model server และสามารถ restart model/ย้าย port ของตัวเองได้; Settings มี Watchdog + Start/Stop/Reset. ใน `Shared MAX` TH เป็น client read-only: Model ล็อกตาม MAX VLM, Think Budget ยังเป็นของ TH และ lifecycle controls ถูกปิด. เมื่อกลับจาก Shared MAX ระบบคืน **standalone model เดิมของ TH** ไม่เอา model ของ MAX มาทับค่าที่เคยเลือกไว้
+วิธีปกติคือเลือกจาก **Settings ของ Desktop app** หรือ CLI `menu` โดยใช้ `workspace/runtime_settings.json` ร่วมกัน. ใน `Standalone` Agent TH เป็น owner ของ model server และสามารถ restart model/ย้าย port ของตัวเองได้; Settings มี Watchdog + Start/Stop/Reset. ใน `Shared MAX` TH เป็น client read-only: Model ล็อกตาม MAX VLM, Think Budget ยังเป็นของ TH และ lifecycle controls ถูกปิด. เมื่อกลับจาก Shared MAX ระบบคืน **standalone model เดิมของ TH** ไม่เอา model ของ MAX มาทับค่าที่เคยเลือกไว้
 
 สำหรับ custom backend/port ให้ใช้ advanced override ซึ่งต้องตั้งคู่กันและจะล็อก Model ใน UI:
 

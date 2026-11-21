@@ -2,13 +2,12 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { rust, bridge, rustFn } = require('./shell_sources')
 const vm = require('node:vm')
 
-const ROOT = path.join(__dirname, '..')
+const ROOT = path.join(__dirname, '..', 'ui')
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
 const renderer = fs.readFileSync(path.join(ROOT, 'renderer.js'), 'utf8')
-const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
-const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
 
 test('resuming a restored paused job restarts status polling', async () => {
   let polled = 0
@@ -60,12 +59,12 @@ test('renderer wires Translate controls without routing through chat', () => {
   assert.doesNotMatch(start, /wsSend\(\{ type: ['"]chat/)
 })
 
-test('preload and main keep Translate IPC authenticated and file scoped', () => {
-  assert.match(preload, /translateStart: \(\) => ipcRenderer\.invoke\('translate-start'/)
-  assert.match(preload, /translatePause: \(jobId\) => ipcRenderer\.invoke\('translate-pause'/)
-  assert.match(preload, /translateCancel: \(jobId\) => ipcRenderer\.invoke\('translate-cancel'/)
-  assert.match(main, /ipcMain\.handle\('translate-start'/)
-  assert.match(main, /route: '\/translate\/start'/)
-  assert.match(main, /'X-Target-Language': 'th'/)
-  assert.match(main, /timeoutMs: 600_000/)
+test('the bridge and the Rust shell keep Translate IPC authenticated and file scoped', () => {
+  assert.match(bridge, /translateStart: function \(\) \{ return invoke\('translate_start'\) \}/)
+  assert.match(bridge, /translatePause: function \(jobId\) \{ return invoke\('agent_job', \{ route: '\/translate\/pause'/)
+  assert.match(bridge, /translateCancel: function \(jobId\) \{ return invoke\('agent_job', \{ route: '\/translate\/cancel'/)
+  const start = rustFn('translate_start')
+  assert.match(start, /"\/translate\/start"/)
+  assert.match(start, /"X-Target-Language", "th"/)
+  assert.match(start, /Duration::from_secs\(600\)/)
 })

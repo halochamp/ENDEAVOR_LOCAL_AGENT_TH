@@ -86,7 +86,7 @@ When changing a tool:
 3. Keep outputs bounded and useful to the model.
 4. Reject invalid input before side effects.
 5. Keep model-facing descriptions aligned with runtime behavior.
-6. Check whether the same tool semantics are assumed by CLI/Electron/backend paths.
+6. Check whether the same tool semantics are assumed by CLI/desktop-app/backend paths.
 7. Use synthetic test data rather than real private documents or credentials.
 
 ## 7. Planner/routing/orchestration changes
@@ -131,7 +131,7 @@ Do not make background execution a bypass around user-facing safety boundaries.
 
 ## 10. Backend/API/UI changes
 
-For `agent_server.py`, WebSocket/REST, Electron integration, or an explicit custom client:
+For `agent_server.py`, WebSocket/REST, desktop-app integration, or an explicit custom client:
 
 - preserve authentication;
 - preserve localhost/local-machine assumptions unless deliberately redesigned;
@@ -139,7 +139,7 @@ For `agent_server.py`, WebSocket/REST, Electron integration, or an explicit cust
 - keep shared business logic out of duplicated UI-only branches when a shared runtime layer exists;
 - validate malformed requests and disconnected clients safely;
 - do not expose workspace file contents to third-party resources by default;
-- keep CLI and Electron runtime model/Think Budget state on the shared owner config rather than UI-private state.
+- keep CLI and desktop-app runtime model/Think Budget state on the shared owner config rather than UI-private state.
 
 ## 11. Testing procedure
 

@@ -212,7 +212,10 @@ _AUTH_TOKEN = _load_or_create_token()
 _ALLOWED_ORIGINS = {f"http://127.0.0.1:{SERVER_PORT}", f"http://localhost:{SERVER_PORT}"}
 
 
-_OPAQUE_ORIGINS = {"null", "file://"}
+# The desktop app's own pages: Electron sends "file://" / "null"; the Tauri app (AGENT_UI_RUST) is served from the
+# tauri:// scheme and sends "tauri://localhost" (macOS/Linux) or "http://tauri.localhost" (Windows). A web page cannot
+# claim either scheme, so allowing them keeps the DNS-rebinding protection below intact.
+_OPAQUE_ORIGINS = {"null", "file://", "tauri://localhost", "http://tauri.localhost"}
 
 
 def _origin_ok(origin: str | None) -> bool:

@@ -2,8 +2,9 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { rust, bridge, rustFn } = require('./shell_sources')
 
-const { normalizeState, focusIsPersistent, focusStatus, folderCount } = require('../lib/edit_access')
+const { normalizeState, focusIsPersistent, focusStatus, folderCount } = require('../ui/lib/edit_access')
 
 test('Active Workspace status labels use the Active Workspace name', () => {
   assert.equal(focusStatus(normalizeState({})), 'No Active Workspace')
@@ -26,12 +27,12 @@ test('Active Workspace state remains separate from persistent Approved Edit Fold
   assert.deepEqual(state.folders, ['/approved'])
 })
 
-test('Edit Access settings are backend-driven and wired through Electron IPC', () => {
-  const root = path.join(__dirname, '..')
+test('Edit Access settings are backend-driven and wired through the Rust shell', () => {
+  const root = path.join(__dirname, '..', 'ui')
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8')
   const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')
-  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
-  const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
+  
+  
 
   assert.ok(html.indexOf('lib/edit_access.js') < html.indexOf('renderer.js'))
   assert.match(html, /id="approved-edit-folders-add"/)
@@ -45,17 +46,17 @@ test('Edit Access settings are backend-driven and wired through Electron IPC', (
   assert.match(renderer, /set_focus_folder/)
   assert.match(renderer, /remove_approved_edit_folder/)
   assert.match(html, /Active Workspace.*temporary/i)
-  assert.match(main, /ipcMain\.handle\('show-approved-edit-folder-dialog'/)
-  assert.match(main, /route: '\/edit-access\/authorize'/)
-  assert.match(main, /route: '\/edit-access\/delete'/)
-  assert.match(preload, /showApprovedEditFolderDialog: \(\) => ipcRenderer\.invoke\('show-approved-edit-folder-dialog'\)/)
-  assert.match(preload, /setRuntimeSettings: \(payload\) => ipcRenderer\.invoke\('set-runtime-settings', payload\)/)
+  assert.match(rust, /pub async fn show_approved_edit_folder_dialog/)
+  assert.match(rust, /"\/edit-access\/authorize"/)
+  assert.match(rust, /"\/edit-access\/delete"/)
+  assert.match(bridge, /showApprovedEditFolderDialog: function \(\) \{ return invoke\('show_approved_edit_folder_dialog'\) \}/)
+  assert.match(bridge, /setRuntimeSettings: function \(payload\) \{ return invoke\('set_runtime_settings'/)
 })
 
 test('Focus browsing and mentions use a temporary focus scope', () => {
-  const root = path.join(__dirname, '..')
+  const root = path.join(__dirname, '..', 'ui')
   const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')
-  const server = fs.readFileSync(path.join(root, '..', 'agent_server.py'), 'utf8')
+  const server = fs.readFileSync(path.join(root, '..', '..', 'agent_server.py'), 'utf8')
   assert.match(renderer, /scope: 'focus'/)
   assert.match(renderer, /focus_mentions/)
   assert.match(server, /def _safe_focus_real/)

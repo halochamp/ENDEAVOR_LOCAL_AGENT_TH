@@ -11,21 +11,21 @@ Read order:
 
 ## Core architecture
 
-The project is a local Thai-capable agent built around a local MLX model and LangGraph/ReAct orchestration, with two supported front ends sharing runtime infrastructure: CLI and Electron desktop.
+The project is a local Thai-capable agent built around a local MLX model and LangGraph/ReAct orchestration, with two supported front ends sharing runtime infrastructure: CLI and the Tauri desktop app.
 
 Important components documented by the project include:
 
 - `react.py` / planner logic — model/tool reasoning and planning;
 - `graph.py` — LangGraph state/routing/retry behavior;
 - `llm.py` — local OpenAI-compatible MLX client;
-- `runtime_common.py` — shared turn/runtime behavior used by CLI and the Electron backend path;
+- `runtime_common.py` — shared turn/runtime behavior used by CLI and the desktop-app backend path;
 - `model_runtime.py` — shared model-server owner state/lifecycle for Standalone mode, plus the read-only Shared MAX boundary;
-- `agent_server.py` — authenticated WebSocket/REST backend for Electron and explicit custom clients; publishes self-contained host telemetry in UI order CPU/GPU/RAM/TOK/network, validates recursive Workspace `@file` mentions, and revalidates persistent Pin File paths every normal turn through the same protected read-path policy as `read_file` before graph-owned reads;
-- `pdf_to_text.py` — direct deterministic-first PDF → text pipeline used by Electron, with native text extraction, OCR/table reconstruction, Thai formatting repair, and optional local no-think rewrite;
-- `translate_documents.py` — resumable document → Thai translation pipeline for the Electron Translate tab (stable page/block boundaries, checkpointed pause/resume/cancel, protected tokens kept verbatim);
+- `agent_server.py` — authenticated WebSocket/REST backend for the desktop app and explicit custom clients; publishes self-contained host telemetry in UI order CPU/GPU/RAM/TOK/network, validates recursive Workspace `@file` mentions, and revalidates persistent Pin File paths every normal turn through the same protected read-path policy as `read_file` before graph-owned reads;
+- `pdf_to_text.py` — direct deterministic-first PDF → text pipeline used by the desktop app, with native text extraction, OCR/table reconstruction, Thai formatting repair, and optional local no-think rewrite;
+- `translate_documents.py` — resumable document → Thai translation pipeline for the desktop app's Translate tab (stable page/block boundaries, checkpointed pause/resume/cancel, protected tokens kept verbatim);
 - `activity_text.py` — redaction and bounding for the Activity log: tool arguments and result previews pass through it before reaching the UI (secrets, private keys, credential URLs and base64 payloads never leave the server);
 - `endeavor_agent.py` — CLI front end;
-- `AGENT_UI/` — Electron desktop front end with Workspace browsing, `@file` autocomplete, direct PDF to Text, resumable Translate (document → Thai), newest-first activity log with redacted tool arguments/results, `/skill <instruction> @file` composer support, history and runtime Settings;
+- `AGENT_UI/` — Tauri 2 (Rust) desktop front end (left-rail layout, Model page, light theme) with Workspace browsing, `@file` autocomplete, direct PDF to Text, resumable Translate (document → Thai), newest-first activity log with redacted tool arguments/results, `/skill <instruction> @file` composer support, history and runtime Settings;
 - `awake_engine.py` — standing-trigger execution;
 - `workspace/`, logs/history/memory — runtime state.
 
@@ -77,4 +77,4 @@ Do not commit `.agent_token`, `.env`, logs, history DBs, memory files, workspace
 
 Full workflow: [`AGENT_PROCEDURE.md`](AGENT_PROCEDURE.md).
 
-**Mental model:** one local agent runtime, two supported front ends (CLI + Electron), one shared runtime/model-server owner state. Standalone is TH-owned; Shared MAX is a verified read-only client mode that must never mutate Agent MAX VLM's server. Explicit auth/sandbox boundaries and model-specific behavior remain unchanged.
+**Mental model:** one local agent runtime, two supported front ends (CLI + desktop app), one shared runtime/model-server owner state. Standalone is TH-owned; Shared MAX is a verified read-only client mode that must never mutate Agent MAX VLM's server. Explicit auth/sandbox boundaries and model-specific behavior remain unchanged.

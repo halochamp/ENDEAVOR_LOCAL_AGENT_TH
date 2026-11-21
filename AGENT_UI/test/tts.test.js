@@ -2,19 +2,19 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { rust, bridge, rustFn } = require('./shell_sources')
 const vm = require('node:vm')
 
-const ROOT = path.join(__dirname, '..')
+const ROOT = path.join(__dirname, '..', 'ui')
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8')
 const renderer = fs.readFileSync(process.env.RENDERER_PATH || path.join(ROOT, 'renderer.js'), 'utf8')
-const preload = fs.readFileSync(path.join(ROOT, 'preload.js'), 'utf8')
-const main = fs.readFileSync(path.join(ROOT, 'main.js'), 'utf8')
 
 const START = '// ── Text to Speech ─'
 const END = '// ── end Text to Speech ─'
 
 function harness(api = {}, confirmAnswers = null) {
   const asked = []
+  const opened = []
   const els = {}
   const sent = []
   const mkClass = () => ({ s: new Set(), add(c) { this.s.add(c) }, remove(c) { this.s.delete(c) }, contains(c) { return this.s.has(c) }, toggle(c, on) { on ? this.s.add(c) : this.s.delete(c) } })
@@ -30,7 +30,9 @@ function harness(api = {}, confirmAnswers = null) {
   assert.ok(code.length > 500, 'the Text to Speech block must exist in renderer.js')
   const ctx = {
     document: { getElementById: element, createElement: () => ({ value: '', textContent: '' }) },
-    window: { electronAPI: api, confirm: confirmAnswers ? () => { asked.push(1); return confirmAnswers.shift() } : undefined },
+    window: { electronAPI: api },
+    askConfirm: () => { asked.push(1); return Promise.resolve(confirmAnswers.shift()) },   // the Rust shell's native yes/no
+    togglePanel: name => { opened.push(name) },
     wsSend: msg => { sent.push(msg); return true },
     setTimeout: (fn) => { fn(); return 0 },
     Promise, Math, Number, Array, String, console,
@@ -39,7 +41,7 @@ function harness(api = {}, confirmAnswers = null) {
   vm.runInContext(code, ctx)
   const get = name => vm.runInContext(name, ctx)
   if (!confirmAnswers) vm.runInContext('ttsState.modelConfirmed = true', ctx)   // every flow below starts after the question was answered yes
-  return { ctx, els, sent, get, asked }
+  return { ctx, els, sent, get, asked, opened }
 }
 
 const READY = { ok: true, engine: { ready: true, reason: '' }, voices: [{ id: 'anna', label: 'Anna' }, { id: 'bob', label: 'bob' }], voices_dir: '/x/voices' }
@@ -59,13 +61,14 @@ test('the sidebar has a TTS button and a panel with the controls, voice picker a
   }
 })
 
-test('the Electron bridge exposes the TTS calls and the main process handles them', () => {
-  for (const fn of ['ttsVoices', 'ttsStart', 'ttsStatus', 'ttsPause', 'ttsResume', 'ttsCancel']) assert.ok(preload.includes(`${fn}:`), `preload.js must expose ${fn}`)
-  assert.match(preload, /ttsStart: \(voice, speed\) => ipcRenderer\.invoke\('tts-start'/)
-  for (const channel of ['tts-voices', 'tts-start', 'tts-status', 'tts-pause', 'tts-resume', 'tts-cancel']) assert.ok(main.includes(`'${channel}'`), `main.js must handle ${channel}`)
-  assert.match(main, /route: '\/tts\/start'/)
-  assert.match(main, /'X-Voice': String\(voice \|\| ''\)/)
-  assert.match(main, /extensions: \['txt', 'md', 'markdown'\]/)
+test('the bridge exposes the TTS calls and the Rust shell handles them', () => {
+  for (const fn of ['ttsVoices', 'ttsStart', 'ttsStatus', 'ttsPause', 'ttsResume', 'ttsCancel']) assert.ok(bridge.includes(`${fn}:`), `bridge.js must expose ${fn}`)
+  assert.match(bridge, /ttsStart: function \(voice, speed\) \{ return invoke\('tts_start'/)
+  for (const route of ['/tts/voices', '/tts/status', '/tts/pause', '/tts/resume', '/tts/cancel']) assert.ok(rust.includes(`"${route}"`), `the Rust shell must allow ${route}`)
+  const start = rustFn('tts_start')
+  assert.match(rust, /"\/tts\/start"/)
+  assert.match(start, /"X-Voice", clean_voice\(&voice\)/)
+  assert.match(start, /&\["txt", "md", "markdown"\]/)
 })
 
 test('voices fill the picker; an engine that is not ready, or no voices, says what to do and keeps Start disabled', () => {
@@ -176,11 +179,15 @@ test('the speed slider label follows the slider', () => {
   assert.equal(h.els['tts-speed-label'].textContent, '0.85×')
 })
 
-test('opening the TTS tab asks once whether to load the voice model; a "no" keeps it closed and loads nothing', () => {
+test('opening the TTS tab asks once whether to load the voice model; a "no" keeps it closed and loads nothing', async () => {
   assert.match(renderer, /if \(name === 'tts' && activePanel !== 'tts' && !ttsPanelMayOpen\(\)\) return/)
   const h = harness({}, [false, true])
-  assert.equal(h.ctx.ttsPanelMayOpen(), false)               // declined: asked, and the next open asks again
-  assert.equal(h.ctx.ttsPanelMayOpen(), true)                // accepted
+  assert.equal(h.ctx.ttsPanelMayOpen(), false)               // not answered yet: asks, nothing opens meanwhile
+  await new Promise(r => setImmediate(r))
+  assert.deepEqual(h.opened, [], 'declined: the panel stays closed')
+  assert.equal(h.ctx.ttsPanelMayOpen(), false)               // and the next open asks again
+  await new Promise(r => setImmediate(r))
+  assert.deepEqual(h.opened, ['tts'], 'accepted: the panel opens by itself')
   assert.equal(h.ctx.ttsPanelMayOpen(), true)                // remembered: not asked a third time
   assert.equal(h.asked.length, 2)
   const text = vm.runInContext('TTS_MODEL_PROMPT', h.ctx)

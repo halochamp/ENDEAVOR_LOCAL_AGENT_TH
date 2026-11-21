@@ -1,4 +1,5 @@
 const test = require('node:test')
+const { rust, bridge, rustFn } = require('./shell_sources')
 const fs = require('node:fs')
 const path = require('node:path')
 const assert = require('node:assert')
@@ -7,7 +8,7 @@ const {
   modelFromCommand,
   classifyServerPresence,
   requiresLargeModelWarning,
-} = require('../lib/runtime_model')
+} = require('../ui/lib/runtime_model')
 
 test('listenerPidFromLsof extracts listener pid', () => {
   assert.strictEqual(listenerPidFromLsof('p84733\n'), 84733)
@@ -80,7 +81,7 @@ test('requiresLargeModelWarning warns only for 35B below 24GB', () => {
 })
 
 test('low-RAM confirmation text comes from the server payload, not a hardcoded model or size', () => {
-  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer.js'), 'utf8')
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'ui', 'renderer.js'), 'utf8')
   const start = renderer.indexOf('if (ev.confirmation_required && previousPending)')
   assert.ok(start > 0)
   const block = renderer.slice(start, start + 900)
@@ -90,13 +91,13 @@ test('low-RAM confirmation text comes from the server payload, not a hardcoded m
 })
 
 test('runtime selection uses authenticated REST owner seam and clears stale pending state on reconnect', () => {
-  const root = path.join(__dirname, '..')
+  const root = path.join(__dirname, '..', 'ui')
   const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8')
-  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
-  const preload = fs.readFileSync(path.join(root, 'preload.js'), 'utf8')
-  assert.match(main, /route: '\/runtime-settings'/)
-  assert.match(main, /['"]X-Auth-Token['"]:\s*AGENT_TOKEN/)
-  assert.match(preload, /set-runtime-settings/)
+  
+  
+  assert.match(rustFn('set_runtime_settings'), /"\/runtime-settings"/)
+  assert.match(rust, /\.header\("X-Auth-Token", token\)/)
+  assert.match(bridge, /set_runtime_settings/)
   assert.match(renderer, /pendingRuntimeRequest = null/)
   assert.match(renderer, /runtimeSettings\.switch_state = 'switching'/)
   assert.match(renderer, /switch_state === 'switching'/)

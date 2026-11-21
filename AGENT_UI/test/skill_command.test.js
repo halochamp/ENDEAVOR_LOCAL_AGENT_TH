@@ -9,9 +9,9 @@ const {
   insertCommand,
   parseSkillInvocation,
   extractMentionPaths,
-} = require('../lib/workspace_mentions')
+} = require('../ui/lib/workspace_mentions')
 
-const ROOT = path.join(__dirname, '..')
+const ROOT = path.join(__dirname, '..', 'ui')
 const renderer = fs.readFileSync(path.join(ROOT, 'renderer.js'), 'utf8')
 
 test('a leading /command is completed from the word under the caret only', () => {

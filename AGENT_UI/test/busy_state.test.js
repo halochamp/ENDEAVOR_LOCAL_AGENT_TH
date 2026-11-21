@@ -1,6 +1,6 @@
 const { test } = require('node:test')
 const assert = require('node:assert')
-const { applyClose, applyOpen } = require('../lib/busy_state')
+const { applyClose, applyOpen } = require('../ui/lib/busy_state')
 
 // Build an fx object of spies. Each spy records its call args so a test can
 // assert the connection handler invoked the load-bearing effect (UI-R8-1).

@@ -308,7 +308,7 @@ class ServerRuntimeSyncTests(unittest.TestCase):
         custom.query_params = {}
         self.assertEqual(srv._ws_transport(desktop), "desktop")
         self.assertEqual(srv._ws_transport(custom), "")
-        renderer = (Path(srv.__file__).resolve().parent / "AGENT_UI" / "renderer.js").read_text(
+        renderer = (Path(srv.__file__).resolve().parent / "AGENT_UI" / "ui" / "renderer.js").read_text(
             encoding="utf-8",
         )
         self.assertIn("/ws?transport=desktop", renderer)

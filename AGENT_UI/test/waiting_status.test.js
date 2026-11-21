@@ -5,7 +5,7 @@ const {
   toolDisplay,
   friendlyProgress,
   normalizePhase,
-} = require('../lib/waiting_status')
+} = require('../ui/lib/waiting_status')
 
 test('summarizeWaitingQuery detects web freshness intent', () => {
   assert.match(summarizeWaitingQuery('ราคาทองวันนี้ล่าสุด'), /ข้อมูลล่าสุดจากเว็บ/)

@@ -59,7 +59,7 @@ def _find_break(
 
     `with_tier=True` returns (cut, boundary_kind): paragraph, sentence,
     clause, word, or forced. The cut offset itself is identical either way
-    (same _pick_break decision); naming the kind lets TTS give F5 a matching
+    (same _pick_break decision); naming the kind lets TTS give the voice a matching
     breath pause without turning every clause into a separate short request."""
     limit = min(len(text), _HARD_CAP)
     window = text[:limit]
@@ -196,7 +196,7 @@ def _split_for_tts(
     `with_tiers=True` returns (piece, boundary_after) tuples instead —
     boundary_after names the splice that FOLLOWS the piece: paragraph,
     sentence, clause, word, forced, latin, or end. Piece texts are identical
-    either way; punctuation stays inside the F5 request that precedes it."""
+    either way; punctuation stays inside the voice request that precedes it."""
     pieces: list[tuple[str, str]] = []
     remaining = text.strip()
     while len(remaining) > target:
@@ -223,7 +223,7 @@ def _split_for_tts(
     return [piece_text for piece_text, _ in pieces]
 
 # ═══ piece sizing and pauses ══════════════════════════════════════════════════
-_PIECE_TARGET = 120   # piece sizing accepted for F5 by listening tests (target / window_min)
+_PIECE_TARGET = 120   # piece sizing accepted by listening tests (target / window_min)
 
 _PIECE_WINDOW_MIN = 70
 
@@ -231,11 +231,11 @@ _OMNI_PIECE_TARGET = 400   # OmniVoice takes whole paragraphs and puts its own p
 
 _OMNI_PIECE_WINDOW_MIN = 200
 
-_SHORT_PIECE_CHARS = 25   # a piece this short has no context for F5's prosody (measured: "ได้เลย" failed 3/3 takes)
+_SHORT_PIECE_CHARS = 25   # a piece this short has no context for the voice's prosody (measured: "ได้เลย" failed 3/3 takes)
 
 _MERGED_PIECE_MAX = 150   # merge ceiling; 240-char pieces were rejected by listening, the CFM clamp is ~450
 
-# splice silence per boundary kind (ms): the values accepted for F5-TTS-TH-V2, sentence/paragraph raised to the 420 ms the owner chose by A/B (2026-11-07)
+# splice silence per boundary kind (ms): the values accepted by listening tests, sentence/paragraph raised to the 420 ms the owner chose by A/B (2026-11-07)
 PAUSE_TABLE_MS = {"sentence": 420, "paragraph": 420, "clause": 180, "word": 40, "latin": 50}
 
 def language_mix(paragraphs: list[str]) -> tuple[int, int]:

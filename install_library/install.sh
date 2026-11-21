@@ -179,12 +179,10 @@ cat <<EOF
        cd "${PROJ_DIR}"
        python endeavor_agent.py
 
-     Electron Desktop:
-       cd "${PROJ_DIR}/AGENT_UI"
-       npm install   # ครั้งแรกเท่านั้น
-       npm start
+     Desktop app (build ในเครื่อง ต้องมี Node.js, Rust, Xcode Command Line Tools):
+       bash "${PROJ_DIR}/agent_start.command"     # ติดตั้งโมเดล OCR/เสียง + build + เปิดแอป
 
-     ทั้ง CLI และ Electron ใช้ Model/Think Budget config กลางเดียวกัน
+     ทั้ง CLI และ Desktop app ใช้ Model/Think Budget config กลางเดียวกัน
      ที่ workspace/runtime_settings.json (override ได้ด้วย V2_RUNTIME_SETTINGS_PATH)
 
   หมายเหตุ: default คือ Qwen3.5-9B-4bit (VLM ใช้ได้บนเครื่อง 16GB)

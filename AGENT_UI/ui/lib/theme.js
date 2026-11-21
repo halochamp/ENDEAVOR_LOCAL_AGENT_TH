@@ -8,12 +8,13 @@
   try {
     saved = localStorage.getItem('endeavor-theme')
   } catch (e) {}
-  var theme = (saved === 'light') ? 'light' : 'dark'
+  // light unless the user picked dark
+  var theme = (saved === 'dark') ? 'dark' : 'light'
   document.documentElement.setAttribute('data-theme', theme)
   var hljsLink = document.getElementById('hljs-theme')
   if (hljsLink) {
     hljsLink.href = theme === 'light'
-      ? './node_modules/@highlightjs/cdn-assets/styles/github.min.css'
-      : './node_modules/@highlightjs/cdn-assets/styles/github-dark.min.css'
+      ? './vendor/github.min.css'
+      : './vendor/github-dark.min.css'
   }
 })()
